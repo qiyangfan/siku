@@ -39,11 +39,11 @@ jobs:
       - name: 测试
         run: uv run pytest
 
-  # ui/ 前端作业：Node 24 工具链；package.json 落地后自动启用
+  # ui/ 前端作业：Node 24 工具链；package.json 不存在时所有步骤自动跳过
+  # （hashFiles 仅可用于 step 级 if，不能写在 job 级 if，否则整个 workflow 文件校验失败）
   ui:
     name: 前端（Node 24）
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('ui/package.json') != '' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -51,11 +51,14 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "24"
+        if: ${{ hashFiles('ui/package.json') != '' }}
 
       - name: 安装依赖
         working-directory: ui
+        if: ${{ hashFiles('ui/package.json') != '' }}
         run: npm ci
 
       - name: Lint / 测试 / 构建
         working-directory: ui
+        if: ${{ hashFiles('ui/package.json') != '' }}
         run: npm run lint --if-present && npm test --if-present && npm run build --if-present
