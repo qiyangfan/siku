@@ -1,0 +1,27 @@
+{"id": "zh-phrase-01", "query": "本地优先的个人知识库", "expected": [{"source": "demo-slides.pptx", "anchor": "slide:1"}], "note": "中文短语：产品定位原句出现在 slide 1"}
+{"id": "zh-phrase-02", "query": "混合召回策略", "expected": [{"source": "demo-slides.pptx", "anchor": "slide:2"}], "note": "中文短语：检索策略标题出现在 slide 2"}
+{"id": "zh-phrase-03", "query": "实体抽取 关系抽取", "expected": [{"source": "demo-notes.docx", "anchor": "知识图谱构建方法"}], "note": "中文短语：图谱构建术语在 Word 笔记"}
+{"id": "zh-phrase-04", "query": "显卡采购预算", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:预算"}], "note": "中文短语：预算表按 sheet 锚点定位"}
+{"id": "zh-phrase-05", "query": "季度技术报告", "expected": [{"source": "demo-report.pdf", "anchor": "page:1"}], "note": "中文查询对应英文报告标题的语义匹配，主要靠向量通道"}
+{"id": "zh-phrase-06", "query": "社区发现", "expected": [{"source": "demo-notes.docx", "anchor": "知识图谱构建方法"}], "note": "中文短语：图谱流程术语在 Word 笔记"}
+{"id": "model-number-01", "query": "RTX-4090", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:预算"}, {"source": "demo-report.pdf", "anchor": "page:2"}], "note": "英文数字型号：PDF 与预算表两处均为正确来源"}
+{"id": "model-number-02", "query": "bge-m3", "expected": [{"source": "demo-report.pdf", "anchor": "page:1"}], "note": "连字符模型名：预分词必须保留整体 token"}
+{"id": "model-number-03", "query": "128GB DDR5", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:预算"}], "note": "数字+英文型号组合出现在内存行"}
+{"id": "model-number-04", "query": "MRR@10", "expected": [{"source": "demo-notes.docx", "anchor": "问答系统评测"}], "note": "含@符号的指标名，token 边界保留"}
+{"id": "model-number-05", "query": "Recall@5", "expected": [{"source": "demo-notes.docx", "anchor": "问答系统评测"}], "note": "含@符号的指标名，token 边界保留"}
+{"id": "cross-block-01", "query": "上线节奏", "expected": [{"source": "demo-slides.pptx", "anchor": "slide:3"}], "note": "跨块定位：答案只在 slide 3，slide 1/2 是干扰块"}
+{"id": "cross-block-02", "query": "golden set 基线", "expected": [{"source": "demo-slides.pptx", "anchor": "slide:3"}], "note": "跨块定位：交付里程碑只在 slide 3"}
+{"id": "cross-block-03", "query": "NVMe 4TB", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:预算"}], "note": "跨块定位：存储行在预算表内，内存行是干扰"}
+{"id": "cross-block-04", "query": "local inference benchmarks", "expected": [{"source": "demo-report.pdf", "anchor": "page:2"}], "note": "跨块定位：英文短语只在 PDF 第 2 页"}
+{"id": "synonym-01", "query": "GPU 显卡怎么选", "expected": [{"source": "demo-report.pdf", "anchor": "page:2"}, {"source": "demo-budget.xlsx", "anchor": "sheet:预算"}], "note": "同义表达：GPU/显卡/选型跨 PDF 与表格"}
+{"id": "synonym-02", "query": "向量嵌入 模型", "expected": [{"source": "demo-report.pdf", "anchor": "page:1"}, {"source": "demo-slides.pptx", "anchor": "slide:2"}], "note": "同义表达：embedding 与向量召回两种说法"}
+{"id": "synonym-03", "query": "知识库 问答", "expected": [{"source": "demo-slides.pptx", "anchor": "slide:1"}], "note": "同义表达：问答出现在产品定位句"}
+{"id": "synonym-04", "query": "人员投入 排期", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:人力"}], "note": "同义表达：人力表用角色/周期表述"}
+{"id": "empty-result-01", "query": "量子计算框架选型", "expected": [], "note": "空结果：语料中不存在量子计算内容，全文通道必须零命中"}
+{"id": "empty-result-02", "query": "火星探测器着陆方案", "expected": [], "note": "空结果：语料中不存在航天内容，全文通道必须零命中"}
+{"id": "hybrid-01", "query": "检索架构 关键词与向量结合", "expected": [{"source": "demo-report.pdf", "anchor": "page:1"}, {"source": "demo-slides.pptx", "anchor": "slide:2"}], "note": "混合召回：BM25 命中英文报告，向量命中中文 slide"}
+{"id": "hybrid-02", "query": "RTX-4090 显卡 预算", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:预算"}], "note": "混合召回：型号词与中文词共同指向预算表"}
+{"id": "hybrid-03", "query": "Phase 2 检索纵切面", "expected": [{"source": "demo-slides.pptx", "anchor": "slide:3"}], "note": "混合召回：英文阶段名与中文术语同块"}
+{"id": "hybrid-04", "query": "数据标注 周期", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:人力"}], "note": "混合召回：人力表行级定位"}
+{"id": "hybrid-05", "query": "dense vector embeddings BM25", "expected": [{"source": "demo-report.pdf", "anchor": "page:1"}], "note": "混合召回：英文术语组合定位架构段"}
+{"id": "hybrid-06", "query": " DDR5 内存 8192", "expected": [{"source": "demo-budget.xlsx", "anchor": "sheet:预算"}], "note": "混合召回：数字金额与型号共同定位内存行"}
