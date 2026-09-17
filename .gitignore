@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+.venv/
+
+# 工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node（ui/ 前端未来使用）
+node_modules/
+ui/dist/
+
+# 本地数据：知识库数据目录与数据库文件不入库
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# macOS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# 注意：uv.lock 必须提交，勿加入忽略

@@ -1,0 +1,74 @@
+[project]
+name = "siku"
+version = "0.1.0"
+description = "siku（四库）—— 本地优先的个人知识库：万能摄取、知识图谱、LLM wiki、自然语言问答"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "typer>=0.12",
+]
+
+[project.scripts]
+siku = "siku.cli:app"
+
+[project.optional-dependencies]
+# 重依赖抽取引擎一律放 extras，保持核心安装轻量（架构红线 #4）
+ingest-pdf = ["docling>=2.0"]
+ingest-office = ["python-pptx>=1.0", "openpyxl>=3.1"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/siku"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+ignore = [
+    # 中文文本合法使用全角标点，"易混淆字符"检查不适用本项目（RUF001/2/3）
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "RUF", # ruff 专属规则
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src", "tests"]
+disallow_untyped_defs = true
+warn_return_any = true
+# 脚手架阶段先宽松，核心模块成型后逐步收紧
+ignore_missing_imports = true

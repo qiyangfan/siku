@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Node 运行时说明：以下官方 action（checkout v7 / setup-uv v10 / setup-node v7）
+# 均声明 using: node24，由 runner 内置 Node 24 执行 action 包装层；
+# ui 作业另经 setup-node 安装 Node 24 作为前端工具链。
+# runner 本身的内置 Node 版本由 GitHub 管理无法指定，钉死手段就是选用 node24 版 action。
+
+jobs:
+  test:
+    name: 测试（Python ${{ matrix.python-version }}）
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: 同步依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: Ruff Lint
+        run: uv run ruff check .
+
+      - name: Ruff Format 检查
+        run: uv run ruff format --check .
+
+      - name: 测试
+        run: uv run pytest
+
+  # ui/ 前端作业：Node 24 工具链；package.json 落地后自动启用
+  ui:
+    name: 前端（Node 24）
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('ui/package.json') != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: 安装依赖
+        working-directory: ui
+        run: npm ci
+
+      - name: Lint / 测试 / 构建
+        working-directory: ui
+        run: npm run lint --if-present && npm test --if-present && npm run build --if-present
