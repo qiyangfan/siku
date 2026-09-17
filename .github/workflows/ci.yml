@@ -16,8 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # 矩阵取声明范围两端：3.12 = .python-version 钉定的开发基准；3.14 = 当前最新稳定版
+      # 阶段一经 uv tool install 分发，用户侧解释器版本异构，两端绿才代表 >=3.12 的声明成立
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7
 
