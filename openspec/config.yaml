@@ -1,0 +1,37 @@
+schema: spec-driven
+
+context: |
+  siku（四库）——本地优先的个人知识库：万能摄取 → Markdown 事实层 → 知识图谱 + LLM wiki → 自然语言问答。
+  技术栈（docs/architecture.md 北极星锁定，偏离须 ADR）：
+  - 内核 Python 3.12+（uv 管理，FastAPI + typer CLI），src 布局
+  - UI：TypeScript + React + Vite，图视图 Sigma.js + graphology；终态 Tauri 壳
+  - 存储：SQLite（WAL/JSON1/FTS5+中文分词）+ LanceDB（向量）+ 内存图 + parquet（图谱）
+  - 摄取：Docling/MinerU（PDF）、pandoc（Word/EPUB）、python-pptx（PPT）、openpyxl（Excel）
+  - 检索：bge-m3 向量 + BM25 混合召回 + bge-reranker 重排 + golden set 回归
+  架构决策见 docs/adr/（ADR-0001~0008）；具体任务按需读取相关 ADR。关键红线：
+  - UI 与内核只经 localhost HTTP API 通信（ADR-0002）
+  - 语料（vault/）是唯一事实源，派生物必须可按 source_hash 重抽（ADR-0004）
+  - 自持 schema，抽取引擎一律经 Extractor 接口可插拔（ADR-0005）
+  - 重依赖只准放 optional-dependencies（ADR-0005）
+  - 检索链路改动必须过 golden set 回归（ADR-0006）
+  注释、文档、提交信息均使用中文；日志文本使用英文。
+
+rules:
+  proposal:
+    - 每份提案必须包含"不做清单"（Non-goals）
+    - 提案须引用受影响的 ADR 编号
+    - 禁止"顺手扩大范围"：一个 change 一个能力域
+  tasks:
+    - 任务粒度控制在两小时以内
+    - 摄取/检索/图谱质量类任务必须测试先行：先写失败测试（golden set 或单测）再实现
+  specs:
+    - Requirement 用 SHALL/SHOULD；Scenario 用 GIVEN/WHEN/THEN
+    - spec 只写行为，不绑定实现（不出现框架名/库名）；实现选择属于 ADR
+
+operations:
+  apply:
+    guidance:
+      - 完成后必须验证：uv run pytest + ruff 相关子集绿；行为变化附手工冒烟记录
+  archive:
+    guidance:
+      - 归档前核对 spec deltas 已 sync 进 specs/，涉及 ADR 须已更新

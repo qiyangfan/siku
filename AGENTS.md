@@ -8,6 +8,20 @@ siku（四库）——本地优先的个人知识库：丢入全部文档（PDF/
 
 架构北极星见 [docs/architecture.md](docs/architecture.md)。任何设计决策先对照该文档；要偏离表中定稿，必须给出比文档中理由更强的理由。
 
+## 治理三层
+
+| 层 | 位置 | 回答 | 变更方式 |
+|---|---|---|---|
+| 决策 | `docs/adr/`（ADR-0001~0008） | 为什么这么做 | 新增 ADR；旧的不删，只改状态 |
+| 宪法 | `openspec/project.md` | 不可协商红线 6 条 + 工程口径 | 改条款须同步对应 ADR |
+| 契约 | `openspec/specs/` | 系统应如何行为 | change 的 deltas 归档时 sync 而入 |
+| 提案 | `openspec/changes/` | 这一步做什么/不做什么 | propose → apply → review → archive |
+
+流程细则见 [openspec/AGENTS.md](openspec/AGENTS.md)：无 change 不写功能代码；
+proposal 必须含 Non-goals 并引用受影响 ADR；任务粒度 ≤ 2 小时。
+排序与遗忘防线见 [docs/ROADMAP.md](docs/ROADMAP.md)：**开 change 前先对齐排序，
+归档 change 后回写勾稽**；远期项进 Backlog 而非预写 openspec 骨架。
+
 ## 架构红线（违反即打回）
 
 1. **UI ↔ 内核只经 localhost HTTP API 通信**，业务逻辑禁止进入前端或未来的 Tauri 壳。这是三阶段发布路线成立的前提。

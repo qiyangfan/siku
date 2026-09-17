@@ -4,7 +4,19 @@
 
 siku 取意《四库全书》——历史上最大规模的"汇总天下文献 → 自动编目（总目提要）→ 结构化检索"工程。本项目是它的个人本地版：**本地优先**，语料永不离开你的磁盘（仅图谱抽取/问答时按需调用你自己的 LLM API key）。
 
-🚧 当前处于脚手架阶段，架构定稿（北极星）见 [docs/architecture.md](docs/architecture.md)。
+🚧 当前处于脚手架阶段。架构定稿（北极星）见 [docs/architecture.md](docs/architecture.md)，
+不可协商红线见 [openspec/project.md](openspec/project.md)（宪法）。
+
+## 文档地图
+
+| 想知道 | 去哪 |
+|---|---|
+| 接下来干什么、哪些先不做 | `docs/ROADMAP.md`（阶段闸门 + 触发器台账 + Backlog） |
+| 某个选型为什么这么定 | `docs/adr/`（ADR-0001~0008） |
+| 哪些规则碰不得 | `openspec/project.md`（宪法红线 + 工程口径） |
+| 系统应如何行为 | `openspec/specs/`（随 change 归档生长） |
+| 当前进度与选型总表 | `docs/architecture.md` |
+| AI 协作规范 | `AGENTS.md` + `openspec/AGENTS.md` |
 
 ## 产品边界
 
