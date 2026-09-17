@@ -14,6 +14,7 @@ siku 取意《四库全书》——历史上最大规模的"汇总天下文献 �
 | 接下来干什么、哪些先不做 | `docs/ROADMAP.md`（阶段闸门 + 触发器台账 + Backlog） |
 | 某个选型为什么这么定 | `docs/adr/`（ADR-0001~0008） |
 | 哪些规则碰不得 | `openspec/project.md`（宪法红线 + 工程口径） |
+| 当前进度与接手状态 | `docs/HANDOFF.md` + `docs/ROADMAP.md` |
 | 系统应如何行为 | `openspec/specs/`（随 change 归档生长） |
 | 当前进度与选型总表 | `docs/architecture.md` |
 | AI 协作规范 | `AGENTS.md` + `openspec/AGENTS.md` |

@@ -17,7 +17,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | Phase | 主题 | 交付物 | 核心闸门 |
 |---|---|---|---|
 | 0 | 脚手架与治理层 | uv 项目、CI 三作业绿、宪法+ADR+openspec、ROADMAP | ✅ 已完成（2026-09-17） |
-| 1 | 摄取纵切面 | `Extractor` 协议 + MD 投影 + `source_hash` 幂等 + vault 布局；PDF/Word/PPT/Excel 各通一格式 | 四类真实原件各自落出投影，hash 不变重跑零变更、篡改单文件只重抽该文件的测试绿（ADR-0004） |
+| 1 | 摄取纵切面 | `Extractor` 协议 + MD 投影 + `source_hash` 幂等 + vault 布局；PDF/Word/PPT/Excel 各通一格式 | ✅ 已完成（2026-09-17，归档 `2026-09-17-add-ingest-vertical-slice`） |
 | 2 | 检索纵切面 | SQLite schema + FTS5 中文分词 + LanceDB + bge-m3 + BM25 混合召回 + reranker + **golden set v0** | golden set 基线分数入库，此后任何检索改动有分数可比（ADR-0006） |
 | 3 | 图谱与 wiki | 抽取后端（graphify 方法复用）+ 实体/关系/社区落 parquet + 总目条目生成 | 全量重跑幂等（重建结果 diff 为空）+ 图谱体检（节点/边/社区量级报告）（ADR-0005） |
 | 4 | WebUI 最小集 | FastAPI 三端点契约（摄取/检索/图谱）冻结 + React 浏览/图视图/对话 | 契约冻结入库；UI 侧零业务逻辑断言（架构红线 2）（ADR-0002） |
