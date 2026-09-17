@@ -18,7 +18,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 |---|---|---|---|
 | 0 | 脚手架与治理层 | uv 项目、CI 三作业绿、宪法+ADR+openspec、ROADMAP | ✅ 已完成（2026-09-17） |
 | 1 | 摄取纵切面 | `Extractor` 协议 + MD 投影 + `source_hash` 幂等 + vault 布局；PDF/Word/PPT/Excel 各通一格式 | ✅ 已完成（2026-09-17，归档 `2026-09-17-add-ingest-vertical-slice`） |
-| 2 | 检索纵切面 | SQLite schema + FTS5 中文分词 + LanceDB + bge-m3 + BM25 混合召回 + reranker + **golden set v0** | golden set 基线分数入库，此后任何检索改动有分数可比（ADR-0006） |
+| 2 | 检索纵切面 | SQLite schema + FTS5 中文分词 + LanceDB + bge-m3 + BM25 混合召回 + reranker + **golden set v0** | ✅ 已完成（2026-09-17，归档 `2026-09-17-add-retrieval-vertical-slice`；baseline v0：Recall@5=1.000 / MRR@10=0.957，`benchmarks/retrieval-baseline-v0.json`） |
 | 3 | 图谱与 wiki | 抽取后端（graphify 方法复用）+ 实体/关系/社区落 parquet + 总目条目生成 | 全量重跑幂等（重建结果 diff 为空）+ 图谱体检（节点/边/社区量级报告）（ADR-0005） |
 | 4 | WebUI 最小集 | FastAPI 三端点契约（摄取/检索/图谱）冻结 + React 浏览/图视图/对话 | 契约冻结入库；UI 侧零业务逻辑断言（架构红线 2）（ADR-0002） |
 | 5 | Tauri 壳（阶段二） | 无签名桌面包，GitHub Releases + Homebrew | 双击安装到问答全链路在三平台手工冒烟通过 |
@@ -30,7 +30,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 ## 各阶段一句话目标
 
 - **Phase 1**：让语料"进得来"——任何格式丢进 `vault/`，投影与锚点自动落位，重跑无害。
-- **Phase 2**：让检索"答得准"——混合召回 + 重排，且每个参数改动都有分数裁决。
+- **Phase 2**：让检索"答得准"——混合召回 + 重排，且每个参数改动都有分数裁决。✅
 - **Phase 3**：让知识"自己长"——图谱与总目条目从语料可再生，换模型可全量重建。
 - **Phase 4**：让产品"看得见"——浏览/图视图/对话成闭环，契约冻结。
 - **Phase 5**：让用户"装得上"——双击即开，无需命令行。
