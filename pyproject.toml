@@ -19,6 +19,8 @@ siku = "siku.cli:app"
 # 重依赖抽取引擎一律放 extras，保持核心安装轻量（架构红线 #4）
 ingest-pdf = ["docling>=2.0"]
 ingest-office = ["python-pptx>=1.0", "openpyxl>=3.1"]
+# 检索重依赖：本地 bge 模型运行时（torch 系）+ LanceDB 向量运行时（ADR-0005/0006）
+retrieval = ["sentence-transformers>=3.0", "lancedb>=0.20"]
 
 [dependency-groups]
 dev = [
@@ -27,6 +29,9 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "pre-commit>=4.0",
+    # 仅 dev/CI 安装 LanceDB：向量存储测试用可编程 fake embedding 打真实存储，
+    # 模型运行时（sentence-transformers/torch）仍只属于 retrieval extra
+    "lancedb>=0.20",
 ]
 
 [build-system]
