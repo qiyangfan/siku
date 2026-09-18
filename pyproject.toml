@@ -10,6 +10,11 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "typer>=0.12",
+    # 图谱包依赖（Phase 3）：内存图 + parquet 本体读写 + openai 兼容 LLM 通道。
+    # 三者均为轻依赖，不引入 torch 系重依赖与 server 形态组件（架构红线 #4、ADR-0003）
+    "httpx>=0.27",
+    "networkx>=3.3",
+    "pyarrow>=17.0",
 ]
 
 [project.scripts]

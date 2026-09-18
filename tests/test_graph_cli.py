@@ -1,0 +1,214 @@
+"""graph/wiki CLI 行为测试：人类/JSON 输出、缺 key 指引、图谱缺失、空语料、rebuild 路径。
+
+LLM 注入通过 monkeypatch 替换 siku.cli 的 LlmGraphExtractor/CommunitySummarizer；
+缺 key 路径走真实 LlmGraphExtractor（惰性校验，不打任何网络）。
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+from graph_fakes import FakeGraphExtractor
+from siku.cli import app
+from siku.graph.community import SUMMARIZER_ID, SUMMARY_PROMPT_VERSION
+from siku.graph.models import EntityMention, GraphExtraction, RelationMention
+from siku.graph.providers import DEFAULT_MODEL_ID
+from siku.retrieve.models import ChunkRecord
+
+runner = CliRunner()
+VAULT = "vault"
+
+
+def write_corpus(vault: Path) -> None:
+    note = vault / "notes" / "report--aaaaaaaaaaaa.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(
+        "---\n"
+        'title: "报告"\n'
+        f'source_hash: "{"b" * 64}"\n'
+        'source_name: "report.pdf"\n'
+        'source_id: "aaaaaaaaaaaa"\n'
+        'extractor: "PdfExtractor"\n'
+        "---\n"
+        "# 报告\n\n"
+        "## page:1\n\n张三来到北京，与李四见面。\n\n"
+        "## page:2\n\n北京是中国的首都。\n",
+        encoding="utf-8",
+    )
+
+
+def legal_extraction_for(chunk: ChunkRecord) -> GraphExtraction:
+    if "张三" in chunk.text:
+        return GraphExtraction(
+            entities=(
+                EntityMention(name="张三", type="人物", evidence=chunk.text[:10]),
+                EntityMention(name="北京", type="地点", evidence=chunk.text[:10]),
+                EntityMention(name="李四", type="人物", evidence=chunk.text[:10]),
+            ),
+            relations=(
+                RelationMention(
+                    source_name="张三", target_name="李四", type="会见", evidence=chunk.text[:10]
+                ),
+            ),
+        )
+    return GraphExtraction(
+        entities=(EntityMention(name="北京", type="地点", evidence=chunk.text[:10]),),
+        relations=(),
+    )
+
+
+class StubSummarizer:
+    # 身份与 CLI 图谱构建阶段的摘要键身份一致（generate_wiki 做一致性校验）
+    summarizer_id = SUMMARIZER_ID
+    model_id = DEFAULT_MODEL_ID
+    prompt_version = SUMMARY_PROMPT_VERSION
+
+    def summarize(self, members: object, relations: object) -> str:
+        return "张三与李四在北京见面的社区。"
+
+    def close(self) -> None:
+        """与 CommunitySummarizer 接口对齐。"""
+
+
+def patched_extractor() -> FakeGraphExtractor:
+    """身份字段与真实 LlmGraphExtractor 完全一致的 fake（缓存键才能对上）。"""
+    return FakeGraphExtractor(
+        extractor_id="llm-graph",
+        model_id="deepseek-chat",
+        prompt_version="v1",
+        respond=legal_extraction_for,
+    )
+
+
+@pytest.fixture()
+def patched_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[tuple[FakeGraphExtractor, StubSummarizer]]:
+    extractor = patched_extractor()
+    summarizer = StubSummarizer()
+    monkeypatch.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: extractor)
+    monkeypatch.setattr("siku.cli.CommunitySummarizer", lambda **kwargs: summarizer)
+    yield extractor, summarizer
+
+
+def graph_args(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "graph",
+        "--vault",
+        str(tmp_path / VAULT),
+        "--data-dir",
+        str(tmp_path / "data"),
+        *extra,
+    ]
+
+
+class TestGraphCommand:
+    def test_human_output_contains_report(self, tmp_path: Path, patched_llm: object) -> None:
+        write_corpus(tmp_path / VAULT)
+        result = runner.invoke(app, graph_args(tmp_path))
+        assert result.exit_code == 0
+        assert "图谱构建完成" in result.output
+        assert "节点=3" in result.output
+        assert "边=1" in result.output
+
+    def test_json_output_stable_fields(self, tmp_path: Path, patched_llm: object) -> None:
+        write_corpus(tmp_path / VAULT)
+        result = runner.invoke(app, graph_args(tmp_path, "--json"))
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["nodes"] == 3
+        assert payload["edges"] == 1
+        assert payload["llm_calls"] == 2
+        assert payload["cache_hits"] == 0
+        assert payload["warnings"] == []
+        assert payload["empty_corpus"] is False
+        assert payload["extractor"]["id"] == "llm-graph"
+
+    def test_missing_key_gives_chinese_guidance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write_corpus(tmp_path / VAULT)
+        monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        result = runner.invoke(app, graph_args(tmp_path))
+        assert result.exit_code == 1
+        assert "未配置 LLM API key" in result.output
+        assert "SIKU_LLM_API_KEY" in result.output
+
+    def test_cache_rebuild_works_without_key_lazy_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 惰性 key 校验：全部命中缓存时无需配置 key 也能重建图谱产物
+        write_corpus(tmp_path / VAULT)
+        with monkeypatch.context() as scoped:
+            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            first = runner.invoke(app, graph_args(tmp_path))
+            assert first.exit_code == 0
+        monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        second = runner.invoke(app, graph_args(tmp_path, "--json"))
+        assert second.exit_code == 0
+        payload = json.loads(second.output)
+        assert payload["cache_hits"] == 2
+        assert payload["llm_calls"] == 0
+
+    def test_rebuild_error_path_requires_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # --rebuild 忽略缓存强制重抽：缺 key 时必须中文报错且保留旧图谱产物
+        write_corpus(tmp_path / VAULT)
+        with monkeypatch.context() as scoped:
+            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            assert runner.invoke(app, graph_args(tmp_path)).exit_code == 0
+        monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        result = runner.invoke(app, graph_args(tmp_path, "--rebuild"))
+        assert result.exit_code == 1
+        assert "未配置 LLM API key" in result.output
+        # 失败的 rebuild 不得破坏既有图谱产物
+        after = runner.invoke(app, graph_args(tmp_path, "--json"))
+        assert after.exit_code == 0
+
+    def test_empty_corpus_succeeds_with_hint(self, tmp_path: Path) -> None:
+        (tmp_path / VAULT / "notes").mkdir(parents=True)
+        result = runner.invoke(app, graph_args(tmp_path, "--json"))
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["empty_corpus"] is True
+        assert payload["nodes"] == 0
+
+
+class TestWikiCommand:
+    def test_missing_graph_prompts_to_build(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["wiki", "--data-dir", str(tmp_path / "data")])
+        assert result.exit_code == 1
+        assert "siku graph" in result.output
+
+    def test_human_and_json_outputs(self, tmp_path: Path, patched_llm: object) -> None:
+        write_corpus(tmp_path / VAULT)
+        assert runner.invoke(app, graph_args(tmp_path)).exit_code == 0
+        human = runner.invoke(app, ["wiki", "--data-dir", str(tmp_path / "data")])
+        assert human.exit_code == 0
+        assert "wiki 生成完成" in human.output
+        json_result = runner.invoke(app, ["wiki", "--data-dir", str(tmp_path / "data"), "--json"])
+        assert json_result.exit_code == 0
+        payload = json.loads(json_result.output)
+        # 连通社区 + 孤立实体单例社区 = 2 个条目
+        assert payload["entries"] == 2
+        assert payload["cache_hits"] == 2
+        assert payload["llm_calls"] == 0
+        assert payload["empty_graph"] is False
+
+    def test_missing_key_gives_chinese_guidance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        write_corpus(tmp_path / VAULT)
+        with monkeypatch.context() as scoped:
+            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            assert runner.invoke(app, graph_args(tmp_path)).exit_code == 0
+        monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        result = runner.invoke(app, ["wiki", "--data-dir", str(tmp_path / "data")])
+        assert result.exit_code == 1
+        assert "未配置 LLM API key" in result.output

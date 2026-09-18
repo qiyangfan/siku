@@ -1,8 +1,10 @@
-"""依赖隔离测试：核心安装不得在 import 或运行时触碰重依赖（架构红线 #6）。
+"""依赖隔离测试：核心安装不得在 import 或运行时触碰重依赖（架构红线 #4）。
 
-通过子进程内的 meta-path 拦截器把 torch 系与向量运行时的导入全部变成
-ImportError，模拟"只装核心依赖"的环境——在装有 retrieval extra 的本机与
+通过子进程内的 meta-path 拦截器把 torch 系与向量运行时（lancedb）的导入全部
+变成 ImportError，模拟"只装核心依赖"的环境——在装有 retrieval extra 的本机与
 未安装的 CI 上行为一致。
+Phase 3 起 pyarrow 属核心依赖（ADR-0003 三件套内的 parquet 本体读写，
+design.md 显式声明），不再列入拦截名单。
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ PROBE_SCRIPT = """
 import importlib.abc
 import sys
 
-BLOCKED = {"torch", "sentence_transformers", "transformers", "lancedb", "pyarrow"}
+BLOCKED = {"torch", "sentence_transformers", "transformers", "lancedb"}
 
 
 class Blocker(importlib.abc.MetaPathFinder):

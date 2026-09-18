@@ -2938,6 +2938,9 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
+    { name = "networkx" },
+    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "typer" },
@@ -2971,8 +2974,11 @@ dev = [
 requires-dist = [
     { name = "docling", marker = "extra == 'ingest-pdf'", specifier = ">=2.0" },
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "lancedb", marker = "extra == 'retrieval'", specifier = ">=0.20" },
+    { name = "networkx", specifier = ">=3.3" },
     { name = "openpyxl", marker = "extra == 'ingest-office'", specifier = ">=3.1" },
+    { name = "pyarrow", specifier = ">=17.0" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "python-pptx", marker = "extra == 'ingest-office'", specifier = ">=1.0" },

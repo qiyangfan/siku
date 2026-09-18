@@ -7,11 +7,28 @@ import logging
 import os
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 
 from siku import __version__
+from siku.graph.errors import (
+    GraphArtifactsMissingError,
+    GraphArtifactsStaleError,
+    GraphError,
+    GraphExtractionError,
+    GraphStoreCorruptError,
+    LlmConnectionError,
+    LlmEmptyResponseError,
+    LlmInputTooLongError,
+    LlmNotConfiguredError,
+    LlmProviderError,
+    LlmRateLimitError,
+)
+from siku.graph.extractor import LlmGraphExtractor
+from siku.graph.providers import DEFAULT_API_KEY_ENV
+from siku.graph.report import SCALE_WARN_EDGES
+from siku.graph.service import build_graph
 from siku.ingest import IngestError, ingest_path
 from siku.retrieve.errors import (
     BaselineExistsError,
@@ -37,6 +54,8 @@ from siku.retrieve.local_models import (
 )
 from siku.retrieve.models import SearchOptions
 from siku.retrieve.service import SearchService
+from siku.wiki.service import generate_wiki
+from siku.wiki.summarizer import CommunitySummarizer
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +149,42 @@ def _retrieval_error_message(exc: RetrievalError) -> str:
     return "检索操作失败：请重试；若反复出现请执行 siku index --rebuild 重建索引；技术详情见日志。"
 
 
-def _fail(message: str, exc: Exception) -> None:
+def _fail(message: str, exc: Exception) -> NoReturn:
     # stderr 即 CLI 的用户面：技术细节降为 DEBUG 日志（SIKU_LOG_LEVEL=DEBUG 可见），
     # 用户面只呈现归一化的中文文案
     logger.debug("command failed: error_class=%s detail=%s", type(exc).__name__, exc, exc_info=True)
     typer.echo(message, err=True)
     raise typer.Exit(code=1) from exc
+
+
+def _graph_error_message(exc: GraphError, api_key_env: str) -> str:
+    """按错误类归一化为简体中文用户文案；异常细节进日志不进用户面。"""
+    if isinstance(exc, LlmNotConfiguredError):
+        return (
+            f"未配置 LLM API key：请先设置环境变量 {api_key_env} 为你的 openai 兼容服务 "
+            "API key（如 DeepSeek），再重新执行本命令。"
+        )
+    if isinstance(exc, LlmInputTooLongError):
+        return "LLM 输入超出模型上下文窗口：请更换长上下文模型后重试；已完成部分已入缓存。"
+    if isinstance(exc, LlmRateLimitError):
+        return "LLM 服务限流：请稍后重试；已完成部分已入缓存，重跑自动续传。"
+    if isinstance(exc, LlmConnectionError):
+        return "无法连接 LLM 服务：请检查网络与端点可达性后重试。"
+    if isinstance(exc, LlmEmptyResponseError):
+        return "LLM 返回了空内容：请重试；若反复出现请更换模型。"
+    if isinstance(exc, LlmProviderError):
+        return "LLM 服务调用失败：请检查 API key、端点与模型名称；技术详情见日志。"
+    if isinstance(exc, GraphExtractionError):
+        return "抽取输出解析失败：LLM 输出不符合约定的 JSON 结构；技术详情见日志。"
+    if isinstance(exc, GraphArtifactsMissingError):
+        return "图谱产物缺失：请先执行 siku graph 构建图谱，再生成 wiki。"
+    if isinstance(exc, GraphStoreCorruptError):
+        return (
+            "图谱派生产物已损坏：请删除 data/graph 目录后重新执行本命令，缓存与图谱会自动全量重建。"
+        )
+    if isinstance(exc, GraphArtifactsStaleError):
+        return "图谱产物与当前摘要配置不一致：请重新执行 siku graph 后再生成 wiki。"
+    return "图谱操作失败：请重试；技术详情见日志。"
 
 
 @app.command()
@@ -385,6 +434,125 @@ def evaluate_retrieval(
             typer.echo(f"基线已保存: {baseline_saved}")
     if passed is False:
         raise typer.Exit(code=1)
+
+
+@app.command()
+def graph(
+    vault: Annotated[Path, typer.Option("--vault", help="事实层 vault 目录。")] = DEFAULT_VAULT,
+    data_dir: Annotated[
+        Path, typer.Option("--data-dir", help="派生图谱数据目录。")
+    ] = DEFAULT_DATA_DIR,
+    api_key_env: Annotated[
+        str,
+        typer.Option(
+            "--api-key-env",
+            help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
+        ),
+    ] = DEFAULT_API_KEY_ENV,
+    rebuild: Annotated[
+        bool, typer.Option("--rebuild", help="忽略抽取缓存，强制全部重抽。")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
+) -> None:
+    """构建知识图谱并输出体检报告（LLM 抽取，BYO key）。"""
+    extractor = LlmGraphExtractor(api_key_env=api_key_env)
+    summarizer: CommunitySummarizer | None = None
+    try:
+        result = build_graph(vault, data_dir, extractor, rebuild=rebuild)
+        if result.empty_corpus:
+            # spec：空语料产出空图谱与空 wiki——零社区不产生任何 LLM 调用，
+            # 因此缺 key 也能完成空总目生成
+            summarizer = CommunitySummarizer(api_key_env=api_key_env)
+            generate_wiki(data_dir, summarizer)
+    except (GraphError, RetrievalError) as exc:
+        if isinstance(exc, RetrievalError):
+            _fail(f"图谱构建失败: {_retrieval_error_message(exc)}", exc)
+        _fail(f"图谱构建失败: {_graph_error_message(exc, api_key_env)}", exc)
+    finally:
+        extractor.close()
+        if summarizer is not None:
+            summarizer.close()
+    report = result.report
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "chunks": report.chunk_count,
+                    "nodes": report.node_count,
+                    "edges": report.edge_count,
+                    "communities": report.community_count,
+                    "ambiguous_entities": report.ambiguous_entity_count,
+                    "cache_hits": report.cache_hits,
+                    "llm_calls": report.llm_calls,
+                    "warnings": list(report.warnings),
+                    "empty_corpus": result.empty_corpus,
+                    "extractor": {
+                        "id": report.extractor_id,
+                        "model": report.model_id,
+                        "prompt_version": report.prompt_version,
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    typer.echo(
+        f"图谱构建完成: 节点={report.node_count} 边={report.edge_count} "
+        f"社区={report.community_count} 同名实体={report.ambiguous_entity_count}"
+    )
+    typer.echo(
+        f"抽取统计: chunks={report.chunk_count} 缓存命中={report.cache_hits} "
+        f"LLM调用={report.llm_calls} 模型={report.model_id}"
+    )
+    for code in report.warnings:
+        typer.echo(f"量级告警: {code}（图规模超过 {SCALE_WARN_EDGES} 边，属 ADR-0003 复核信号）")
+    if result.empty_corpus:
+        typer.echo("语料为空：已生成空图谱与空总目。")
+
+
+@app.command()
+def wiki(
+    data_dir: Annotated[
+        Path, typer.Option("--data-dir", help="派生图谱数据目录。")
+    ] = DEFAULT_DATA_DIR,
+    api_key_env: Annotated[
+        str,
+        typer.Option(
+            "--api-key-env",
+            help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
+        ),
+    ] = DEFAULT_API_KEY_ENV,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
+) -> None:
+    """生成 wiki 总目条目（每社区一篇，LLM 摘要，BYO key）。"""
+    summarizer = CommunitySummarizer(api_key_env=api_key_env)
+    try:
+        result = generate_wiki(data_dir, summarizer)
+    except (GraphError, RetrievalError) as exc:
+        if isinstance(exc, RetrievalError):
+            _fail(f"wiki 生成失败: {_retrieval_error_message(exc)}", exc)
+        _fail(f"wiki 生成失败: {_graph_error_message(exc, api_key_env)}", exc)
+    finally:
+        summarizer.close()
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "entries": result.entry_count,
+                    "cache_hits": result.cache_hits,
+                    "llm_calls": result.llm_calls,
+                    "empty_graph": result.empty_graph,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    typer.echo(
+        f"wiki 生成完成: 条目={result.entry_count} 缓存命中={result.cache_hits} "
+        f"LLM调用={result.llm_calls}"
+    )
+    if result.empty_graph:
+        typer.echo("语料为空：已生成空总目。")
 
 
 if __name__ == "__main__":

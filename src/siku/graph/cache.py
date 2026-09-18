@@ -1,0 +1,157 @@
+"""LLM 抽取缓存：SQLite（WAL）持久层，幂等重建闸门的存储基础。
+
+缓存键 = sha256(chunk_hash + extractor_id + model_id + prompt_version)：
+源与配置未变 → 命中缓存零次 LLM 调用；换模型或 prompt 版本 → 键变化显式重抽。
+同库内以命名空间隔离抽取缓存与社区摘要缓存（摘要键含独立 prompt 版本）。
+SQL 全部参数化（`?` 占位），禁止字符串拼接。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import sqlite3
+from pathlib import Path
+
+from siku.graph.errors import GraphExtractionError, GraphStoreCorruptError
+from siku.graph.models import GraphExtraction, extraction_from_payload, extraction_to_payload
+
+logger = logging.getLogger(__name__)
+
+SCHEMA_VERSION = 1
+NAMESPACE_EXTRACTION = "extraction"
+NAMESPACE_SUMMARY = "summary"
+
+# 字段分隔符使用控制字符，杜绝内容拼接歧义（与 chunk_id 派生同款）
+_KEY_SEPARATOR = "\x1f"
+
+_SCHEMA_SQL = (
+    """
+    CREATE TABLE IF NOT EXISTS cache_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS cache_entries (
+        namespace TEXT NOT NULL,
+        cache_key TEXT NOT NULL,
+        payload   TEXT NOT NULL,
+        PRIMARY KEY (namespace, cache_key)
+    )
+    """,
+)
+
+
+def build_cache_key(*parts: str) -> str:
+    """由身份组件派生确定性缓存键；组件经控制字符分隔避免拼接歧义。"""
+    payload = _KEY_SEPARATOR.join(parts)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def extraction_cache_key(
+    chunk_key: str,
+    extractor_id: str,
+    model_id: str,
+    prompt_version: str,
+) -> str:
+    """一个 chunk 的抽取缓存键（design.md 规定的四元组）。
+
+    `chunk_key` 传入 chunk_id：其派生（derive_chunk_id）已内嵌 source/anchor/
+    ordinal/正文，作为"源未变"的判定等价且更强——正文或结构任一变化即换键重抽。
+    """
+    return build_cache_key(chunk_key, extractor_id, model_id, prompt_version)
+
+
+class ExtractionCache:
+    """`cache.sqlite3` 的读写句柄；抽取与社区摘要共用，按命名空间隔离。"""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # 数据目录被文件占位/父目录只读：与 wiki 命令同场景对齐，
+            # 归一为领域错误给中文重建指引，不裸抛 FileExistsError
+            raise GraphStoreCorruptError(
+                f"Cannot create graph data directory {path.parent}: {exc}; "
+                "check filesystem permissions or remove the blocking file"
+            ) from exc
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(path)
+            connection.execute("PRAGMA journal_mode=WAL")
+            for statement in _SCHEMA_SQL:
+                connection.execute(statement)
+            connection.execute(
+                "INSERT OR REPLACE INTO cache_meta(key, value) VALUES ('schema_version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            connection.commit()
+        except sqlite3.Error as exc:
+            # 文件级损坏（垃圾字节/非 SQLite 文件/连接失败）归一为领域错误：
+            # 缓存是派生物，删除 data/graph 后即可全量重建
+            if connection is not None:
+                connection.close()
+            raise GraphStoreCorruptError(
+                f"Extraction cache at {path} is not a readable siku cache: {exc}; "
+                "delete the graph data directory to rebuild it"
+            ) from exc
+        except BaseException:
+            if connection is not None:
+                connection.close()
+            raise
+        self._connection = connection
+
+    def __enter__(self) -> ExtractionCache:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def journal_mode(self) -> str:
+        """返回当前 journal 模式（测试与运维诊断用）。"""
+        row = self._connection.execute("PRAGMA journal_mode").fetchone()
+        return str(row[0]) if row is not None else ""
+
+    def get_extraction(self, cache_key: str) -> GraphExtraction | None:
+        """取缓存抽取结果；未命中或 payload 损坏一律返回 None（自愈重抽）。"""
+        payload = self._get(NAMESPACE_EXTRACTION, cache_key)
+        if payload is None:
+            return None
+        try:
+            return extraction_from_payload(payload)
+        except GraphExtractionError:
+            logger.warning(
+                "corrupt extraction cache payload ignored, will re-extract: key=%s",
+                cache_key,
+            )
+            return None
+
+    def put_extraction(self, cache_key: str, extraction: GraphExtraction) -> None:
+        self._put(NAMESPACE_EXTRACTION, cache_key, extraction_to_payload(extraction))
+
+    def get_summary(self, cache_key: str) -> str | None:
+        """取缓存社区摘要（纯文本）；未命中返回 None。"""
+        return self._get(NAMESPACE_SUMMARY, cache_key)
+
+    def put_summary(self, cache_key: str, summary: str) -> None:
+        self._put(NAMESPACE_SUMMARY, cache_key, summary)
+
+    def _get(self, namespace: str, cache_key: str) -> str | None:
+        row = self._connection.execute(
+            "SELECT payload FROM cache_entries WHERE namespace = ? AND cache_key = ?",
+            (namespace, cache_key),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def _put(self, namespace: str, cache_key: str, payload: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO cache_entries(namespace, cache_key, payload) "
+                "VALUES (?, ?, ?)",
+                (namespace, cache_key, payload),
+            )
