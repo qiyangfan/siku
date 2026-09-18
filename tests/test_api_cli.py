@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -373,6 +374,10 @@ def test_serve_watch_stdin_wiring_marks_uvicorn_server_on_eof(
             self.should_exit = False
 
         def run(self) -> None:
+            # 模拟 uvicorn 主循环：只在 should_exit 置位后才返回，
+            # 消除 EOF 线程与立即返回之间的时序竞态
+            while not self.should_exit:
+                time.sleep(0.01)
             captured["should_exit_after_run"] = self.should_exit
 
     monkeypatch.setattr("siku.cli.uvicorn.Server", FakeServer)  # type: ignore[attr-defined]

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -91,6 +92,17 @@ def ensure_model_snapshots() -> dict[str, Path]:
     return snapshots
 
 
+def _link_or_copy(src: str, dst: str) -> None:
+    """同文件系统优先硬链接（6.4GB 权重零拷贝，CI runner 磁盘有限），失败再真拷贝。"""
+    if os.name == "posix":
+        try:
+            os.link(src, dst)
+            return
+        except OSError:
+            pass  # 跨文件系统或链接数超限时回退复制
+    shutil.copy2(src, dst)
+
+
 def copy_models(hub_dest: Path, snapshots: dict[str, Path]) -> None:
     """把模型快照复制成离线 hub 缓存布局：models/hub/models--<org>--<name>/。"""
     for repo, snapshot in snapshots.items():
@@ -99,7 +111,7 @@ def copy_models(hub_dest: Path, snapshots: dict[str, Path]) -> None:
         target = repo_dir / "snapshots" / revision
         print(f"[models] copying {repo} -> {target}", flush=True)
         # symlinks=False：把 blob 的软链解引用为真实文件，Windows 无 symlink 权限也能构建
-        shutil.copytree(snapshot, target, symlinks=False)
+        shutil.copytree(snapshot, target, symlinks=False, copy_function=_link_or_copy)
         refs_dir = repo_dir / "refs"
         refs_dir.mkdir(parents=True, exist_ok=True)
         (refs_dir / "main").write_text(revision, encoding="utf-8")

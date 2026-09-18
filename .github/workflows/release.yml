@@ -91,6 +91,17 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
+      # 模型快照 + PyInstaller 产物 + torch venv 合计 ~30GB，超出 ubuntu runner 默认可用空间，
+      # 必须先回收预装工具链占位（~25GB），否则构建中途磁盘耗尽
+      - name: 释放 runner 磁盘空间
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost /usr/lib/jvm /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          df -h /
+
       - name: 同步 Python 运行时（锁定 uv.lock + retrieval extra）
         run: uv sync --locked --extra retrieval
 
