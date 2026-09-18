@@ -31,8 +31,9 @@ pyarrow（已随 lancedb 进入依赖树，作为 graph 包的显式声明依赖
 
 ```python
 class GraphExtractor(Protocol):
-    extractor_id: str          # 如 "llm-deepseek-chat"
-    prompt_version: str        # 进入缓存键，prompt 变更即失效旧缓存
+    extractor_id: str  # 如 "llm-deepseek-chat"
+    prompt_version: str  # 进入缓存键，prompt 变更即失效旧缓存
+
     def extract(self, chunk: ChunkRecord) -> GraphExtraction: ...
 ```
 
