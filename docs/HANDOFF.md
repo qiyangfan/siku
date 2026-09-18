@@ -10,22 +10,26 @@
 
 ## 现状
 
-- **Phase 0/1/2/3 全部完成并合入 main**。Phase 3（图谱与 wiki 纵切面）归档为
-  `2026-09-18-add-graph-wiki-vertical-slice`，graph-wiki spec 已同步（6 Requirement），
-  ROADMAP 已勾稽。全仓 369 测试绿，mypy/ruff/pre-commit/openspec strict 全过。
-- 交付：`src/siku/graph/`（协议抽取/五剧本错误/SQLite WAL 缓存/合并/社区/parquet/
-  体检）+ `src/siku/wiki/`（摘要/确定性渲染/编排）+ CLI `siku graph`/`siku wiki`。
-  幂等闸门与种子敏感确定性闸门有自动化证据（`tests/test_graph_idempotence.py`、
-  `test_graph_community.py`）；五轮独立评审循环收敛 CLEAN（记录在归档 change 的
-  review.md）；真实冒烟已过（DeepSeek 通道 10 次调用，质量复核合格）。
-- 依赖纪律：httpx/networkx/pyarrow 已进核心依赖（轻依赖，红线 #4 不受影响）；
-  pyarrow 相应移出隔离测试拦截名单。
+- **Phase 0/1/2/3 全部完成并合入 main**（CI 绿）。Phase 3 归档
+  `2026-09-18-add-graph-wiki-vertical-slice`，graph-wiki spec 已同步；**双通道真实
+  冒烟均通过**（DeepSeek 10 次调用、Qwen qwen-plus 11 次调用，二轮零调用全缓存命中，
+  幂等闸门双通道成立）。全仓 369 测试绿，mypy/ruff/pre-commit/openspec strict 全过。
+- **Phase 4 已 propose 待 apply**：`openspec/changes/add-http-api-vertical-slice/`
+  全件（proposal/design/specs/http-api/tasks，13 项）已过 strict 校验，**未写任何
+  行为代码**。范围 = FastAPI 五端点契约（health/ingest/search/graph/wiki）+ 领域错误
+  → HTTP 归一映射 + OpenAPI 快照冻结（`contracts/openapi.json`）+ `siku serve` +
+  CLI `--llm-base-url/--llm-model` 透传（muniu 评估决议落地）。
+- **muniu 评估决议（2026-09-18）**：不做代码级对接，靠 openai 兼容契约两项切换
+  （kongming 同款）；参数透传并入本 change；**经 muniu 时 siku 租户语义缓存必须
+  关闭**（模糊命中破坏幂等闸门）——已写入 change 任务与 spec 场景。
 
 ## 下一步（唯一）
 
-Phase 4 WebUI 最小集：先对齐 ROADMAP/ADR-0002 开 change 冻结 FastAPI 三端点契约
-（摄取/检索/图谱），UI 侧零业务逻辑（红线 #1；UI 评审走 ui-quality-gate 闸门）。
-图谱检索通道（图遍历召回）属按需叠加，不在 Phase 4 默认范围。
+新会话从 main 派生 `feature/phase4-http-api`，**apply**
+`add-http-api-vertical-slice/tasks.md`（13 项，测试先行，粒度 ≤2h）：应用工厂 →
+错误映射 → 四个 POST 端点 → 契约快照 → `siku serve` → CLI 透传 → muniu 文档 →
+全量门禁 + review.md + 归档同步 http-api spec。完成后 React UI（浏览/图视图/对话）
+另立 change（UI 评审走 ui-quality-gate 闸门）。
 
 ## 验证命令
 
@@ -41,9 +45,10 @@ openspec validate --changes --strict && openspec validate --specs --strict
 - LanceDB 0.38 `list_tables()` 新连接可见性竞态——向量表探测必须用
   `open_table()`（`vector_store.py` 有注释）。
 - 基线 v0 生成于 macOS arm64 / Python 3.12.13；跨机 ±0.01 浮动正常，门禁带容差。
+- CI 的 `ruff format --check .` 会连 Markdown 代码块一起检查（59a3a73 已清零，
+  新增 .md 内代码块注意格式）。
+- BYO key：`DEEPSEEK_API_KEY`（默认通道）与 `QWEN_API_KEY`（DashScope qwen-plus）
+  均已实测可用。换通道必须同步 `summary_identity=SummaryIdentity(model_id=...)`
+  给 `build_graph`，否则 wiki 按设计抛 `GraphArtifactsStaleError`（真实场景已实证）。
 - `siku graph` 的 key 校验是惰性的：全部命中缓存时无需 key；`--rebuild` 必须配 key。
   排查日志用 `SIKU_LOG_LEVEL=DEBUG`。
-- BYO key：`DEEPSEEK_API_KEY`（默认通道）与 `QWEN_API_KEY`（DashScope 兼容端点，
-  qwen-plus）均已实测可用；换通道必须同步传 `summary_identity=SummaryIdentity(
-  model_id=...)` 给 `build_graph`，否则 wiki 阶段会按设计拒绝（GraphArtifactsStaleError）。
-  冒烟脚本范式见归档 change review.md。
