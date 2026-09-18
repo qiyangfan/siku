@@ -45,6 +45,26 @@ uv sync
 uv run siku version
 ```
 
+### 经 muniu 网关使用（可选）
+
+muniu 提供 openai 兼容端点时，无需 siku 侧代码级对接；执行图谱或 wiki 命令时切换
+端点和模型即可：
+
+```bash
+uv run siku graph \
+  --llm-base-url http://127.0.0.1:8787/v1 \
+  --llm-model <muniu 模型别名> \
+  --api-key-env MUNIU_API_KEY
+uv run siku wiki \
+  --llm-base-url http://127.0.0.1:8787/v1 \
+  --llm-model <muniu 模型别名> \
+  --api-key-env MUNIU_API_KEY
+```
+
+经 muniu 使用 siku 时，必须关闭 siku 租户的语义缓存：模糊命中可能破坏重建 diff
+为空的幂等闸门。切换通道或模型后，图谱与 wiki 必须使用同一个模型身份；否则摘要身份
+校验会拒绝复用旧图谱产物，应先用新参数重新执行 `siku graph`。
+
 ## 开发
 
 ```bash

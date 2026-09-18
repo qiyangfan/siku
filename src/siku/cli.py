@@ -10,43 +10,34 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
+import uvicorn
 
 from siku import __version__
+from siku.api.app import create_app
+from siku.api.messages import (
+    graph_error_message as _graph_error_message,
+)
+from siku.api.messages import (
+    ingest_error_message,
+)
+from siku.api.messages import (
+    retrieval_error_message as _retrieval_error_message,
+)
+from siku.graph.community import SummaryIdentity
 from siku.graph.errors import (
-    GraphArtifactsMissingError,
-    GraphArtifactsStaleError,
     GraphError,
-    GraphExtractionError,
-    GraphStoreCorruptError,
-    LlmConnectionError,
-    LlmEmptyResponseError,
-    LlmInputTooLongError,
-    LlmNotConfiguredError,
-    LlmProviderError,
-    LlmRateLimitError,
 )
 from siku.graph.extractor import LlmGraphExtractor
-from siku.graph.providers import DEFAULT_API_KEY_ENV
+from siku.graph.providers import (
+    DEFAULT_API_KEY_ENV,
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL_ID,
+    HttpxLlmProvider,
+)
 from siku.graph.report import SCALE_WARN_EDGES
 from siku.graph.service import build_graph
 from siku.ingest import IngestError, ingest_path
-from siku.retrieve.errors import (
-    BaselineExistsError,
-    EvaluationError,
-    FixtureMismatchError,
-    FtsUnavailableError,
-    GoldenSetError,
-    IndexBusyError,
-    IndexCorruptError,
-    IndexUnavailableError,
-    InvalidQueryError,
-    ModelConfigMismatchError,
-    ModelNotAvailableError,
-    NoteParseError,
-    NotesDirMissingError,
-    ProviderError,
-    RetrievalError,
-)
+from siku.retrieve.errors import EvaluationError, RetrievalError
 from siku.retrieve.indexer import sync_index
 from siku.retrieve.local_models import (
     LocalEmbeddingProvider,
@@ -93,98 +84,12 @@ def version() -> None:
     typer.echo(f"siku {__version__}")
 
 
-def _retrieval_error_message(exc: RetrievalError) -> str:
-    """按错误类归一化为简体中文用户文案；异常细节进日志不进用户面。"""
-    if isinstance(exc, ModelNotAvailableError):
-        return (
-            "检索模型不可用：本地检索依赖 retrieval 扩展，"
-            "请先执行 uv sync --extra retrieval 安装；模型文件将在首次使用时自动下载。"
-        )
-    if isinstance(exc, ModelConfigMismatchError):
-        return "已建索引的模型配置与当前不一致：请执行 siku index --rebuild 显式重建索引。"
-    if isinstance(exc, IndexCorruptError):
-        return "检索索引已损坏：请执行 siku index --rebuild 重建索引。"
-    if isinstance(exc, IndexBusyError):
-        return "检索索引暂不可用：可能正在重建索引，请稍后重试。"
-    if isinstance(exc, IndexUnavailableError):
-        return "检索索引不可用：请先执行 siku index 建立索引。"
-    if isinstance(exc, InvalidQueryError):
-        return "查询无效：请输入包含有效检索词的非空查询。"
-    if isinstance(exc, NotesDirMissingError):
-        return "未找到 vault/notes 目录：请先执行 siku ingest 摄取文档，再执行 siku index。"
-    if isinstance(exc, NoteParseError):
-        return (
-            "投影解析失败：vault/notes 下的 Markdown 投影缺失必需 frontmatter 字段或格式不符；"
-            "技术详情见日志。"
-        )
-    if isinstance(exc, ProviderError):
-        return "模型推理失败：请检查本地模型文件与运行环境后重试；技术详情见日志。"
-    if isinstance(exc, FtsUnavailableError):
-        return (
-            "当前 SQLite 缺少 FTS5 全文检索能力："
-            "请更换为启用 SQLITE_ENABLE_FTS5 的 Python 构建后重试。"
-        )
-    if isinstance(exc, GoldenSetError):
-        return (
-            "golden set 文件格式不合法：请检查 JSONL 每行的 id、query、expected 字段；"
-            "技术详情见日志。"
-        )
-    if isinstance(exc, BaselineExistsError):
-        return (
-            "已存在同名基线文件：为保留历史证据，旧基线不可覆盖；"
-            "请改用新的版本号路径（如 retrieval-baseline-v1.json）。"
-        )
-    if isinstance(exc, FixtureMismatchError):
-        return (
-            "基线快照与当前 golden set 内容指纹不一致：请改用与该基线配套的 fixture，"
-            "或显式生成新版本基线；技术详情见日志。"
-        )
-    if isinstance(exc, EvaluationError):
-        return (
-            "评测执行失败：基线快照缺失或损坏。"
-            "首次运行请加 --save-baseline 生成基线；已有基线请用 --baseline 指定文件；"
-            "技术详情见日志。"
-        )
-    # 兜底：未归类的检索错误也必须以中文呈现，技术细节留在日志
-    return "检索操作失败：请重试；若反复出现请执行 siku index --rebuild 重建索引；技术详情见日志。"
-
-
 def _fail(message: str, exc: Exception) -> NoReturn:
     # stderr 即 CLI 的用户面：技术细节降为 DEBUG 日志（SIKU_LOG_LEVEL=DEBUG 可见），
     # 用户面只呈现归一化的中文文案
     logger.debug("command failed: error_class=%s detail=%s", type(exc).__name__, exc, exc_info=True)
     typer.echo(message, err=True)
     raise typer.Exit(code=1) from exc
-
-
-def _graph_error_message(exc: GraphError, api_key_env: str) -> str:
-    """按错误类归一化为简体中文用户文案；异常细节进日志不进用户面。"""
-    if isinstance(exc, LlmNotConfiguredError):
-        return (
-            f"未配置 LLM API key：请先设置环境变量 {api_key_env} 为你的 openai 兼容服务 "
-            "API key（如 DeepSeek），再重新执行本命令。"
-        )
-    if isinstance(exc, LlmInputTooLongError):
-        return "LLM 输入超出模型上下文窗口：请更换长上下文模型后重试；已完成部分已入缓存。"
-    if isinstance(exc, LlmRateLimitError):
-        return "LLM 服务限流：请稍后重试；已完成部分已入缓存，重跑自动续传。"
-    if isinstance(exc, LlmConnectionError):
-        return "无法连接 LLM 服务：请检查网络与端点可达性后重试。"
-    if isinstance(exc, LlmEmptyResponseError):
-        return "LLM 返回了空内容：请重试；若反复出现请更换模型。"
-    if isinstance(exc, LlmProviderError):
-        return "LLM 服务调用失败：请检查 API key、端点与模型名称；技术详情见日志。"
-    if isinstance(exc, GraphExtractionError):
-        return "抽取输出解析失败：LLM 输出不符合约定的 JSON 结构；技术详情见日志。"
-    if isinstance(exc, GraphArtifactsMissingError):
-        return "图谱产物缺失：请先执行 siku graph 构建图谱，再生成 wiki。"
-    if isinstance(exc, GraphStoreCorruptError):
-        return (
-            "图谱派生产物已损坏：请删除 data/graph 目录后重新执行本命令，缓存与图谱会自动全量重建。"
-        )
-    if isinstance(exc, GraphArtifactsStaleError):
-        return "图谱产物与当前摘要配置不一致：请重新执行 siku graph 后再生成 wiki。"
-    return "图谱操作失败：请重试；技术详情见日志。"
 
 
 @app.command()
@@ -196,7 +101,7 @@ def ingest(
     try:
         report = ingest_path(source, vault)
     except IngestError as exc:
-        _fail(f"摄取失败: {exc}", exc)
+        _fail(ingest_error_message(exc), exc)
     typer.echo(
         "摄取完成: "
         f"created={report.created} updated={report.updated} "
@@ -449,20 +354,46 @@ def graph(
             help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
         ),
     ] = DEFAULT_API_KEY_ENV,
+    llm_base_url: Annotated[
+        str,
+        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL。"),
+    ] = DEFAULT_BASE_URL,
+    llm_model: Annotated[
+        str,
+        typer.Option("--llm-model", help="LLM 模型名称。"),
+    ] = DEFAULT_MODEL_ID,
     rebuild: Annotated[
         bool, typer.Option("--rebuild", help="忽略抽取缓存，强制全部重抽。")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
     """构建知识图谱并输出体检报告（LLM 抽取，BYO key）。"""
-    extractor = LlmGraphExtractor(api_key_env=api_key_env)
+    extractor = LlmGraphExtractor(
+        provider=HttpxLlmProvider(
+            base_url=llm_base_url,
+            model_id=llm_model,
+            api_key_env=api_key_env,
+        )
+    )
     summarizer: CommunitySummarizer | None = None
     try:
-        result = build_graph(vault, data_dir, extractor, rebuild=rebuild)
+        result = build_graph(
+            vault,
+            data_dir,
+            extractor,
+            rebuild=rebuild,
+            summary_identity=SummaryIdentity(model_id=llm_model),
+        )
         if result.empty_corpus:
             # spec：空语料产出空图谱与空 wiki——零社区不产生任何 LLM 调用，
             # 因此缺 key 也能完成空总目生成
-            summarizer = CommunitySummarizer(api_key_env=api_key_env)
+            summarizer = CommunitySummarizer(
+                provider=HttpxLlmProvider(
+                    base_url=llm_base_url,
+                    model_id=llm_model,
+                    api_key_env=api_key_env,
+                )
+            )
             generate_wiki(data_dir, summarizer)
     except (GraphError, RetrievalError) as exc:
         if isinstance(exc, RetrievalError):
@@ -522,10 +453,24 @@ def wiki(
             help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
         ),
     ] = DEFAULT_API_KEY_ENV,
+    llm_base_url: Annotated[
+        str,
+        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL。"),
+    ] = DEFAULT_BASE_URL,
+    llm_model: Annotated[
+        str,
+        typer.Option("--llm-model", help="LLM 模型名称。"),
+    ] = DEFAULT_MODEL_ID,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
     """生成 wiki 总目条目（每社区一篇，LLM 摘要，BYO key）。"""
-    summarizer = CommunitySummarizer(api_key_env=api_key_env)
+    summarizer = CommunitySummarizer(
+        provider=HttpxLlmProvider(
+            base_url=llm_base_url,
+            model_id=llm_model,
+            api_key_env=api_key_env,
+        )
+    )
     try:
         result = generate_wiki(data_dir, summarizer)
     except (GraphError, RetrievalError) as exc:
@@ -553,6 +498,24 @@ def wiki(
     )
     if result.empty_graph:
         typer.echo("语料为空：已生成空总目。")
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option("--host", help="监听地址，默认仅本机可访问。")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", min=1, max=65535, help="监听端口。")] = 8000,
+    with_ui: Annotated[bool, typer.Option("--with-ui", help="挂载 ui/dist 静态前端。")] = False,
+) -> None:
+    """启动 localhost HTTP API 服务。"""
+    ui_dir: Path | None = None
+    if with_ui:
+        ui_dir = Path("ui/dist")
+        if not ui_dir.is_dir():
+            _fail(f"UI 静态目录不存在：{ui_dir}", FileNotFoundError(str(ui_dir)))
+    if host == "0.0.0.0":
+        typer.echo("警告：服务将监听所有网卡，请确认这是你的明确选择。", err=True)
+    application = create_app(ui_dir=ui_dir)
+    uvicorn.run(application, host=host, port=port)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,613 @@
+{
+  "x-siku-generated-by": "uv run python -m siku.api.contract --refresh",
+  "openapi": "3.1.0",
+  "info": {
+    "title": "siku API",
+    "description": "siku 本地优先知识库的 localhost HTTP API。",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ingest": {
+      "post": {
+        "summary": "Ingest",
+        "operationId": "ingest_api_ingest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search": {
+      "post": {
+        "summary": "Search",
+        "operationId": "search_api_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/graph": {
+      "post": {
+        "summary": "Graph",
+        "operationId": "graph_api_graph_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GraphRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wiki": {
+      "post": {
+        "summary": "Wiki",
+        "operationId": "wiki_api_wiki_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WikiRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WikiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "GraphExtractorResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "prompt_version": {
+            "type": "string",
+            "title": "Prompt Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "model",
+          "prompt_version"
+        ],
+        "title": "GraphExtractorResponse",
+        "description": "图谱抽取器身份。"
+      },
+      "GraphRequest": {
+        "properties": {
+          "vault": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "path"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vault"
+          },
+          "data_dir": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "path"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Dir"
+          },
+          "rebuild": {
+            "type": "boolean",
+            "title": "Rebuild",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "GraphRequest",
+        "description": "图谱构建请求。"
+      },
+      "GraphResponse": {
+        "properties": {
+          "chunks": {
+            "type": "integer",
+            "title": "Chunks"
+          },
+          "nodes": {
+            "type": "integer",
+            "title": "Nodes"
+          },
+          "edges": {
+            "type": "integer",
+            "title": "Edges"
+          },
+          "communities": {
+            "type": "integer",
+            "title": "Communities"
+          },
+          "ambiguous_entities": {
+            "type": "integer",
+            "title": "Ambiguous Entities"
+          },
+          "cache_hits": {
+            "type": "integer",
+            "title": "Cache Hits"
+          },
+          "llm_calls": {
+            "type": "integer",
+            "title": "Llm Calls"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          },
+          "empty_corpus": {
+            "type": "boolean",
+            "title": "Empty Corpus"
+          },
+          "extractor": {
+            "$ref": "#/components/schemas/GraphExtractorResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunks",
+          "nodes",
+          "edges",
+          "communities",
+          "ambiguous_entities",
+          "cache_hits",
+          "llm_calls",
+          "warnings",
+          "empty_corpus",
+          "extractor"
+        ],
+        "title": "GraphResponse",
+        "description": "与 `siku graph --json` 同构的体检报告。"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealthResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version"
+        ],
+        "title": "HealthResponse",
+        "description": "健康检查响应。"
+      },
+      "IngestRequest": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "format": "path",
+            "title": "Source"
+          },
+          "vault": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "path"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vault"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source"
+        ],
+        "title": "IngestRequest",
+        "description": "摄取请求。"
+      },
+      "IngestResponse": {
+        "properties": {
+          "created": {
+            "type": "integer",
+            "title": "Created"
+          },
+          "updated": {
+            "type": "integer",
+            "title": "Updated"
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped"
+          },
+          "ignored": {
+            "type": "integer",
+            "title": "Ignored"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "updated",
+          "skipped",
+          "ignored"
+        ],
+        "title": "IngestResponse",
+        "description": "来源级摄取统计。"
+      },
+      "SearchRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "top_k": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 10
+          },
+          "candidate_k": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Candidate K",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "SearchRequest",
+        "description": "检索请求。"
+      },
+      "SearchResponse": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "top_k": {
+            "type": "integer",
+            "title": "Top K"
+          },
+          "candidate_k": {
+            "type": "integer",
+            "title": "Candidate K"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SearchResultResponse"
+            },
+            "type": "array",
+            "title": "Results"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "top_k",
+          "candidate_k",
+          "results"
+        ],
+        "title": "SearchResponse",
+        "description": "与 `siku search --json` 同构的检索响应。"
+      },
+      "SearchResultResponse": {
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name"
+          },
+          "note_path": {
+            "type": "string",
+            "title": "Note Path"
+          },
+          "source_hash": {
+            "type": "string",
+            "title": "Source Hash"
+          },
+          "anchor": {
+            "type": "string",
+            "title": "Anchor"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "bm25_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bm25 Score"
+          },
+          "vector_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Score"
+          },
+          "hybrid_score": {
+            "type": "number",
+            "title": "Hybrid Score"
+          },
+          "rerank_score": {
+            "type": "number",
+            "title": "Rerank Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_id",
+          "source_name",
+          "note_path",
+          "source_hash",
+          "anchor",
+          "text",
+          "bm25_score",
+          "vector_score",
+          "hybrid_score",
+          "rerank_score"
+        ],
+        "title": "SearchResultResponse",
+        "description": "带来源锚点和阶段分数的检索结果。"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WikiRequest": {
+        "properties": {
+          "data_dir": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "path"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Dir"
+          }
+        },
+        "type": "object",
+        "title": "WikiRequest",
+        "description": "wiki 生成请求。"
+      },
+      "WikiResponse": {
+        "properties": {
+          "entries": {
+            "type": "integer",
+            "title": "Entries"
+          },
+          "cache_hits": {
+            "type": "integer",
+            "title": "Cache Hits"
+          },
+          "llm_calls": {
+            "type": "integer",
+            "title": "Llm Calls"
+          },
+          "empty_graph": {
+            "type": "boolean",
+            "title": "Empty Graph"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entries",
+          "cache_hits",
+          "llm_calls",
+          "empty_graph"
+        ],
+        "title": "WikiResponse",
+        "description": "与 `siku wiki --json` 同构的生成统计。"
+      }
+    }
+  }
+}
