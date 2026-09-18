@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
+from siku.qa.models import MAX_CANDIDATE_K, MAX_QUESTION_CHARS, MAX_TOP_K
 from siku.retrieve.models import SearchOptions
 
 
@@ -69,6 +70,52 @@ class SearchResponse(BaseModel):
     top_k: int
     candidate_k: int
     results: list[SearchResultResponse]
+
+
+class AskRequest(BaseModel):
+    """单轮问答请求。"""
+
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    top_k: int = Field(default=6, ge=1, le=MAX_TOP_K)
+    candidate_k: int = Field(default=30, ge=1, le=MAX_CANDIDATE_K)
+
+    @model_validator(mode="after")
+    def validate_rank_limits(self) -> AskRequest:
+        if self.top_k > self.candidate_k:
+            raise ValueError("top_k must not exceed candidate_k")
+        return self
+
+
+class AskCitationResponse(BaseModel):
+    """问答回答中的来源引用。"""
+
+    citation_id: str
+    source_name: str
+    note_path: str
+    anchor: str
+    chunk_id: str
+    source_hash: str
+    text: str
+
+
+class AskRetrievalResponse(BaseModel):
+    """问答响应中的检索摘要。"""
+
+    top_k: int
+    candidate_k: int
+    result_count: int
+
+
+class AskResponse(BaseModel):
+    """带来源的单轮问答响应。"""
+
+    request_id: str
+    question: str
+    answer: str
+    insufficient_evidence: bool
+    citations: list[AskCitationResponse]
+    retrieval: AskRetrievalResponse
+    model: str
 
 
 class GraphRequest(BaseModel):

@@ -46,6 +46,35 @@ class ErrorMapping:
     message: str
 
 
+def map_ask_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
+    """映射问答错误；不复用图谱的缓存/续传文案。"""
+    if isinstance(exc, LlmNotConfiguredError):
+        return ErrorMapping(
+            503,
+            "llm_not_configured",
+            f"未配置 LLM API key：请先设置环境变量 {api_key_env}，再重试问答。",
+        )
+    if isinstance(exc, LlmInputTooLongError):
+        return ErrorMapping(
+            503,
+            "llm_input_too_long",
+            "问答上下文或模型输入过长：请减少检索范围或更换上下文窗口更大的模型。",
+        )
+    if isinstance(exc, LlmRateLimitError):
+        return ErrorMapping(503, "llm_rate_limited", "LLM 服务限流：请稍后重试。")
+    if isinstance(exc, LlmConnectionError):
+        return ErrorMapping(503, "llm_connection_error", "无法连接 LLM 服务：请检查端点后重试。")
+    if isinstance(exc, LlmEmptyResponseError):
+        return ErrorMapping(503, "llm_empty_response", "LLM 返回了空内容：请重试或更换模型。")
+    if isinstance(exc, LlmProviderError):
+        return ErrorMapping(
+            503,
+            "llm_provider_error",
+            "LLM 未返回可验证的问答结果：请检查配置后重试。",
+        )
+    return map_domain_error(exc, api_key_env=api_key_env)
+
+
 def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
     """将领域错误映射为稳定状态码、错误码和中文文案。"""
     if isinstance(exc, IngestError):

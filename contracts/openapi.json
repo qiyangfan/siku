@@ -101,6 +101,44 @@
         }
       }
     },
+    "/api/ask": {
+      "post": {
+        "summary": "Ask",
+        "operationId": "ask_api_ask_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AskResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/graph": {
       "post": {
         "summary": "Graph",
@@ -180,6 +218,150 @@
   },
   "components": {
     "schemas": {
+      "AskCitationResponse": {
+        "properties": {
+          "citation_id": {
+            "type": "string",
+            "title": "Citation Id"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name"
+          },
+          "note_path": {
+            "type": "string",
+            "title": "Note Path"
+          },
+          "anchor": {
+            "type": "string",
+            "title": "Anchor"
+          },
+          "chunk_id": {
+            "type": "string",
+            "title": "Chunk Id"
+          },
+          "source_hash": {
+            "type": "string",
+            "title": "Source Hash"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "citation_id",
+          "source_name",
+          "note_path",
+          "anchor",
+          "chunk_id",
+          "source_hash",
+          "text"
+        ],
+        "title": "AskCitationResponse",
+        "description": "问答回答中的来源引用。"
+      },
+      "AskRequest": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Question"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 6
+          },
+          "candidate_k": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Candidate K",
+            "default": 30
+          }
+        },
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "description": "单轮问答请求。"
+      },
+      "AskResponse": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "question": {
+            "type": "string",
+            "title": "Question"
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "insufficient_evidence": {
+            "type": "boolean",
+            "title": "Insufficient Evidence"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/AskCitationResponse"
+            },
+            "type": "array",
+            "title": "Citations"
+          },
+          "retrieval": {
+            "$ref": "#/components/schemas/AskRetrievalResponse"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "question",
+          "answer",
+          "insufficient_evidence",
+          "citations",
+          "retrieval",
+          "model"
+        ],
+        "title": "AskResponse",
+        "description": "带来源的单轮问答响应。"
+      },
+      "AskRetrievalResponse": {
+        "properties": {
+          "top_k": {
+            "type": "integer",
+            "title": "Top K"
+          },
+          "candidate_k": {
+            "type": "integer",
+            "title": "Candidate K"
+          },
+          "result_count": {
+            "type": "integer",
+            "title": "Result Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "top_k",
+          "candidate_k",
+          "result_count"
+        ],
+        "title": "AskRetrievalResponse",
+        "description": "问答响应中的检索摘要。"
+      },
       "GraphExtractorResponse": {
         "properties": {
           "id": {

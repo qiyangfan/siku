@@ -57,6 +57,40 @@ def test_serve_defaults_to_loopback_and_warns_on_explicit_public_bind(
     assert calls[-1][1:] == ("0.0.0.0", 8000)
 
 
+def test_serve_passes_shared_llm_configuration_to_api(
+    monkeypatch: object,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_create_app(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "siku.cli.uvicorn.run",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "serve",
+            "--api-key-env",
+            "CUSTOM_KEY",
+            "--llm-base-url",
+            "http://127.0.0.1:8787/v1",
+            "--llm-model",
+            "custom-model",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["api_key_env"] == "CUSTOM_KEY"
+    assert captured["llm_base_url"] == "http://127.0.0.1:8787/v1"
+    assert captured["llm_model"] == "custom-model"
+
+
 def test_cli_llm_options_reach_provider_and_summary_identity(
     monkeypatch: object,
     tmp_path: Path,

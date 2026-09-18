@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,8 +17,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from siku import __version__
-from siku.api.messages import map_domain_error
+from siku.api.messages import map_ask_error, map_domain_error
 from siku.api.models import (
+    AskCitationResponse,
+    AskRequest,
+    AskResponse,
+    AskRetrievalResponse,
     ErrorResponse,
     GraphExtractorResponse,
     GraphRequest,
@@ -34,9 +39,16 @@ from siku.api.models import (
 from siku.graph.community import SummaryIdentity
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.models import GraphExtractor
-from siku.graph.providers import DEFAULT_API_KEY_ENV
+from siku.graph.providers import (
+    DEFAULT_API_KEY_ENV,
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL_ID,
+    HttpxLlmProvider,
+)
 from siku.graph.service import GraphBuildResult, build_graph
 from siku.ingest import IngestReport, ingest_path
+from siku.qa.providers import AnswerProvider
+from siku.qa.service import AnswerService
 from siku.retrieve.errors import InvalidQueryError
 from siku.retrieve.local_models import LocalEmbeddingProvider, LocalRerankerProvider
 from siku.retrieve.models import SearchOptions
@@ -57,6 +69,7 @@ GraphExtractorFactory = Callable[[], GraphExtractor]
 GraphBuilder = Callable[..., GraphBuildResult]
 SummarizerFactory = Callable[[], Summarizer]
 WikiGenerator = Callable[[Path, Summarizer], WikiResult]
+AnswerProviderFactory = Callable[[], AnswerProvider]
 
 
 def _default_search_service(data_dir: Path) -> SearchService:
@@ -81,12 +94,15 @@ def create_app(
     vault: Path = DEFAULT_VAULT,
     data_dir: Path = DEFAULT_DATA_DIR,
     api_key_env: str = DEFAULT_API_KEY_ENV,
+    llm_base_url: str = DEFAULT_BASE_URL,
+    llm_model: str = DEFAULT_MODEL_ID,
     ingest_handler: IngestHandler = ingest_path,
     search_service_factory: SearchServiceFactory = _default_search_service,
     graph_extractor_factory: GraphExtractorFactory | None = None,
     graph_builder: GraphBuilder = build_graph,
     summarizer_factory: SummarizerFactory | None = None,
     wiki_generator: WikiGenerator = generate_wiki,
+    answer_provider_factory: AnswerProviderFactory | None = None,
     ui_dir: Path | None = None,
 ) -> FastAPI:
     """创建一个可测试的 localhost API 应用。"""
@@ -106,21 +122,45 @@ def create_app(
     application.state.vault = vault
     application.state.data_dir = data_dir
     application.state.api_key_env = api_key_env
+    application.state.llm_base_url = llm_base_url
+    application.state.llm_model = llm_model
     application.state.ingest_handler = ingest_handler
     application.state.search_service_factory = search_service_factory
     application.state.graph_extractor_factory = graph_extractor_factory or (
-        lambda: LlmGraphExtractor(api_key_env=api_key_env)
+        lambda: LlmGraphExtractor(
+            provider=HttpxLlmProvider(
+                base_url=llm_base_url,
+                model_id=llm_model,
+                api_key_env=api_key_env,
+            )
+        )
     )
     application.state.graph_builder = graph_builder
     application.state.summarizer_factory = summarizer_factory or (
-        lambda: CommunitySummarizer(api_key_env=api_key_env)
+        lambda: CommunitySummarizer(
+            provider=HttpxLlmProvider(
+                base_url=llm_base_url,
+                model_id=llm_model,
+                api_key_env=api_key_env,
+            )
+        )
     )
     application.state.wiki_generator = wiki_generator
+    application.state.answer_provider_factory = answer_provider_factory or (
+        lambda: HttpxLlmProvider(
+            base_url=llm_base_url,
+            model_id=llm_model,
+            api_key_env=api_key_env,
+        )
+    )
 
     @application.exception_handler(RequestValidationError)
     async def handle_validation_error(
-        _request: Request, _exc: RequestValidationError
+        request: Request, _exc: RequestValidationError
     ) -> JSONResponse:
+        if request.url.path == "/api/ask":
+            request_id = str(uuid4())
+            logger.info("API ask rejected request: request_id=%s", request_id)
         return _error_response(422, "invalid_request", "请求参数无效，请检查后重试。")
 
     @application.exception_handler(StarletteHTTPException)
@@ -183,6 +223,49 @@ def create_app(
             top_k=request.top_k,
             candidate_k=request.candidate_k,
             results=[SearchResultResponse(**asdict(result)) for result in results],
+        )
+
+    @application.post("/api/ask", response_model=AskResponse)
+    def ask(request: AskRequest) -> AskResponse | JSONResponse:
+        request_id = str(uuid4())
+        provider: AnswerProvider | None = None
+        logger.info("API ask started: request_id=%s", request_id)
+        try:
+            provider = application.state.answer_provider_factory()
+            service = AnswerService(
+                application.state.search_service_factory(application.state.data_dir),
+                provider,
+            )
+            result = service.ask(
+                request.question,
+                top_k=request.top_k,
+                candidate_k=request.candidate_k,
+            )
+        except Exception as exc:
+            logger.debug(
+                "API ask failed: request_id=%s error_class=%s",
+                request_id,
+                type(exc).__name__,
+            )
+            mapping = map_ask_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        finally:
+            if provider is not None:
+                _close_if_supported(provider)
+        logger.info(
+            "API ask completed: request_id=%s result_count=%d insufficient_evidence=%s",
+            request_id,
+            result.retrieval.result_count,
+            result.insufficient_evidence,
+        )
+        return AskResponse(
+            request_id=request_id,
+            question=request.question.strip(),
+            answer=result.answer,
+            insufficient_evidence=result.insufficient_evidence,
+            citations=[AskCitationResponse(**asdict(citation)) for citation in result.citations],
+            retrieval=AskRetrievalResponse(**asdict(result.retrieval)),
+            model=result.model,
         )
 
     @application.post("/api/graph", response_model=GraphResponse)

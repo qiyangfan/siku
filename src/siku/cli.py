@@ -504,6 +504,21 @@ def wiki(
 def serve(
     host: Annotated[str, typer.Option("--host", help="监听地址，默认仅本机可访问。")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", min=1, max=65535, help="监听端口。")] = 8000,
+    api_key_env: Annotated[
+        str,
+        typer.Option(
+            "--api-key-env",
+            help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
+        ),
+    ] = DEFAULT_API_KEY_ENV,
+    llm_base_url: Annotated[
+        str,
+        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL。"),
+    ] = DEFAULT_BASE_URL,
+    llm_model: Annotated[
+        str,
+        typer.Option("--llm-model", help="LLM 模型名称。"),
+    ] = DEFAULT_MODEL_ID,
     with_ui: Annotated[bool, typer.Option("--with-ui", help="挂载 ui/dist 静态前端。")] = False,
 ) -> None:
     """启动 localhost HTTP API 服务。"""
@@ -514,7 +529,12 @@ def serve(
             _fail(f"UI 静态目录不存在：{ui_dir}", FileNotFoundError(str(ui_dir)))
     if host == "0.0.0.0":
         typer.echo("警告：服务将监听所有网卡，请确认这是你的明确选择。", err=True)
-    application = create_app(ui_dir=ui_dir)
+    application = create_app(
+        api_key_env=api_key_env,
+        llm_base_url=llm_base_url,
+        llm_model=llm_model,
+        ui_dir=ui_dir,
+    )
     uvicorn.run(application, host=host, port=port)
 
 

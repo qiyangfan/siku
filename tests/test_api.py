@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from siku.graph.errors import (
 from siku.graph.report import GraphHealthReport
 from siku.graph.service import GraphBuildResult
 from siku.ingest import IngestError
+from siku.qa.models import MAX_CANDIDATE_K, MAX_QUESTION_CHARS, MAX_TOP_K
 from siku.retrieve.errors import (
     BaselineExistsError,
     EvaluationError,
@@ -71,6 +73,20 @@ class FakeSummarizer:
         """测试 fake 的资源释放接口。"""
 
 
+@dataclass
+class FakeAnswerProvider:
+    response: str
+    model_id: str = "fake-answer"
+    calls: int = 0
+
+    def complete(self, _system: str, _user: str) -> str:
+        self.calls += 1
+        return self.response
+
+    def close(self) -> None:
+        """测试 fake 的资源释放接口。"""
+
+
 def fake_graph_result() -> GraphBuildResult:
     return GraphBuildResult(
         report=GraphHealthReport(
@@ -96,6 +112,7 @@ def build_test_app(
     search_service: FakeSearchService | None = None,
     graph_builder: Any = None,
     wiki_generator: Any = None,
+    answer_provider: FakeAnswerProvider | None = None,
 ) -> TestClient:
     result = search_service or FakeSearchService()
     kwargs: dict[str, Any] = {
@@ -105,6 +122,8 @@ def build_test_app(
         "graph_extractor_factory": lambda: FakeGraphExtractor(),
         "summarizer_factory": lambda: FakeSummarizer(),
     }
+    if answer_provider is not None:
+        kwargs["answer_provider_factory"] = lambda: answer_provider
     if graph_builder is not None:
         kwargs["graph_builder"] = graph_builder
     if wiki_generator is not None:
@@ -196,6 +215,114 @@ def test_search_success_and_error_contract(tmp_path: Path) -> None:
     unavailable = unavailable_client.post("/api/search", json={"query": "正文"})
     assert unavailable.status_code == 409
     assert unavailable.json()["code"] == "index_unavailable"
+
+
+def test_ask_success_returns_grounded_answer_and_request_id(tmp_path: Path) -> None:
+    answer_provider = FakeAnswerProvider(
+        '{"answer":"本地运行","citation_ids":["C1"],"insufficient_evidence":false}'
+    )
+    search_result = SearchResult(
+        chunk_id="chunk-1",
+        source_name="architecture.md",
+        note_path="notes/architecture.md",
+        source_hash="a" * 64,
+        anchor="本地优先",
+        text="服务只监听 localhost。",
+        bm25_score=1.0,
+        vector_score=0.9,
+        hybrid_score=0.03,
+        rerank_score=0.8,
+    )
+    client = build_test_app(
+        tmp_path,
+        search_service=FakeSearchService([search_result]),
+        answer_provider=answer_provider,
+    )
+
+    response = client.post("/api/ask", json={"question": "边界是什么？", "top_k": 1})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["answer"] == "本地运行"
+    assert payload["model"] == "fake-answer"
+    assert payload["request_id"]
+    assert payload["citations"][0]["citation_id"] == "C1"
+    assert payload["retrieval"] == {"top_k": 1, "candidate_k": 30, "result_count": 1}
+    assert answer_provider.calls == 1
+
+
+def test_ask_without_evidence_does_not_call_llm(tmp_path: Path) -> None:
+    answer_provider = FakeAnswerProvider("not-called")
+    client = build_test_app(tmp_path, answer_provider=answer_provider)
+
+    response = client.post("/api/ask", json={"question": "不存在的问题"})
+
+    assert response.status_code == 200
+    assert response.json()["insufficient_evidence"] is True
+    assert response.json()["citations"] == []
+    assert response.json()["request_id"]
+    assert answer_provider.calls == 0
+
+
+def test_ask_validation_and_provider_contract_errors(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="siku.api.app")
+    invalid_provider = FakeAnswerProvider(
+        '{"answer":"答案","citation_ids":["UNKNOWN"],"insufficient_evidence":false}'
+    )
+    client = build_test_app(
+        tmp_path,
+        search_service=FakeSearchService(
+            [
+                SearchResult(
+                    chunk_id="chunk-1",
+                    source_name="note.md",
+                    note_path="notes/note.md",
+                    source_hash="a" * 64,
+                    anchor="正文",
+                    text="证据",
+                    bm25_score=1.0,
+                    vector_score=0.9,
+                    hybrid_score=0.03,
+                    rerank_score=0.8,
+                )
+            ]
+        ),
+        answer_provider=invalid_provider,
+    )
+
+    blank = client.post("/api/ask", json={"question": "   "})
+    too_long = client.post("/api/ask", json={"question": "x" * (MAX_QUESTION_CHARS + 1)})
+    top_k_too_large = client.post("/api/ask", json={"question": "问题", "top_k": MAX_TOP_K + 1})
+    candidate_too_large = client.post(
+        "/api/ask", json={"question": "问题", "candidate_k": MAX_CANDIDATE_K + 1}
+    )
+    provider_error = client.post("/api/ask", json={"question": "问题"})
+
+    assert blank.status_code == 422
+    assert too_long.status_code == 422
+    assert top_k_too_large.status_code == 422
+    assert candidate_too_large.status_code == 422
+    assert provider_error.status_code == 503
+    assert provider_error.json()["code"] == "llm_provider_error"
+    assert "AnswerOutputError" not in provider_error.text
+    assert "request_id" not in provider_error.json()
+    assert "API ask rejected request: request_id=" in caplog.text
+
+
+def test_ask_internal_value_error_is_not_mapped_as_invalid_request(tmp_path: Path) -> None:
+    client = build_test_app(
+        tmp_path,
+        search_service=FakeSearchService(error=ValueError("internal implementation failure")),
+        answer_provider=FakeAnswerProvider("unused"),
+    )
+
+    response = client.post("/api/ask", json={"question": "问题"})
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "internal_error"
+    assert "internal implementation failure" not in response.text
 
 
 def test_graph_success_and_missing_key_error(tmp_path: Path) -> None:
