@@ -9,42 +9,44 @@
 
 ## 现状
 
-- Phase 0–4 已完成归档。Phase 5（Tauri 桌面壳，`openspec/changes/add-tauri-desktop-shell/`）
-  已在本分支 **feature/tauri-desktop-shell 实现完毕，全部变更未提交**（含 change 文档、
-  内核、Rust 壳、CI/发布流），等待用户复核后提交合入 main。
-- 交付物：`siku serve` 增 `--vault/--data-dir/--ui-dir/--watch-stdin`（旧默认值回归锁定）；
-  `src/siku/sidecar.py` 冻结入口（freeze_support + 内置模型离线缓存）；
-  `ui/src-tauri/` Tauri 2 壳（动态端口、健康检查、失败页、进程组回收、单实例）；
-  `scripts/build_sidecar.py`（PyInstaller onedir + bge-m3/reranker 内置，产物 7.3GiB，
-  不入库）；`.github/workflows/release.yml`（tag→四 target→Release→Cask，失败不发布）；
-  CI 增 Rust fmt/clippy/test 作业；文档 `docs/desktop.md`。
-- 桌面决策已冻结于 design.md「约束冻结决议」：平台矩阵、tap=qiyangfan/homebrew-tap、
-  数据目录=`应用数据目录/siku/{vault,data}` 零迁移、sidecar onedir + 离线权重。
-- macOS arm64 安装后全链路冒烟已通过（fake LLM：健康→同源 UI→带引用问答→退出回收
-  零孤儿）；**Windows/Linux 冒烟未做**。
+- **产品形态已定调（用户拍板）**：本地服务 + 全模型 BYOK 优先（对标 opencode 模式）；
+  「本地优先」重定义为「本地可用」（不依赖服务器部署），非"数据不出本机"；云端多租户
+  SaaS 不做，商业化后以"托管模型通道"入场。**Release 无限期禁用**（产品完善到一定
+  程度前不考虑发布）。
+- Phase 5（Tauri 桌面壳）已实现并合入 main（`93d0340` + 修复 `1c07b8b`）：`siku serve`
+  路径参数/watchdog、`src/siku/sidecar.py` 冻结入口、`ui/src-tauri/` Tauri 2 壳、
+  `scripts/build_sidecar.py`、CI Rust 门禁作业、`docs/desktop.md`。macOS arm64 全链路
+  冒烟通过；**Windows/Linux 冒烟挂起**（等 BYOK 瘦身后的新产物）。
+- **GitHub Actions**：`Release` workflow 已 `disabled_manually`（tag 不再触发构建）；
+  两次 Release 试跑已取消，累计消耗少量配额分钟；`CI` 正常（main 绿：Python 3.12/3.14
+  + 前端 + Rust fmt/clippy/test）。远端 `v0.1.0` tag 遗留未删（无 Release 对象，惰性）。
+- 下一个 change（待用户确认后立项）：**模型供给 BYOK 化**——`ApiEmbeddingProvider`/
+  `ApiRerankerProvider`、桌面配置文件（`~/.config/siku/config.toml`，env 覆盖）、
+  golden set 双通道裁决、sidecar 剔除 torch/bge（DMG 4.1GB→几百 MB）；本地 bge 降级为
+  可选离线 Provider + 指向 Ollama/LM Studio 端点，不删代码、不进安装包。
 
 ## 验证
 
-- `uv run pytest`：439 passed；ruff/format/mypy/pre-commit 全绿；openspec changes+specs
-  strict 1/1 + 5/5；golden set 回归门禁通过；OpenAPI 快照零漂移。
-- `cargo test/clippy/rustfmt`：3 tests 通过、零告警；`ui npm lint/test/build` 通过。
-- `npx tauri build` 实际产出 siku.app + 4.1GB DMG；release.yml/cask 生成器仅过本地校验，
-  **未经真实 runner 验证**。
+- `uv run pytest` 439 passed；ruff/format/mypy/pre-commit 全绿；openspec strict
+  changes 1/1 + specs 5/5；golden set 基线（本地通道）Recall@5=1.000 / MRR@10=0.957。
+- `cargo test/clippy/rustfmt` 3 tests 零告警；ui lint/test/build 绿。
+- 两次 Release 试跑结论：Linux 腿死于 runner 磁盘（修复已提交：磁盘回收 + 模型硬链接
+  复制）；CI 桌面壳作业资源占位与 3.14 测试竞态修复均已验证。
 
 ## 下一步（唯一排序）
 
-1. 用户复核本分支 → 提交合入 main → 打 tag `v0.1.0` 触发 release.yml 首跑。
-2. Release 产物在 Windows/Linux 实机冒烟（清单见 docs/desktop.md），回填
-   review.md/desktop.md 后归档 change、同步主 spec、ROADMAP 勾稽。
-3. 一次性仓库外动作：创建公开空仓库 `qiyangfan/homebrew-tap`，配 secret
-   `HOMEBREW_TAP_TOKEN`（缺省时 Cask 步骤自动跳过）。
+1. 用户确认后立「模型供给 BYOK 化」change（proposal 含 ADR-0006 修订：本地模型从默认
+   降为可选；双通道质量门禁设计）。
+2. BYOK 落地后重切瘦身 sidecar → 那时再决定是否解禁 release.yml、打首个对外 tag。
+3. 桌面产品完善优先级（供排序参考）：配置文件 > BYOK 模型通道 > 三平台冒烟 > 其余。
 
 ## 已知坑
 
-- 冻结 Python 应用必须入口首行 `multiprocessing.freeze_support()`，否则 torch spawn
-  子进程会重放整个 CLI（曾表现为 `No such option: -B`）。
-- sidecar 冷启动 2–24s（解压+模型加载），健康超时已设 60s，勿调小。
+- 冻结 Python 应用必须入口首行 `multiprocessing.freeze_support()`（否则 torch spawn
+  子进程重放 CLI，表现为 `No such option: -B`）。
+- PyInstaller 冻结二进制无法运行时加依赖：桌面包要么内置全部依赖，要么走外部端点。
+- CI 桌面壳作业需 sidecar/UI 资源占位目录（tauri-build 校验 resources 路径存在）。
 - LanceDB 0.38 新连接 `list_tables()` 竞态：向量表探测必须 `open_table()`。
-- 换 LLM 通道必须同步 graph/wiki 模型身份；muniu 租户必须关语义缓存。
-- Tauri 壳不得把业务迁入 Rust；sidecar 必须显式绝对路径；Phase 5 产物 unsigned，
-  签名/自动更新属 Phase 6，不得把"能打包"说成"受信任安装"。
+- 换 embedding/LLM 模型必须同步身份并全量重建；muniu 租户必须关语义缓存。
+- Tauri 壳不承载业务；sidecar 显式绝对路径 + `--watch-stdin`；Phase 6（签名/更新）
+  未启动。
