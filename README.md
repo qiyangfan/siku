@@ -16,6 +16,7 @@ siku 取意《四库全书》——历史上最大规模的"汇总天下文献 �
 | 哪些规则碰不得 | `openspec/project.md`（宪法红线 + 工程口径） |
 | 当前进度与接手状态 | `docs/HANDOFF.md` + `docs/ROADMAP.md` |
 | 系统应如何行为 | `openspec/specs/`（随 change 归档生长） |
+| 桌面应用安装与故障排查 | `docs/desktop.md` |
 | 当前进度与选型总表 | `docs/architecture.md` |
 | AI 协作规范 | `AGENTS.md` + `openspec/AGENTS.md` |
 
@@ -36,6 +37,15 @@ siku 取意《四库全书》——历史上最大规模的"汇总天下文献 �
 | 检索质量 | bge-m3 向量 + BM25 混合召回 + reranker 重排 + golden set 回归 |
 
 ## 快速开始
+
+### 桌面应用（推荐，无需命令行）
+
+从 [Releases](https://github.com/qiyangfan/siku/releases) 下载对应平台安装包即可。
+**Phase 5 产物为未签名（unsigned）构建**：macOS/Windows 首次打开会出现系统安全提示，
+需手动放行；签名与自动更新属于 Phase 6。安装说明、数据目录、API key 配置与故障排查
+见 [docs/desktop.md](docs/desktop.md)。
+
+### 命令行
 
 ```bash
 # 需要先安装 uv：https://docs.astral.sh/uv/
@@ -75,10 +85,13 @@ uv run pre-commit install   # 启用 git hooks（克隆后执行一次）
 uv run pre-commit run --all-files   # 手动全量跑一遍 hooks
 ```
 
+桌面壳开发（Tauri 2 工程 `ui/src-tauri/`）与源码构建流程见
+[docs/desktop.md](docs/desktop.md)「从源码构建桌面应用」。
+
 ## 路线图
 
-1. **阶段一（当前）**：uv 安装的本地 WebUI（FastAPI + React，localhost）+ CLI（摄取/索引/重建一等命令）
-2. **阶段二**：Tauri 桌面壳（不签名，GitHub Releases + Homebrew 分发）
+1. **阶段一 ✅**：localhost WebUI（FastAPI + React）+ CLI（摄取/索引/图谱/wiki/问答）已完成
+2. **阶段二（当前）**：Tauri 桌面壳（不签名，GitHub Releases + Homebrew 分发），见 [docs/desktop.md](docs/desktop.md)
 3. **阶段三**：代码签名 + 自动更新
 
 ## License

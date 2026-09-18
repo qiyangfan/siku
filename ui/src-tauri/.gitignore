@@ -1,0 +1,5 @@
+# 构建产物与本地 sidecar 输出，严禁入库（体积数 GB 且含模型权重）
+/target/
+/binaries/
+/gen/
+Cargo.lock.orig

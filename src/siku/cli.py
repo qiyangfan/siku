@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
+import threading
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import Annotated, BinaryIO, NoReturn
 
 import typer
 import uvicorn
+from fastapi import FastAPI
 
 from siku import __version__
 from siku.api.app import create_app
@@ -58,6 +62,7 @@ app = typer.Typer(
 
 DEFAULT_VAULT = Path("vault")
 DEFAULT_DATA_DIR = Path("data")
+DEFAULT_UI_DIST = Path("ui") / "dist"
 DEFAULT_BASELINE_NAME = "retrieval-baseline.json"
 
 
@@ -520,22 +525,94 @@ def serve(
         typer.Option("--llm-model", help="LLM 模型名称。"),
     ] = DEFAULT_MODEL_ID,
     with_ui: Annotated[bool, typer.Option("--with-ui", help="挂载 ui/dist 静态前端。")] = False,
+    vault: Annotated[
+        Path | None,
+        typer.Option("--vault", help="事实层 vault 目录；桌面 sidecar 传绝对路径。"),
+    ] = None,
+    data_dir: Annotated[
+        Path | None,
+        typer.Option("--data-dir", help="派生数据目录；桌面 sidecar 传绝对路径。"),
+    ] = None,
+    ui_dir: Annotated[
+        Path | None,
+        typer.Option("--ui-dir", help="静态 UI 资源目录；需与 --with-ui 同时使用。"),
+    ] = None,
+    watch_stdin: Annotated[
+        bool,
+        typer.Option(
+            "--watch-stdin",
+            help="stdin 关闭（EOF）时自动退出；供桌面壳守护 sidecar 父进程存活。",
+        ),
+    ] = False,
 ) -> None:
     """启动 localhost HTTP API 服务。"""
-    ui_dir: Path | None = None
+    resolved_vault = DEFAULT_VAULT if vault is None else vault
+    resolved_data_dir = DEFAULT_DATA_DIR if data_dir is None else data_dir
+    resolved_ui_dir: Path | None
     if with_ui:
-        ui_dir = Path("ui/dist")
-        if not ui_dir.is_dir():
-            _fail(f"UI 静态目录不存在：{ui_dir}", FileNotFoundError(str(ui_dir)))
+        resolved_ui_dir = DEFAULT_UI_DIST if ui_dir is None else ui_dir
+        if not resolved_ui_dir.is_dir():
+            _fail(f"UI 静态目录不存在：{resolved_ui_dir}", FileNotFoundError(str(resolved_ui_dir)))
+    elif ui_dir is not None:
+        _fail(
+            "--ui-dir 需要同时指定 --with-ui 才会挂载静态前端。",
+            ValueError("--ui-dir requires --with-ui"),
+        )
+    else:
+        resolved_ui_dir = None
     if host == "0.0.0.0":
         typer.echo("警告：服务将监听所有网卡，请确认这是你的明确选择。", err=True)
     application = create_app(
+        vault=resolved_vault,
+        data_dir=resolved_data_dir,
         api_key_env=api_key_env,
         llm_base_url=llm_base_url,
         llm_model=llm_model,
-        ui_dir=ui_dir,
+        ui_dir=resolved_ui_dir,
     )
-    uvicorn.run(application, host=host, port=port)
+    if watch_stdin:
+        _run_with_stdin_watchdog(application, host=host, port=port)
+    else:
+        uvicorn.run(application, host=host, port=port)
+
+
+def _watch_stdin_stream(stream: BinaryIO, shutdown: Callable[[], None]) -> None:
+    """阻塞读取 stdin，读到 EOF（父进程消亡）即触发受控关停。"""
+    try:
+        while stream.read(1):
+            pass
+    except (OSError, ValueError):
+        logger.debug("stdin watchdog stream closed unexpectedly")
+    logger.info("stdin EOF detected; shutting down sidecar")
+    shutdown()
+
+
+def _install_stdin_watchdog(
+    shutdown: Callable[[], None],
+    stream: BinaryIO | None = None,
+) -> threading.Thread | None:
+    """安装 stdin EOF 守护线程；stdin 不可用（如脱离终端的 detached 进程）则不安装。"""
+    if stream is None:
+        stdin = sys.stdin
+        binary = getattr(stdin, "buffer", None) if stdin is not None else None
+        if binary is None:
+            return None
+        stream = binary
+    thread = threading.Thread(
+        target=_watch_stdin_stream,
+        args=(stream, shutdown),
+        name="siku-stdin-watchdog",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _run_with_stdin_watchdog(application: FastAPI, *, host: str, port: int) -> None:
+    """以受控 uvicorn Server 运行，stdin EOF 时走优雅关停而非硬杀进程。"""
+    server = uvicorn.Server(uvicorn.Config(application, host=host, port=port))
+    _install_stdin_watchdog(lambda: setattr(server, "should_exit", True))
+    server.run()
 
 
 if __name__ == "__main__":

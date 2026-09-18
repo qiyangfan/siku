@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "splash-capability",
+  "description": "启动/失败页所需的最小权限：事件监听与窗口关闭；问答页面（sidecar 同源 http://127.0.0.1）不在此列，天然无 IPC 访问能力",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:window:allow-close"]
+}

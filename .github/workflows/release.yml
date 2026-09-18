@@ -1,0 +1,222 @@
+# Phase 5 无签名发布流水线：版本 tag 触发，三平台构建 Tauri 安装产物并上传 Release，
+# 再生成 Homebrew Cask。失败不发布：Release 只在全部平台构建成功后创建。
+#
+# 前置条件（一次性，仓库外动作）：
+# - 公开空仓库 qiyangfan/homebrew-tap（可用 env HOMEBREW_TAP_REPO 覆盖）
+# - secret HOMEBREW_TAP_TOKEN：对该 tap 有写权限的 fine-grained PAT（缺省时跳过 Cask 步骤）
+#
+# 约束：本工作流不访问任何真实 LLM；模型下载仅来自 HuggingFace（检索 embedding 用）。
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  HOMEBREW_TAP_REPO: qiyangfan/homebrew-tap
+
+jobs:
+  version-check:
+    name: 版本一致性校验（tag = tauri.conf.json）
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: 读取单一版本源并校验 tag
+        id: read
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('ui/src-tauri/tauri.conf.json'))['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} 与 tauri.conf.json 版本 ${VERSION} 不一致"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: 构建（${{ matrix.target }}）
+    needs: version-check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-14
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # x86_64 macOS：在 arm64 runner 上经 Rosetta 用 x86_64 解释器构建 sidecar，
+      # 保证 PyInstaller 产物与 Rust target 架构一致（PyInstaller 不支持交叉编译）
+      - name: 安装 x86_64 Python（Rosetta）
+        if: matrix.target == 'x86_64-apple-darwin'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+
+      - name: 固定 x86_64 解释器给 uv
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          python -m pip install uv
+          echo "UV_PYTHON=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
+      - name: 安装 uv
+        if: matrix.target != 'x86_64-apple-darwin'
+        uses: astral-sh/setup-uv@v10.1.0 # 该仓库不维护 v10 滚动大版本标签，须钉精确版本
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: 安装 Linux 系统依赖（webkit2gtk-4.1 基线 = Ubuntu 22.04）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 同步 Python 运行时（锁定 uv.lock + retrieval extra）
+        run: uv sync --locked --extra retrieval
+
+      - name: 缓存 HuggingFace 模型
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface/hub
+          key: hf-models-bge-m3-5617a9f6-bge-reranker-953dc6f6
+
+      - name: 构建 sidecar（PyInstaller onedir + 内置模型）
+        run: uv run python scripts/build_sidecar.py --target ${{ matrix.target }}
+
+      - name: 安装 Rust target
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: rustup target add x86_64-apple-darwin
+
+      - name: 前端构建
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Tauri 构建（unsigned）
+        working-directory: ui
+        run: npx tauri build --target ${{ matrix.target }}
+
+      - name: 归集产物（macOS）
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          cp "ui/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/"*.dmg artifacts/
+          cp "ui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/"*.app artifacts/ 2>/dev/null || true
+          ls -la artifacts
+
+      - name: 归集产物（Linux）
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p artifacts
+          cp ui/src-tauri/target/release/bundle/deb/*.deb artifacts/
+          cp ui/src-tauri/target/release/bundle/appimage/*.AppImage artifacts/
+          ls -la artifacts
+
+      - name: 归集产物（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Copy-Item "ui/src-tauri/target/release/bundle/nsis/*.exe" artifacts/
+          Get-ChildItem artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: artifacts/*
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: 发布 Release（失败不发布）
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 下载全部平台产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 生成 SHA256 checksum
+        working-directory: artifacts
+        run: |
+          # 排除清单自身，保证 sha256sum -c 全量校验可过
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -print0 |
+            xargs -0 sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 创建 GitHub Release 并上传产物
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.version-check.outputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "siku v${VERSION}（unsigned）" \
+            --notes "无签名（unsigned）桌面产物：macOS/Windows 首次打开会出现系统安全提示，属 Phase 5 预期行为；签名与自动更新属于 Phase 6。安装与故障排查见 README。" \
+            artifacts/*
+
+  homebrew-cask:
+    name: 更新 Homebrew Cask
+    needs: [version-check, release]
+    runs-on: ubuntu-22.04
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: 无 tap 凭据时跳过
+        if: env.HOMEBREW_TAP_TOKEN == ''
+        run: echo "未配置 HOMEBREW_TAP_TOKEN，跳过 Cask 更新（tap 仓库创建属一次性仓库外动作）"
+
+      - uses: actions/checkout@v7
+        if: env.HOMEBREW_TAP_TOKEN != ''
+
+      - name: 下载 macOS 产物并生成 Cask
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          VERSION: ${{ needs.version-check.outputs.version }}
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 生成并推送 Cask
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.version-check.outputs.version }}
+        run: |
+          python3 scripts/generate_cask.py \
+            --assets artifacts --version "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" --out "Casks/siku.rb"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/${HOMEBREW_TAP_REPO}.git" tap
+          cp "Casks/siku.rb" "tap/Casks/siku.rb"
+          cd tap
+          git config user.name "siku-release-bot"
+          git config user.email "noreply@github.com"
+          git add Casks/siku.rb
+          git commit -m "siku ${VERSION}"
+          git push

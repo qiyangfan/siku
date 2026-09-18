@@ -34,6 +34,8 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "pre-commit>=4.0",
+    # 桌面 sidecar 打包（Phase 5）：仅构建期需要，运行时零影响
+    "pyinstaller>=6.10",
     # 仅 dev/CI 安装 LanceDB：向量存储测试用可编程 fake embedding 打真实存储，
     # 模型运行时（sentence-transformers/torch）仍只属于 retrieval extra
     "lancedb>=0.20",

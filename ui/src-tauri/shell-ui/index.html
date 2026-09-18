@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>siku 四库</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .card {
+        width: min(420px, 84vw);
+        text-align: center;
+      }
+      .logo {
+        display: inline-flex;
+        gap: 8px;
+        margin-bottom: 28px;
+      }
+      .logo span {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        background: #0f172a;
+      }
+      .logo span:first-child {
+        background: #38bdf8;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 12px;
+      }
+      #status {
+        color: #475569;
+        font-size: 14px;
+        margin: 0;
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        margin: 24px auto 0;
+        border: 3px solid #cbd5e1;
+        border-top-color: #38bdf8;
+        border-radius: 50%;
+        animation: spin 0.9s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      #error {
+        display: none;
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 8px 24px rgb(15 23 42 / 6%);
+      }
+      #error h2 {
+        font-size: 16px;
+        margin: 0 0 8px;
+        color: #b91c1c;
+      }
+      #error p {
+        font-size: 14px;
+        color: #475569;
+        line-height: 1.6;
+        margin: 0 0 20px;
+      }
+      .actions {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+      }
+      button {
+        min-width: 96px;
+        padding: 9px 18px;
+        border-radius: 8px;
+        border: 1px solid #cbd5e1;
+        background: #fff;
+        color: #0f172a;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      button.primary {
+        background: #0f172a;
+        border-color: #0f172a;
+        color: #fff;
+      }
+      button:hover {
+        opacity: 0.9;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="logo"><span></span><span></span><span></span><span></span></div>
+      <h1>siku 四库</h1>
+      <p id="status">正在启动本地内核…</p>
+      <div class="spinner" id="spinner"></div>
+      <div id="error">
+        <h2>启动失败</h2>
+        <p id="error-message"></p>
+        <div class="actions">
+          <button class="primary" id="retry">重试</button>
+          <button id="quit">退出</button>
+        </div>
+      </div>
+    </div>
+    <script>
+      // 壳状态页只消费 Rust 发来的启动事件；重试=重新加载本页（触发壳重新编排启动）
+      const { listen } = window.__TAURI__.event;
+      const statusEl = document.getElementById("status");
+      const spinnerEl = document.getElementById("spinner");
+      const errorEl = document.getElementById("error");
+      const messageEl = document.getElementById("error-message");
+
+      document.getElementById("retry").addEventListener("click", () =>
+        window.location.reload(),
+      );
+      document.getElementById("quit").addEventListener("click", () =>
+        window.__TAURI__.window.getCurrentWindow().close(),
+      );
+
+      function showError(message) {
+        statusEl.hidden = true;
+        spinnerEl.style.display = "none";
+        errorEl.style.display = "block";
+        messageEl.textContent = message;
+      }
+
+      listen("siku-startup", (event) => {
+        const payload = event.payload;
+        if (payload.state === "starting") {
+          statusEl.textContent = "正在启动本地内核…";
+        } else if (payload.state === "succeeded") {
+          // 同源加载：问答页由内核 sidecar 提供，业务数据继续走既有 HTTP API
+          window.location.replace(payload.url);
+        } else if (payload.state === "failed") {
+          showError(payload.message);
+        }
+      });
+    </script>
+  </body>
+</html>
