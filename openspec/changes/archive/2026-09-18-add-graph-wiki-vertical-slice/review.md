@@ -141,10 +141,12 @@ HANDOFF 数字经逐文件收集求和精确核对（167/369）。全量门禁�
 
 ## 真实抽取冒烟记录（任务 15，2026-09-18 执行）
 
-- **通道**：DeepSeek 默认 BYO 通道（`api.deepseek.com`，deepseek-chat，temperature=0）；
-  用户环境另备 `QWEN_API_KEY`（DashScope 千问），实测国内/国际端点均返回
-  401 invalid_api_key（key 格式正确、无隐藏字符，疑过期或账号未开通百炼），
-  待用户在百炼控制台核实后可用 /tmp 冒烟脚本换 base_url 复跑。
+- **通道**：DeepSeek 默认 BYO 通道（`api.deepseek.com`，deepseek-chat，temperature=0）。
+  **补充（同日）**：用户更换 `QWEN_API_KEY` 后 Qwen 通道复跑通过
+  （DashScope 兼容端点，qwen-plus：21 实体/14 关系/8 社区，11 次调用；
+  二轮构建与 wiki 零调用全缓存命中，幂等闸门在 Qwen 通道同样成立；
+  期间冒烟脚本漏传 summary_identity 被 GraphArtifactsStaleError 正确拦截，
+  身份一致性防护在真实场景首次实证有效）。
 - **语料**：单文件 3 chunk 中文语料（公司简介 + 技术架构）。
 - **调用成本**：抽取 3 次 + 社区摘要 7 次，共 10 次 LLM 调用（deepseek-chat
   计价下成本可忽略）；二轮构建将全缓存命中（0 调用）。

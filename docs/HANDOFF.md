@@ -43,6 +43,7 @@ openspec validate --changes --strict && openspec validate --specs --strict
 - 基线 v0 生成于 macOS arm64 / Python 3.12.13；跨机 ±0.01 浮动正常，门禁带容差。
 - `siku graph` 的 key 校验是惰性的：全部命中缓存时无需 key；`--rebuild` 必须配 key。
   排查日志用 `SIKU_LOG_LEVEL=DEBUG`。
-- BYO key：`DEEPSEEK_API_KEY` 可用（默认通道）；`QWEN_API_KEY`（DashScope）当前
-  401 invalid_api_key（疑过期/未开通百炼），修复后可经 HttpxLlmProvider 换
-  base_url 直用，冒烟脚本范式见归档 change review.md。
+- BYO key：`DEEPSEEK_API_KEY`（默认通道）与 `QWEN_API_KEY`（DashScope 兼容端点，
+  qwen-plus）均已实测可用；换通道必须同步传 `summary_identity=SummaryIdentity(
+  model_id=...)` 给 `build_graph`，否则 wiki 阶段会按设计拒绝（GraphArtifactsStaleError）。
+  冒烟脚本范式见归档 change review.md。
