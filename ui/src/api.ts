@@ -74,6 +74,50 @@ export type SettingsTestResponse = {
   latency_ms: number;
 };
 
+export type LibraryIngestStatus = "ingested" | "stale" | "pending" | "ignored";
+
+export type LibraryIndexStatus = "indexed" | "stale" | "missing";
+
+export type LibrarySource = {
+  name: string;
+  path: string;
+  source_hash: string;
+  ingest_status: LibraryIngestStatus;
+  index_status: LibraryIndexStatus;
+};
+
+export type LibraryResponse = {
+  sources: LibrarySource[];
+};
+
+export type LibraryJobItemStatus = "created" | "updated" | "skipped" | "ignored" | "failed";
+
+export type LibraryJobItem = {
+  name: string;
+  path: string;
+  status: LibraryJobItemStatus;
+  detail: string | null;
+};
+
+export type LibraryJobKind = "ingest" | "rebuild";
+
+export type LibraryJobState = "running" | "succeeded" | "failed" | "cancelled";
+
+export type LibraryJobPhase = "ingesting" | "indexing";
+
+export type LibraryJob = {
+  job_id: string;
+  kind: LibraryJobKind;
+  state: LibraryJobState;
+  phase: LibraryJobPhase;
+  total: number;
+  done: number;
+  failed: number;
+  current: string | null;
+  items: LibraryJobItem[];
+  error: string | null;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -126,6 +170,40 @@ export async function testChannel(payload: SettingsTestPayload): Promise<Setting
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+    }),
+  );
+}
+
+export async function getLibrary(): Promise<LibraryResponse> {
+  return parseResponse<LibraryResponse>(await fetch("/api/library"));
+}
+
+export async function ingestFiles(files: File[]): Promise<LibraryJob> {
+  const body = new FormData();
+  for (const file of files) {
+    body.append("files", file, file.name);
+  }
+  return parseResponse<LibraryJob>(
+    await fetch("/api/library/ingest", { method: "POST", body }),
+  );
+}
+
+export async function getLibraryJob(jobId: string): Promise<LibraryJob> {
+  return parseResponse<LibraryJob>(await fetch(`/api/library/jobs/${encodeURIComponent(jobId)}`));
+}
+
+export async function cancelLibraryJob(jobId: string): Promise<LibraryJob> {
+  return parseResponse<LibraryJob>(
+    await fetch(`/api/library/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" }),
+  );
+}
+
+export async function rebuildIndex(): Promise<LibraryJob> {
+  return parseResponse<LibraryJob>(
+    await fetch("/api/library/rebuild", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
     }),
   );
 }

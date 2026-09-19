@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { askQuestion, type ApiError, type AskResponse, checkHealth } from "./api";
+import { LibraryView } from "./LibraryView";
 import { SettingsView } from "./SettingsView";
 import "./styles.css";
 
 type HealthState = "loading" | "ready" | "offline";
 type AskState = "idle" | "loading" | "success" | "error";
-type ViewName = "ask" | "settings";
+type ViewName = "ask" | "library" | "settings";
 
 function isApiError(error: unknown): error is ApiError {
   return (
@@ -107,6 +108,14 @@ function App() {
           </button>
           <button
             type="button"
+            className={view === "library" ? "nav-tab nav-tab-active" : "nav-tab"}
+            aria-pressed={view === "library"}
+            onClick={() => setView("library")}
+          >
+            资料库
+          </button>
+          <button
+            type="button"
             className={view === "settings" ? "nav-tab nav-tab-active" : "nav-tab"}
             aria-pressed={view === "settings"}
             onClick={() => setView("settings")}
@@ -116,6 +125,8 @@ function App() {
         </nav>
 
         {view === "settings" && <SettingsView />}
+
+        {view === "library" && <LibraryView />}
 
         {view === "ask" && (
         <>
