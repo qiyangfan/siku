@@ -214,6 +214,101 @@
           }
         }
       }
+    },
+    "/api/settings": {
+      "get": {
+        "summary": "Read Settings",
+        "description": "返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。",
+        "operationId": "read_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Write Settings",
+        "description": "校验并合并写入 config.toml（原子 0600），失效检索装配缓存后返回新视图。\n\n写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的\n默认工厂每请求现解析。请求体（含 key）不进日志。",
+        "operationId": "write_settings_api_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsWriteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/settings/test": {
+      "post": {
+        "summary": "Test Settings",
+        "description": "对单通道发起最小连通性探测：不持久化，不回显上游错误体。",
+        "operationId": "test_settings_api_settings_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsTestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -361,6 +456,117 @@
         ],
         "title": "AskRetrievalResponse",
         "description": "问答响应中的检索摘要。"
+      },
+      "ChannelSettingsUpdate": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "api_key_env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Env"
+          }
+        },
+        "type": "object",
+        "title": "ChannelSettingsUpdate",
+        "description": "单通道提交值：省略字段 = 保持现值；null/空白 = 显式清空；非空 = 设置。\n\n``api_key`` 以 ``SecretStr`` 承载，repr/日志展开均为掩码，只在非空时落盘。"
+      },
+      "ChannelSettingsView": {
+        "properties": {
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "api_key_env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Env"
+          },
+          "api_key_set": {
+            "type": "boolean",
+            "title": "Api Key Set"
+          },
+          "env_overrides": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Env Overrides"
+          }
+        },
+        "type": "object",
+        "required": [
+          "base_url",
+          "model",
+          "api_key_env",
+          "api_key_set",
+          "env_overrides"
+        ],
+        "title": "ChannelSettingsView",
+        "description": "单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。"
       },
       "GraphExtractorResponse": {
         "properties": {
@@ -701,6 +907,192 @@
         ],
         "title": "SearchResultResponse",
         "description": "带来源锚点和阶段分数的检索结果。"
+      },
+      "SettingsResponse": {
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "title": "Config Path"
+          },
+          "llm": {
+            "$ref": "#/components/schemas/ChannelSettingsView"
+          },
+          "embedding": {
+            "$ref": "#/components/schemas/ChannelSettingsView"
+          },
+          "rerank": {
+            "$ref": "#/components/schemas/ChannelSettingsView"
+          }
+        },
+        "type": "object",
+        "required": [
+          "config_path",
+          "llm",
+          "embedding",
+          "rerank"
+        ],
+        "title": "SettingsResponse",
+        "description": "三通道文件层掩码视图（GET /api/settings 响应）。"
+      },
+      "SettingsTestRequest": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "llm",
+              "embedding",
+              "rerank"
+            ],
+            "title": "Channel"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "api_key_env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key Env"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel"
+        ],
+        "title": "SettingsTestRequest",
+        "description": "POST /api/settings/test 请求：覆盖字段省略/空白 = 用当前有效通道配置。"
+      },
+      "SettingsTestResponse": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "channel": {
+            "type": "string",
+            "title": "Channel"
+          },
+          "latency_ms": {
+            "type": "integer",
+            "title": "Latency Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "channel",
+          "latency_ms"
+        ],
+        "title": "SettingsTestResponse",
+        "description": "连通性测试成功响应（失败走既有 ``{code, message}`` 错误体）。"
+      },
+      "SettingsUpdateRequest": {
+        "properties": {
+          "llm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChannelSettingsUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "embedding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChannelSettingsUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rerank": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChannelSettingsUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "SettingsUpdateRequest",
+        "description": "PUT /api/settings 请求：通道对象省略 = 该通道整体保持不变。"
+      },
+      "SettingsWriteResponse": {
+        "properties": {
+          "config_path": {
+            "type": "string",
+            "title": "Config Path"
+          },
+          "llm": {
+            "$ref": "#/components/schemas/ChannelSettingsView"
+          },
+          "embedding": {
+            "$ref": "#/components/schemas/ChannelSettingsView"
+          },
+          "rerank": {
+            "$ref": "#/components/schemas/ChannelSettingsView"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "config_path",
+          "llm",
+          "embedding",
+          "rerank",
+          "warnings"
+        ],
+        "title": "SettingsWriteResponse",
+        "description": "PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。"
       },
       "ValidationError": {
         "properties": {

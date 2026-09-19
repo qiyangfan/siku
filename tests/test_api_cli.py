@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from typer.testing import CliRunner
 
@@ -17,9 +18,26 @@ from siku.cli import _install_stdin_watchdog, _run_with_stdin_watchdog, app
 from siku.graph.community import SummaryIdentity
 from siku.graph.report import GraphHealthReport
 from siku.graph.service import GraphBuildResult
+from siku.model_supply import ChannelValues
 from siku.wiki.service import WikiResult
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_host_supply(monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔离宿主机 env 与 config.toml：CLI 命令内 resolve_* 现读宿主状态。
+
+    不隔离时，宿主机的 ``SIKU_LLM_API_KEY``（env 前缀映射为 api_key 字段）
+    会让严格断言失败并把真实 key 打进测试输出；损坏的宿主 config.toml 则令
+    serve/graph/wiki 用例非确定性崩溃。
+    """
+    for name in list(os.environ):
+        if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        "siku.model_supply.config_file_path", lambda: Path("/nonexistent/config.toml")
+    )
 
 
 def graph_result() -> GraphBuildResult:
@@ -91,8 +109,12 @@ def test_serve_passes_shared_llm_configuration_to_api(
 
     assert result.exit_code == 0
     assert captured["api_key_env"] == "CUSTOM_KEY"
-    assert captured["llm_base_url"] == "http://127.0.0.1:8787/v1"
-    assert captured["llm_model"] == "custom-model"
+    # CLI 层通道值原样透传（create_app 内部按分层现解析，设置免重启生效）
+    llm_supply = captured["llm_supply"]
+    assert isinstance(llm_supply, ChannelValues)
+    assert llm_supply.base_url == "http://127.0.0.1:8787/v1"
+    assert llm_supply.model == "custom-model"
+    assert llm_supply.api_key_env == "CUSTOM_KEY"
 
 
 def test_cli_llm_options_reach_provider_and_summary_identity(
@@ -226,6 +248,7 @@ def test_wiki_cli_accepts_llm_options(monkeypatch: object, tmp_path: Path) -> No
         "base_url": "http://127.0.0.1:8787/v1",
         "model_id": "muniu-alias",
         "api_key_env": "SIKU_LLM_API_KEY",
+        "api_key": None,
     }
 
 

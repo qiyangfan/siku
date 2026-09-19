@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from siku.qa.models import MAX_CANDIDATE_K, MAX_QUESTION_CHARS, MAX_TOP_K
 from siku.retrieve.models import SearchOptions
@@ -162,3 +163,66 @@ class WikiResponse(BaseModel):
     cache_hits: int
     llm_calls: int
     empty_graph: bool
+
+
+class ChannelSettingsView(BaseModel):
+    """单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。"""
+
+    base_url: str | None
+    model: str | None
+    api_key_env: str | None
+    api_key_set: bool
+    env_overrides: list[str]
+
+
+class SettingsResponse(BaseModel):
+    """三通道文件层掩码视图（GET /api/settings 响应）。"""
+
+    config_path: str
+    llm: ChannelSettingsView
+    embedding: ChannelSettingsView
+    rerank: ChannelSettingsView
+
+
+class ChannelSettingsUpdate(BaseModel):
+    """单通道提交值：省略字段 = 保持现值；null/空白 = 显式清空；非空 = 设置。
+
+    ``api_key`` 以 ``SecretStr`` 承载，repr/日志展开均为掩码，只在非空时落盘。
+    """
+
+    base_url: str | None = None
+    model: str | None = None
+    api_key: SecretStr | None = None
+    api_key_env: str | None = None
+
+
+class SettingsUpdateRequest(BaseModel):
+    """PUT /api/settings 请求：通道对象省略 = 该通道整体保持不变。"""
+
+    llm: ChannelSettingsUpdate | None = None
+    embedding: ChannelSettingsUpdate | None = None
+    rerank: ChannelSettingsUpdate | None = None
+
+
+class SettingsWriteResponse(SettingsResponse):
+    """PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。"""
+
+    warnings: list[str]
+
+
+class SettingsTestRequest(BaseModel):
+    """POST /api/settings/test 请求：覆盖字段省略/空白 = 用当前有效通道配置。"""
+
+    channel: Literal["llm", "embedding", "rerank"]
+    base_url: str | None = None
+    model: str | None = None
+    api_key: SecretStr | None = None
+    api_key_env: str | None = None
+
+
+class SettingsTestResponse(BaseModel):
+    """连通性测试成功响应（失败走既有 ``{code, message}`` 错误体）。"""
+
+    ok: bool
+    channel: str
+    latency_ms: int

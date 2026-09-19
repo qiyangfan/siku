@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -33,24 +35,46 @@ from siku.api.models import (
     SearchRequest,
     SearchResponse,
     SearchResultResponse,
+    SettingsResponse,
+    SettingsTestRequest,
+    SettingsTestResponse,
+    SettingsUpdateRequest,
+    SettingsWriteResponse,
     WikiRequest,
     WikiResponse,
+)
+from siku.api.settings import (
+    SettingsValidationError,
+    apply_update,
+    default_config_path,
+    embedding_rebuild_warnings,
+    map_probe_error,
+    masked_view,
+    probe_channel,
+    resolve_probe_target,
 )
 from siku.graph.community import SummaryIdentity
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.models import GraphExtractor
 from siku.graph.providers import (
     DEFAULT_API_KEY_ENV,
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL_ID,
     HttpxLlmProvider,
 )
 from siku.graph.service import GraphBuildResult, build_graph
 from siku.ingest import IngestReport, ingest_path
+from siku.model_supply import (
+    ChannelValues,
+    build_embedding_provider,
+    build_reranker_provider,
+    load_config,
+    resolve_embedding_channel,
+    resolve_llm_channel,
+    resolve_rerank_channel,
+    save_config,
+)
 from siku.qa.providers import AnswerProvider
 from siku.qa.service import AnswerService
-from siku.retrieve.errors import InvalidQueryError
-from siku.retrieve.local_models import LocalEmbeddingProvider, LocalRerankerProvider
+from siku.retrieve.errors import InvalidQueryError, ModelNotAvailableError
 from siku.retrieve.models import SearchOptions
 from siku.retrieve.service import SearchService
 from siku.wiki.service import WikiResult, generate_wiki
@@ -72,8 +96,85 @@ WikiGenerator = Callable[[Path, Summarizer], WikiResult]
 AnswerProviderFactory = Callable[[], AnswerProvider]
 
 
-def _default_search_service(data_dir: Path) -> SearchService:
-    return SearchService(data_dir, LocalEmbeddingProvider(), LocalRerankerProvider())
+def _supply_search_service(
+    data_dir: Path,
+    embedding_supply: ChannelValues | None,
+    rerank_supply: ChannelValues | None,
+    embedding_dimensions: int | None = None,
+) -> SearchService:
+    """按分层供给配置装配检索服务；embedding 未配置时抛带指引的领域错误。
+
+    rerank 通道未配置时按 reranker=none（ADR-0009 一等公民）处理，不阻塞检索；
+    embedding 通道是检索/问答的必需品，缺失直接报配置指引错误。
+    """
+    embedding_channel = resolve_embedding_channel(embedding_supply)
+    embedding = build_embedding_provider(embedding_channel, dimensions=embedding_dimensions)
+    reranker = None
+    try:
+        reranker = build_reranker_provider(resolve_rerank_channel(rerank_supply))
+    except ModelNotAvailableError:
+        reranker = None
+    return SearchService(data_dir, embedding, reranker)
+
+
+class _SearchSupplyCache:
+    """serve 默认检索装配的进程内缓存：跨请求复用 provider 连接池。
+
+    设置写入后经 :meth:`invalidate` 失效：关闭旧服务持有的 provider 连接池，
+    下一次请求按新配置重建（免重启生效）。锁串行化装配与失效，避免并发请求
+    在半失效状态重复装配。
+    """
+
+    def __init__(
+        self,
+        embedding_supply: ChannelValues | None,
+        rerank_supply: ChannelValues | None,
+        embedding_dimensions: int | None,
+    ) -> None:
+        self._embedding_supply = embedding_supply
+        self._rerank_supply = rerank_supply
+        self._embedding_dimensions = embedding_dimensions
+        self._service: SearchService | None = None
+        self._lock = threading.Lock()
+
+    def get(self, data_dir: Path) -> SearchService:
+        with self._lock:
+            if self._service is None:
+                self._service = _supply_search_service(
+                    data_dir,
+                    self._embedding_supply,
+                    self._rerank_supply,
+                    self._embedding_dimensions,
+                )
+            return self._service
+
+    def invalidate(self) -> None:
+        with self._lock:
+            if self._service is not None:
+                self._service.close()
+                self._service = None
+
+
+def _llm_provider_factory(
+    llm_supply: ChannelValues | None,
+) -> Callable[[], HttpxLlmProvider]:
+    """构建每次请求现解析 llm 通道的 provider 工厂。
+
+    CLI 层（``llm_supply``）保持最高优先级，env 与 config.toml 每次现读：
+    设置中心写入后，问答/图谱/wiki 的 LLM 通道免重启生效。provider 仍按请求
+    构造、用后关闭（与既有行为一致）。
+    """
+
+    def factory() -> HttpxLlmProvider:
+        channel = resolve_llm_channel(llm_supply)
+        return HttpxLlmProvider(
+            base_url=channel.base_url,
+            model_id=channel.model,
+            api_key=channel.api_key.get_secret_value() if channel.api_key else None,
+            api_key_env=channel.api_key_env or DEFAULT_API_KEY_ENV,
+        )
+
+    return factory
 
 
 def _close_if_supported(resource: object) -> None:
@@ -94,10 +195,12 @@ def create_app(
     vault: Path = DEFAULT_VAULT,
     data_dir: Path = DEFAULT_DATA_DIR,
     api_key_env: str = DEFAULT_API_KEY_ENV,
-    llm_base_url: str = DEFAULT_BASE_URL,
-    llm_model: str = DEFAULT_MODEL_ID,
+    llm_supply: ChannelValues | None = None,
+    embedding_supply: ChannelValues | None = None,
+    rerank_supply: ChannelValues | None = None,
+    embedding_dimensions: int | None = None,
     ingest_handler: IngestHandler = ingest_path,
-    search_service_factory: SearchServiceFactory = _default_search_service,
+    search_service_factory: SearchServiceFactory | None = None,
     graph_extractor_factory: GraphExtractorFactory | None = None,
     graph_builder: GraphBuilder = build_graph,
     summarizer_factory: SummarizerFactory | None = None,
@@ -105,7 +208,20 @@ def create_app(
     answer_provider_factory: AnswerProviderFactory | None = None,
     ui_dir: Path | None = None,
 ) -> FastAPI:
-    """创建一个可测试的 localhost API 应用。"""
+    """创建一个可测试的 localhost API 应用。
+
+    模型供给（ADR-0009）：`llm_supply`/`embedding_supply`/`rerank_supply` 是 CLI
+    层传入的通道参数（缺省时由配置解析回退环境变量与 config.toml）；LLM 与检索
+    的默认工厂在**每次请求时**按分层配置现装配，设置中心写入后免重启生效。
+    显式注入工厂参数时（测试注入 fake）优先，供给参数被忽略。
+    """
+    search_cache: _SearchSupplyCache | None = None
+    if search_service_factory is not None:
+        resolved_search_factory = search_service_factory
+    else:
+        search_cache = _SearchSupplyCache(embedding_supply, rerank_supply, embedding_dimensions)
+        resolved_search_factory = search_cache.get
+    llm_providers = _llm_provider_factory(llm_supply)
     application = FastAPI(
         title="siku API",
         version=__version__,
@@ -115,44 +231,25 @@ def create_app(
         CORSMiddleware,
         allow_origins=list(ALLOWED_CORS_ORIGINS),
         allow_credentials=False,
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT"],
         allow_headers=["*"],
     )
 
     application.state.vault = vault
     application.state.data_dir = data_dir
     application.state.api_key_env = api_key_env
-    application.state.llm_base_url = llm_base_url
-    application.state.llm_model = llm_model
+    application.state.search_supply_cache = search_cache
     application.state.ingest_handler = ingest_handler
-    application.state.search_service_factory = search_service_factory
+    application.state.search_service_factory = resolved_search_factory
     application.state.graph_extractor_factory = graph_extractor_factory or (
-        lambda: LlmGraphExtractor(
-            provider=HttpxLlmProvider(
-                base_url=llm_base_url,
-                model_id=llm_model,
-                api_key_env=api_key_env,
-            )
-        )
+        lambda: LlmGraphExtractor(provider=llm_providers())
     )
     application.state.graph_builder = graph_builder
     application.state.summarizer_factory = summarizer_factory or (
-        lambda: CommunitySummarizer(
-            provider=HttpxLlmProvider(
-                base_url=llm_base_url,
-                model_id=llm_model,
-                api_key_env=api_key_env,
-            )
-        )
+        lambda: CommunitySummarizer(provider=llm_providers())
     )
     application.state.wiki_generator = wiki_generator
-    application.state.answer_provider_factory = answer_provider_factory or (
-        lambda: HttpxLlmProvider(
-            base_url=llm_base_url,
-            model_id=llm_model,
-            api_key_env=api_key_env,
-        )
-    )
+    application.state.answer_provider_factory = answer_provider_factory or llm_providers
 
     @application.exception_handler(RequestValidationError)
     async def handle_validation_error(
@@ -337,6 +434,63 @@ def create_app(
             llm_calls=result.llm_calls,
             empty_graph=result.empty_graph,
         )
+
+    @application.get("/api/settings", response_model=SettingsResponse)
+    def read_settings() -> SettingsResponse | JSONResponse:
+        """返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。"""
+        try:
+            config = load_config()
+        except Exception as exc:
+            logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return masked_view(config, default_config_path())
+
+    @application.put("/api/settings", response_model=SettingsWriteResponse)
+    def write_settings(update: SettingsUpdateRequest) -> SettingsWriteResponse | JSONResponse:
+        """校验并合并写入 config.toml（原子 0600），失效检索装配缓存后返回新视图。
+
+        写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的
+        默认工厂每请求现解析。请求体（含 key）不进日志。
+        """
+        try:
+            merged = apply_update(load_config(), update)
+            save_config(merged)
+        except SettingsValidationError as exc:
+            return _error_response(422, "invalid_settings", str(exc))
+        except Exception as exc:
+            logger.debug("API settings write failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        cache = application.state.search_supply_cache
+        if cache is not None:
+            cache.invalidate()
+        warnings = embedding_rebuild_warnings(merged, application.state.data_dir)
+        return SettingsWriteResponse(
+            **masked_view(merged, default_config_path()).model_dump(), warnings=warnings
+        )
+
+    @application.post("/api/settings/test", response_model=SettingsTestResponse)
+    def test_settings(request: SettingsTestRequest) -> SettingsTestResponse | JSONResponse:
+        """对单通道发起最小连通性探测：不持久化，不回显上游错误体。"""
+        started = time.perf_counter()
+        try:
+            channel, base_url, model, api_key, api_key_env = resolve_probe_target(request)
+            probe_channel(
+                channel=channel,
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                api_key_env=api_key_env,
+            )
+        except SettingsValidationError as exc:
+            return _error_response(422, "invalid_settings", str(exc))
+        except Exception as exc:
+            logger.debug("API settings test failed: error_class=%s", type(exc).__name__)
+            mapping = map_probe_error(exc, request.channel)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        return SettingsTestResponse(ok=True, channel=request.channel, latency_ms=latency_ms)
 
     if ui_dir is not None:
         application.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")

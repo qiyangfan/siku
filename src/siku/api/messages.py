@@ -18,6 +18,7 @@ from siku.graph.errors import (
     LlmRateLimitError,
 )
 from siku.ingest import IngestError
+from siku.model_supply import config_file_path
 from siku.retrieve.errors import (
     BaselineExistsError,
     EvaluationError,
@@ -141,8 +142,11 @@ def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
         return ErrorMapping(
             503,
             "model_not_available",
-            "检索模型不可用：本地检索依赖 retrieval 扩展，"
-            "请先执行 uv sync --extra retrieval 安装；模型文件将在首次使用时自动下载。",
+            "模型端点未配置或不可用：siku 不内置模型（BYOK），请在 "
+            f"{config_file_path()} 对应通道段补全 base_url 与 model，"
+            "或用 CLI 参数指定端点（embedding 通道示例：--embedding-base-url "
+            "http://127.0.0.1:11434/v1 --embedding-model bge-m3；rerank 通道示例："
+            "--rerank-base-url / --rerank-model）后重试。",
         )
     if isinstance(exc, FtsUnavailableError):
         return ErrorMapping(
@@ -155,7 +159,7 @@ def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
         return ErrorMapping(
             503,
             "provider_error",
-            "模型推理失败：请检查本地模型文件与运行环境后重试；技术详情见日志。",
+            "模型端点调用失败：请检查端点可达性、API 凭证与模型名称后重试；技术详情见日志。",
         )
     if isinstance(exc, IndexBusyError):
         return ErrorMapping(409, "index_busy", "检索索引暂不可用：可能正在重建索引，请稍后重试。")
