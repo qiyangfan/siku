@@ -23,7 +23,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 4 | WebUI 最小集与问答 | 问答编排 + `/api/ask` + React 对话最小闭环；浏览/图谱/wiki 为支撑视图 | ✅ 已完成（2026-09-18，归档 `2026-09-18-add-qa-vertical-slice`；无状态、非流式） |
 | 5 | Tauri 壳（阶段二） | 无签名桌面包，GitHub Releases + Homebrew | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell`，desktop-shell spec 入主 specs；macOS arm64 冒烟 ✅，Windows/Linux 冒烟经用户裁决豁免、移触发器台账；Release 无限期禁用） |
 | 5+ | 模型供给 BYOK 端点化（发布前瘦身打磨） | 删除进程内模型（torch/权重），LLM/embedding/rerank 全走用户端点；分层 config.toml；sidecar 305MiB；通道化基线 | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-byok-model-supply`；model-supply spec 入主 specs；双通道基线实测由用户裁决豁免，可随时按 benchmarks/README.md 补录） |
-| 5++ | 桌面上手补齐（配模型 → 进资料 → 看知识） | 设置中心 / 资料管理 / 浏览·图谱·wiki 视图 | 设置中心 ✅ 已完成（2026-09-19，归档 `2026-09-19-add-ui-settings-center`，三端点 + 免重启生效 + React 设置视图，http-api/web-ui spec 增量入主 specs）；资料管理 ✅ 已完成（2026-09-19，归档 `2026-09-19-add-desktop-library`，五端点 + 进程内单任务槽 + React 资料库视图，http-api/web-ui spec 增量入主 specs）；知识视图已立项（`add-browse-graph-wiki-views`，待 apply，为下一 apply 对象） |
+| 5++ | 桌面上手补齐（配模型 → 进资料 → 看知识） | 设置中心 / 资料管理 / 浏览·图谱·wiki 视图 | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-ui-settings-center` 三端点 + 免重启生效 + React 设置视图；归档 `2026-09-19-add-desktop-library` 五端点 + 进程内单任务槽 + React 资料库视图；归档 `2026-09-19-add-browse-graph-wiki-views` 八个只读端点 + Sigma.js 图谱画布 + 浏览/wiki 视图 + 实体联动问答，http-api/web-ui spec 增量均已入主 specs）——上手链路（配模型 → 进资料 → 看知识）闭环 |
 | 6 | 签名与更新（阶段三） | Apple 公证 + Windows 签名 + 自动更新 | 更新链路灰度可用 |
 
 阶段依赖：1→2→3→4 严格串行（2 依赖 1 的投影，3 依赖 2 的元数据）；Phase 4 的 UI
@@ -57,7 +57,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 商业化决策 | 商标全类目清查（SIKU 玩具品牌） | ADR-0007 |
 | 发布解禁（Release 重启 / Phase 6 启动） | 执行 Windows/Linux 实机安装冒烟并回填（清单见 docs/desktop.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell` |
 | 有 Ollama / 云端 key 的环境 | 补录双通道基线（复现路径见 benchmarks/README.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-byok-model-supply` |
-| 有真实 BYOK 端点环境 | 设置中心 Tauri 壳内手工冒烟（自动化等价冒烟已覆盖 serve+UI 全链路，见归档 change review.md） | 归档 `2026-09-19-add-ui-settings-center` |
+| 有真实 BYOK 端点环境 | 设置中心/资料库/浏览·图谱·wiki 三视图 Tauri 壳内手工冒烟（serve 级全链路冒烟已记账于各归档 change review.md） | 归档 `2026-09-19-add-ui-settings-center` 及后续桌面上手 change |
 
 ## Backlog（明确不进当前阶段，防 scope creep）
 
