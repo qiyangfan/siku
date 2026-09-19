@@ -10,7 +10,9 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from siku.api import reading as reading_module
 from siku.api.app import create_app
+from siku.api.reading import WikiEntryReadError
 from siku.graph.models import Community, Entity, Relation
 from siku.graph.store import save_graph
 
@@ -191,6 +193,24 @@ class TestNotesEndpoints:
         body = response.json()
         assert body["code"] == "note_not_found"
         assert body["message"]
+
+    def test_corrupt_projection_skipped_not_blocking(self, tmp_path: Path) -> None:
+        """清单/单篇是浏览入口：单条投影损坏跳过留痕，不拖垮其余条目。"""
+        vault = tmp_path / "vault"
+        write_note(vault, "good", title="完好", source_id="aa000001", sections=[("内容", "正文")])
+        (vault / "notes" / "broken.md").write_text("缺少 frontmatter 的内容", encoding="utf-8")
+        client = build_client(tmp_path)
+
+        listing = client.get("/api/notes")
+        assert listing.status_code == 200
+        payload = listing.json()
+        assert payload["total"] == 1
+        assert [note["source_id"] for note in payload["notes"]] == ["aa000001"]
+
+        # 完好单篇照常可读，不受损坏邻居影响
+        detail = client.get("/api/notes/aa000001")
+        assert detail.status_code == 200
+        assert detail.json()["source_name"] == "good.md"
 
 
 class TestGraphReadEndpoints:
@@ -536,17 +556,78 @@ class TestWikiReadEndpoints:
         assert response.status_code == 200
         assert response.json()["title"] == "社区 0007"
 
-    def test_unreadable_entry_returns_500_not_404(self, tmp_path: Path) -> None:
-        """条目存在但损坏：读失败走 500 内部错误，不得误报「wiki 尚未生成」。"""
+    def test_unreadable_entry_detail_returns_422_not_404(self, tmp_path: Path) -> None:
+        """条目存在但损坏：单条读取走 422 源数据不可处理口径（与 notes 投影一致），
+        不得误报「wiki 尚未生成」，也不得落入 500 内部错误。"""
         entries = tmp_path / "data" / "wiki" / "entries"
         entries.mkdir(parents=True, exist_ok=True)
         (entries / "community-0003.md").write_bytes(b"\xff\xfe not utf-8")
         client = build_client(tmp_path)
         detail = client.get("/api/wiki/entries/3")
-        assert detail.status_code == 500
-        assert detail.json()["code"] == "internal_error"
-        listing = client.get("/api/wiki/entries")
-        assert listing.status_code == 500
+        assert detail.status_code == 422
+        assert detail.json()["code"] == "wiki_entry_parse_error"
+        assert detail.json()["message"]
+
+    def test_unreadable_entry_oserror_folds_to_422(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError 家族（权限拒绝/竞态删除）与编码损坏同折 422，不得落 500。"""
+        self.write_entries(tmp_path / "data")
+        client = build_client(tmp_path)
+
+        def raise_permission(self: Path, *args: object, **kwargs: object) -> str:
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(Path, "read_text", raise_permission)
+        response = client.get("/api/wiki/entries/1")
+        assert response.status_code == 422
+        assert response.json()["code"] == "wiki_entry_parse_error"
+
+    def test_list_skips_unreadable_entry(self, tmp_path: Path) -> None:
+        """清单是浏览入口：单条损坏跳过留痕，其余条目照常可见，不整体报错。"""
+        entries = tmp_path / "data" / "wiki" / "entries"
+        entries.mkdir(parents=True, exist_ok=True)
+        (entries / "community-0001.md").write_text("# 完好条目\n\n正文\n", encoding="utf-8")
+        (entries / "community-0002.md").write_bytes(b"\xff\xfe not utf-8")
+        client = build_client(tmp_path)
+        response = client.get("/api/wiki/entries")
+        assert response.status_code == 200
+        payload = response.json()
+        assert [entry["community_id"] for entry in payload["entries"]] == [1]
+        assert payload["entries"][0]["title"] == "完好条目"
+
+    def test_list_skips_entry_whose_mtime_stat_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """清单内单条 mtime stat 失败（竞态删除）与读失败同跳过，不整体报错。"""
+        self.write_entries(tmp_path / "data")
+        real_generated_at = reading_module._generated_at
+
+        def race_delete(path: Path) -> str:
+            if path.name == "community-0001.md":
+                raise WikiEntryReadError(f"Failed to stat wiki entry {path.name}: vanished")
+            return real_generated_at(path)
+
+        monkeypatch.setattr(reading_module, "_generated_at", race_delete)
+        client = build_client(tmp_path)
+        response = client.get("/api/wiki/entries")
+        assert response.status_code == 200
+        assert [entry["community_id"] for entry in response.json()["entries"]] == [2]
+
+    def test_list_entries_dir_vanished_mid_scan_returns_404(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """条目目录在扫描窗口内被移除（OSError）：按未生成口径 404，不落 500。"""
+        self.write_entries(tmp_path / "data")
+
+        def raise_scan(self: Path) -> object:
+            raise OSError(2, "No such file or directory")
+
+        monkeypatch.setattr(Path, "iterdir", raise_scan)
+        client = build_client(tmp_path)
+        response = client.get("/api/wiki/entries")
+        assert response.status_code == 404
+        assert response.json()["code"] == "wiki_missing"
 
     def test_list_without_wiki_returns_404(self, tmp_path: Path) -> None:
         client = build_client(tmp_path)

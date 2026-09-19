@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from siku import __version__
 from siku.api.library import (
+    AttachmentDigestCache,
     IndexRunner,
     LibraryJobBusyError,
     LibraryJobManager,
@@ -28,7 +29,7 @@ from siku.api.library import (
     discard_staged,
     stage_upload,
 )
-from siku.api.messages import map_ask_error, map_domain_error
+from siku.api.messages import map_ask_error, map_domain_error, map_read_error
 from siku.api.models import (
     AskCitationResponse,
     AskRequest,
@@ -65,10 +66,6 @@ from siku.api.models import (
     WikiResponse,
 )
 from siku.api.reading import (
-    GraphEntityNotFoundError,
-    NoteNotFoundError,
-    WikiEntryNotFoundError,
-    WikiMissingError,
     graph_neighbors,
     graph_overview,
     graph_search,
@@ -89,7 +86,6 @@ from siku.api.settings import (
     resolve_probe_target,
 )
 from siku.graph.community import SummaryIdentity
-from siku.graph.errors import GraphArtifactsMissingError
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.models import GraphExtractor
 from siku.graph.providers import (
@@ -301,6 +297,8 @@ def create_app(
     application.state.api_key_env = api_key_env
     application.state.search_supply_cache = search_cache
     application.state.ingest_handler = ingest_handler
+    # 附件哈希的 stat 快路径缓存随应用生命周期存在（正确性锚点见类 docstring）
+    application.state.digest_cache = AttachmentDigestCache()
     library_jobs = LibraryJobManager(
         vault=vault,
         ingest_handler=ingest_handler,
@@ -372,12 +370,16 @@ def create_app(
     def library() -> LibraryResponse | JSONResponse:
         """桌面 vault 来源级清单：全部派生自既有摄取元数据，只读不落盘。"""
         try:
-            return build_library_view(application.state.vault, application.state.data_dir)
+            return build_library_view(
+                application.state.vault,
+                application.state.data_dir,
+                digest_cache=application.state.digest_cache,
+            )
         except Exception as exc:
             logger.debug(
-                "API library listing failed: error_class=%s", type(exc).__name__, exc_info=True
+                "API library listing failed: error_class=%s detail=%s", type(exc).__name__, exc
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
 
     @application.post("/api/library/ingest", response_model=LibraryJobResponse)
@@ -453,8 +455,10 @@ def create_app(
         try:
             notes, total = list_notes(application.state.vault, page, page_size)
         except Exception as exc:
-            logger.debug("API notes listing failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API notes listing failed: error_class=%s detail=%s", type(exc).__name__, exc
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return NotesPageResponse(
             notes=[NoteSummaryResponse(**asdict(note)) for note in notes],
@@ -468,13 +472,11 @@ def create_app(
         """单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点，只读。"""
         try:
             detail = read_note_detail(application.state.vault, source_id)
-        except NoteNotFoundError:
-            return _error_response(
-                404, "note_not_found", "请求的笔记不存在：可能已被移除或重新摄取。"
-            )
         except Exception as exc:
-            logger.debug("API note detail failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API note detail failed: error_class=%s detail=%s", type(exc).__name__, exc
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return NoteDetailResponse(**asdict(detail))
 
@@ -594,13 +596,11 @@ def create_app(
         """图谱聚合统计：节点/边/社区计数与类型分布，只读现读三件表。"""
         try:
             stats = graph_stats(application.state.data_dir)
-        except GraphArtifactsMissingError:
-            return _error_response(
-                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
-            )
         except Exception as exc:
-            logger.debug("API graph stats failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API graph stats failed: error_class=%s detail=%s", type(exc).__name__, exc
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return GraphStatsResponse(**asdict(stats))
 
@@ -611,13 +611,11 @@ def create_app(
         """初始画布：度数 top-N 节点与集合内诱导边；超限明示截断（服务端硬顶）。"""
         try:
             subgraph = graph_overview(application.state.data_dir, limit=limit)
-        except GraphArtifactsMissingError:
-            return _error_response(
-                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
-            )
         except Exception as exc:
-            logger.debug("API graph overview failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API graph overview failed: error_class=%s detail=%s", type(exc).__name__, exc
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return GraphSubgraphResponse(**asdict(subgraph))
 
@@ -631,13 +629,11 @@ def create_app(
             return _error_response(422, "invalid_request", "请求参数无效，请检查后重试。")
         try:
             subgraph = graph_search(application.state.data_dir, query=q, limit=limit)
-        except GraphArtifactsMissingError:
-            return _error_response(
-                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
-            )
         except Exception as exc:
-            logger.debug("API graph search failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API graph search failed: error_class=%s detail=%s", type(exc).__name__, exc
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return GraphSearchResponse(**asdict(subgraph))
 
@@ -652,19 +648,11 @@ def create_app(
             subgraph = graph_neighbors(
                 application.state.data_dir, entity_id, limit=limit, depth=depth
             )
-        except GraphEntityNotFoundError:
-            return _error_response(
-                404,
-                "graph_entity_not_found",
-                "图谱中不存在该实体：图谱可能已重建合并，请刷新后重试。",
-            )
-        except GraphArtifactsMissingError:
-            return _error_response(
-                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
-            )
         except Exception as exc:
-            logger.debug("API graph neighbors failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API graph neighbors failed: error_class=%s detail=%s", type(exc).__name__, exc
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return GraphSubgraphResponse(**asdict(subgraph))
 
@@ -699,13 +687,13 @@ def create_app(
         """wiki 条目清单：只读派生自 data/wiki/entries，绝不触发生成路径。"""
         try:
             entries = list_wiki_entries(application.state.data_dir)
-        except WikiMissingError:
-            return _error_response(
-                404, "wiki_missing", "wiki 尚未生成：请先构建图谱并执行 siku wiki。"
-            )
         except Exception as exc:
-            logger.debug("API wiki entries listing failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API wiki entries listing failed: error_class=%s detail=%s",
+                type(exc).__name__,
+                exc,
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return WikiEntriesResponse(
             entries=[WikiEntrySummaryResponse(**asdict(entry)) for entry in entries]
@@ -716,19 +704,13 @@ def create_app(
         """wiki 单条读取：Markdown 全文与时效元数据，只读不触发生成。"""
         try:
             entry = read_wiki_entry(application.state.data_dir, community_id)
-        except WikiEntryNotFoundError:
-            return _error_response(
-                404,
-                "wiki_entry_not_found",
-                "请求的 wiki 条目不存在：条目可能已随图谱重建更新。",
-            )
-        except WikiMissingError:
-            return _error_response(
-                404, "wiki_missing", "wiki 尚未生成：请先构建图谱并执行 siku wiki。"
-            )
         except Exception as exc:
-            logger.debug("API wiki entry detail failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            logger.debug(
+                "API wiki entry detail failed: error_class=%s detail=%s",
+                type(exc).__name__,
+                exc,
+            )
+            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return WikiEntryDetailResponse(**asdict(entry))
 

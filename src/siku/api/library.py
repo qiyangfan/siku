@@ -90,6 +90,41 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+@dataclass(frozen=True)
+class _DigestEntry:
+    """stat 指纹 → 全量哈希的记忆化条目。"""
+
+    size: int
+    mtime_ns: int
+    digest: str
+
+
+class AttachmentDigestCache:
+    """附件 SHA-256 的进程内记忆化：stat 快路径命中则免全量读盘。
+
+    清单每请求对全部附件做完整 SHA-256 是 O(全部原件字节数) 的磁盘 I/O；
+    本缓存以 (st_size, st_mtime_ns) 为正确性锚点，原件一经变更下次请求必然
+    重算，摄取后无需显式失效。同尺寸且同 mtime 的内容替换（需刻意伪造）可能
+    漏检，但摄取管线以真实 source_hash 为权威，呈现层误差会随下次摄取自愈。
+    进程内不落盘，不触碰「读取面只读」边界；已删附件的键会残留，量级为会话
+    内删过的附件数（KB 级），不值得修剪。并发：dict 读写依 GIL 原子性，最坏
+    情形是并发请求重复哈希同一文件（幂等无害），不加锁。
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[str, _DigestEntry] = {}
+
+    def digest_of(self, path: Path) -> str:
+        stat = path.stat()
+        key = str(path.absolute())
+        entry = self._entries.get(key)
+        if entry is not None and entry.size == stat.st_size and entry.mtime_ns == stat.st_mtime_ns:
+            return entry.digest
+        digest = _sha256_file(path)
+        self._entries[key] = _DigestEntry(stat.st_size, stat.st_mtime_ns, digest)
+        return digest
+
+
 def stage_upload(filename: str, stream: BinaryIO) -> Path:
     """把一个上传流写入确定性暂存路径并返回。
 
@@ -164,8 +199,12 @@ def _source_row(
     notes: Path,
     whitelist: set[str],
     manifest: dict[str, tuple[str, str]],
+    digest_cache: AttachmentDigestCache | None = None,
 ) -> LibrarySourceResponse:
-    digest = _sha256_file(attachment)
+    if digest_cache is not None:
+        digest = digest_cache.digest_of(attachment)
+    else:
+        digest = _sha256_file(attachment)
     note_path = notes / f"{attachment.stem}.md"
     document: DocumentRecord | None = None
     if note_path.is_file():
@@ -207,16 +246,34 @@ def _source_id_match(stem: str) -> str | None:
     return match.group(0)[2:] if match else None
 
 
-def build_library_view(vault: Path, data_dir: Path) -> LibraryResponse:
-    """以 attachments/ 为主体推导来源清单；vault 为空或目录缺失时返回空清单。"""
+def build_library_view(
+    vault: Path, data_dir: Path, *, digest_cache: AttachmentDigestCache | None = None
+) -> LibraryResponse:
+    """以 attachments/ 为主体推导来源清单；vault 为空或目录缺失时返回空清单。
+
+    digest_cache 传入时启用 stat 快路径，跨请求复用附件全量哈希（serve 进程内
+    由应用状态持有同一实例，不得跨 vault 共享键空间）。目录级与单附件级的扫描
+    窗口竞态（外部删除/重生成/权限等 OSError）一律降级留痕：目录不可读呈现
+    空清单、单附件缺席该行，均不落 500，下次刷新自愈。
+    """
     attachments = vault / "attachments"
     notes = vault / "notes"
     whitelist = set(extractor_registry())
     manifest = _index_manifest(data_dir)
     sources: list[LibrarySourceResponse] = []
     if attachments.is_dir():
-        for attachment in sorted(path for path in attachments.rglob("*") if path.is_file()):
-            sources.append(_source_row(attachment, vault, notes, whitelist, manifest))
+        try:
+            attachment_paths = sorted(path for path in attachments.rglob("*") if path.is_file())
+        except OSError as exc:
+            logger.warning("Attachments directory scan failed: detail=%s", exc)
+            attachment_paths = []
+        for attachment in attachment_paths:
+            try:
+                sources.append(
+                    _source_row(attachment, vault, notes, whitelist, manifest, digest_cache)
+                )
+            except OSError as exc:
+                logger.debug("library attachment vanished during scan: detail=%s", exc)
     return LibraryResponse(sources=sources)
 
 

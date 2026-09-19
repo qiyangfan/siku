@@ -1,9 +1,21 @@
-"""CLI 与 HTTP API 共用的领域错误文案和归一化映射。"""
+"""CLI 与 HTTP API 共用的领域错误文案和归一化映射。
+
+只读读取面（浏览/图谱/wiki 清单与单条）的错误无 CLI 对应路径，但同样集中在
+本模块（map_read_error）成文：全部错误码与文案保持单一映射来源，端点禁止
+内联字面量。错误语义边界见 api/reading.py 模块 docstring。
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from siku.api.reading import (
+    GraphEntityNotFoundError,
+    NoteNotFoundError,
+    WikiEntryNotFoundError,
+    WikiEntryReadError,
+    WikiMissingError,
+)
 from siku.graph.errors import (
     GraphArtifactsMissingError,
     GraphArtifactsStaleError,
@@ -128,6 +140,7 @@ def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             "图谱产物缺失：请先执行 siku graph 构建图谱，再生成 wiki。",
         )
     if isinstance(exc, GraphStoreCorruptError):
+        # 整库级派生产物损坏 → 409 状态前置（单条目级损坏走 422，边界见 reading.py）
         return ErrorMapping(
             409,
             "graph_store_corrupt",
@@ -231,6 +244,43 @@ def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             "技术详情见日志。",
         )
     return ErrorMapping(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
+
+
+def map_read_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
+    """只读读取面（浏览/图谱/wiki 清单与单条）的错误归一化映射。
+
+    读取面错误无 CLI 对应路径，「与 CLI 共享同一映射来源」在此落为：全部读
+    错误码与文案只在本函数成文，端点禁止内联字面量。读上下文对同一领域错误
+    的语义可与写路径不同并在此显式成文——GraphArtifactsMissingError 对读请求
+    是 404 资源未生成，对写请求才是 409 状态前置；其余领域错误回落
+    map_domain_error（含 409 graph_store_corrupt / 422 note_parse_error）。
+    """
+    if isinstance(exc, NoteNotFoundError):
+        return ErrorMapping(404, "note_not_found", "请求的笔记不存在：可能已被移除或重新摄取。")
+    if isinstance(exc, GraphEntityNotFoundError):
+        return ErrorMapping(
+            404,
+            "graph_entity_not_found",
+            "图谱中不存在该实体：图谱可能已重建合并，请刷新后重试。",
+        )
+    if isinstance(exc, WikiEntryNotFoundError):
+        return ErrorMapping(
+            404,
+            "wiki_entry_not_found",
+            "请求的 wiki 条目不存在：条目可能已随图谱重建更新。",
+        )
+    if isinstance(exc, WikiEntryReadError):
+        return ErrorMapping(
+            422,
+            "wiki_entry_parse_error",
+            "wiki 条目读取失败：data/wiki/entries 下的条目文件可能已损坏；"
+            "请重新执行 siku wiki 重新生成；技术详情见日志。",
+        )
+    if isinstance(exc, WikiMissingError):
+        return ErrorMapping(404, "wiki_missing", "wiki 尚未生成：请先构建图谱并执行 siku wiki。")
+    if isinstance(exc, GraphArtifactsMissingError):
+        return ErrorMapping(404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。")
+    return map_domain_error(exc, api_key_env=api_key_env)
 
 
 def retrieval_error_message(exc: RetrievalError) -> str:

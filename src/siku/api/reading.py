@@ -2,10 +2,21 @@
 
 全部输入来自既有事实源（`vault/notes/` 投影、图谱 parquet 三件表、
 `data/wiki/entries/` 条目），读取路径不触碰任何生成器（红线 3：只读边界）。
+
+读取面错误语义边界（归一化映射见 messages.map_read_error）：
+- **整库级损坏**（派生存储整体不可读，如图谱 parquet 损坏）→ 409 状态前置
+  `graph_store_corrupt`：全部读取均不可用，唯一出路是整库重建；
+- **单条目级损坏**（一条投影/条目不可读，其余可用）→ 422 源数据不可处理
+  （`note_parse_error` / `wiki_entry_parse_error`）：按条目粒度恢复；
+- **清单面降级**：清单是浏览入口，单条损坏（含权限等 OSError）跳过并日志
+  留痕，不拖垮其余条目，不落 500。精确错误在单条读取且身份可知时呈现——
+  wiki 条目按编号寻址，读失败 → 422；notes 损坏投影的 frontmatter 不可解析、
+  身份不可知，单篇读取按 404 不存在处理。
 """
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -15,8 +26,10 @@ from pathlib import Path
 from siku.graph.models import Community, Entity, Relation
 from siku.graph.store import load_graph
 from siku.retrieve.errors import NoteParseError
-from siku.retrieve.notes_reader import DocumentRecord, scan_note_frontmatters
+from siku.retrieve.notes_reader import DocumentRecord, read_frontmatter
 from siku.wiki.render import ENTRIES_DIR_NAME, WIKI_DIR_NAME, entry_file_name
+
+logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---[ \t]*\r?\n?", re.DOTALL)
 _SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
@@ -38,6 +51,10 @@ class WikiMissingError(Exception):
 
 class WikiEntryNotFoundError(Exception):
     """wiki 读取：条目编号不存在于当前条目目录。"""
+
+
+class WikiEntryReadError(Exception):
+    """wiki 读取：条目存在但内容读取失败（损坏/权限/竞态删除）。"""
 
 
 @dataclass(frozen=True)
@@ -257,20 +274,35 @@ def graph_neighbors(data_dir: Path, entity_id: str, *, limit: int, depth: int) -
 
 
 def list_wiki_entries(data_dir: Path) -> list[WikiEntryData]:
-    """wiki 条目清单：扫描条目目录，按社区编号升序，时效取文件 mtime。"""
+    """wiki 条目清单：扫描条目目录，按社区编号升序，时效取文件 mtime。
+
+    单条损坏跳过留痕（清单是浏览入口，精确错误留给单条读取）。
+    """
     entries_dir = _entries_dir_or_raise(data_dir)
+    try:
+        paths = list(entries_dir.iterdir())
+    except OSError as exc:
+        # 目录在扫描窗口内被移除或暂不可读（OSError 一律）：按未生成口径降级，不落 500
+        raise WikiMissingError(
+            f"Wiki entries directory vanished during scan: {entries_dir}"
+        ) from exc
     entries: list[WikiEntryData] = []
-    for path in entries_dir.iterdir():
+    for path in paths:
         match = _ENTRY_FILE_RE.fullmatch(path.name)
         if not match or not path.is_file():
             continue
         community_id = int(match.group(1))
-        content = _read_entry(path)
+        try:
+            content = _read_entry(path)
+            generated_at = _generated_at(path)
+        except WikiEntryReadError as exc:
+            logger.warning("Skipped unreadable wiki entry: detail=%s", exc)
+            continue
         entries.append(
             WikiEntryData(
                 community_id=community_id,
                 title=_entry_title(content, community_id),
-                generated_at=_generated_at(path),
+                generated_at=generated_at,
             )
         )
     return sorted(entries, key=lambda item: item.community_id)
@@ -291,10 +323,27 @@ def read_wiki_entry(data_dir: Path, community_id: int) -> WikiEntryDetailData:
 
 
 def _scan_records(vault: Path) -> list[DocumentRecord]:
+    """扫描全部投影 frontmatter；单条损坏跳过留痕，不拖垮清单与单篇读取。
+
+    与检索索引的 scan_note_frontmatters（全量 fail-fast，缺一不可）刻意不同：
+    浏览面宁可少列一条也不整体不可用。损坏投影的身份不可知，按不存在处理。
+    """
     notes_dir = vault / "notes"
     if not notes_dir.is_dir():
         return []
-    return scan_note_frontmatters(vault)
+    try:
+        note_paths = sorted(path for path in notes_dir.rglob("*.md") if path.is_file())
+    except OSError as exc:
+        # 目录在扫描窗口内被移除或暂不可读（OSError 一律）：按空库降级，下次刷新自愈
+        logger.warning("Notes directory scan failed: path=%s detail=%s", notes_dir, exc)
+        return []
+    records: list[DocumentRecord] = []
+    for note_path in note_paths:
+        try:
+            records.append(read_frontmatter(note_path, vault))
+        except NoteParseError as exc:
+            logger.warning("Skipped unparseable projection: detail=%s", exc)
+    return records
 
 
 def _summary_of(record: DocumentRecord) -> NoteSummaryData:
@@ -360,12 +409,16 @@ def _entries_dir_or_raise(data_dir: Path) -> Path:
 
 
 def _read_entry(path: Path) -> str:
-    """读单条目全文；读失败（损坏/权限/竞态删除）原样上抛，走既有 500 口径。
+    """读单条目全文；读失败（损坏/权限/竞态删除）折叠为 WikiEntryReadError。
 
     不得折叠为 WikiMissingError：条目存在但读不了与「wiki 未生成」是两回事，
-    误报 404 会把数据问题伪装成未生成。
+    误报 404 会把数据问题伪装成未生成。与 notes 投影单篇读失败同走
+    422「源数据不可处理」口径（收敛 design.md 遗留的 500 不一致）。
     """
-    return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise WikiEntryReadError(f"Failed to read wiki entry {path.name}: {exc}") from exc
 
 
 def _entry_title(content: str, community_id: int) -> str:
@@ -378,4 +431,9 @@ def _entry_title(content: str, community_id: int) -> str:
 
 
 def _generated_at(path: Path) -> str:
-    return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat()
+    """条目 mtime 转本地时区 ISO 串；stat 失败（竞态删除）与读失败同折 422 口径。"""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError as exc:
+        raise WikiEntryReadError(f"Failed to stat wiki entry {path.name}: {exc}") from exc
+    return datetime.fromtimestamp(mtime).astimezone().isoformat()

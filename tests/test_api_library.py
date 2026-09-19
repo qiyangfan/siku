@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -10,11 +11,13 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from fakes import FakeEmbeddingProvider
+from siku.api import library as library_module
 from siku.api.app import create_app
-from siku.api.library import STAGING_ROOT
+from siku.api.library import STAGING_ROOT, AttachmentDigestCache
 from siku.ingest import IngestReport
 from siku.ingest.pipeline import IngestItem
 from siku.retrieve.errors import ModelConfigMismatchError
@@ -179,6 +182,90 @@ def test_library_listing_is_read_only(tmp_path: Path) -> None:
     listing(client)
     listing(client)
     assert tree_snapshot(tmp_path / "vault") == before
+
+
+def test_library_reuses_attachment_digests_across_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """stat 快路径：附件未变时跨请求复用全量哈希，重复浏览不再整库读盘。"""
+    runner, _ = make_index_runner()
+    client = build_library_app(tmp_path, index_runner=runner)
+    attachments = tmp_path / "vault" / "attachments"
+    attachments.mkdir(parents=True)
+    (attachments / "a.md").write_bytes(b"A" * 32)
+    (attachments / "b.md").write_bytes(b"B" * 32)
+
+    calls = {"count": 0}
+    real_sha256_file = library_module._sha256_file
+
+    def counting(path: Path) -> str:
+        calls["count"] += 1
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(library_module, "_sha256_file", counting)
+
+    first = listing(client)
+    assert {source["name"] for source in first["sources"]} == {"a.md", "b.md"}
+    assert calls["count"] == 2
+
+    second = listing(client)
+    assert second == first
+    assert calls["count"] == 2
+
+
+def test_digest_cache_recomputes_when_stat_fingerprint_changes(tmp_path: Path) -> None:
+    """stat 指纹变化（同尺寸改写 + mtime 推进）→ 缓存失效重算，不漏检内容变更。"""
+    cache = AttachmentDigestCache()
+    target = tmp_path / "doc.md"
+    target.write_bytes(b"v1")
+    assert cache.digest_of(target) == hashlib.sha256(b"v1").hexdigest()
+    # 未变化 → 命中缓存
+    assert cache.digest_of(target) == hashlib.sha256(b"v1").hexdigest()
+
+    target.write_bytes(b"v2")
+    bumped = time.time_ns() + 1_000_000
+    os.utime(target, ns=(bumped, bumped))
+    assert cache.digest_of(target) == hashlib.sha256(b"v2").hexdigest()
+
+
+def test_library_skips_attachment_vanished_mid_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """附件在扫描窗口内被移除（外部删除/重生成竞态）：跳过该行留痕，清单不落 500。"""
+    runner, _ = make_index_runner()
+    client = build_library_app(tmp_path, index_runner=runner)
+    attachments = tmp_path / "vault" / "attachments"
+    attachments.mkdir(parents=True)
+    (attachments / "a.md").write_bytes(b"A")
+    (attachments / "gone.md").write_bytes(b"G")
+
+    real_sha256_file = library_module._sha256_file
+
+    def vanish(path: Path) -> str:
+        if path.name == "gone.md":
+            raise FileNotFoundError(f"vanished: {path}")
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(library_module, "_sha256_file", vanish)
+    payload = listing(client)
+    assert [source["name"] for source in payload["sources"]] == ["a.md"]
+
+
+def test_library_attachments_dir_vanished_mid_scan_degrades_to_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """附件目录在扫描窗口内不可读（OSError）：按空清单降级，不落 500。"""
+    runner, _ = make_index_runner()
+    client = build_library_app(tmp_path, index_runner=runner)
+    attachments = tmp_path / "vault" / "attachments"
+    attachments.mkdir(parents=True)
+    (attachments / "a.md").write_bytes(b"A")
+
+    def raise_scan(self: Path, pattern: str) -> object:
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(Path, "rglob", raise_scan)
+    assert listing(client) == {"sources": []}
 
 
 # ---- 导入任务 ----
