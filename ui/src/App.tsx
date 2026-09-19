@@ -1,12 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { askQuestion, type ApiError, type AskResponse, checkHealth } from "./api";
+import { BrowseView } from "./BrowseView";
+import { GraphView } from "./GraphView";
 import { LibraryView } from "./LibraryView";
 import { SettingsView } from "./SettingsView";
+import { WikiView } from "./WikiView";
 import "./styles.css";
 
 type HealthState = "loading" | "ready" | "offline";
 type AskState = "idle" | "loading" | "success" | "error";
-type ViewName = "ask" | "library" | "settings";
+type ViewName = "ask" | "browse" | "graph" | "wiki" | "library" | "settings";
+
+const NAV_ITEMS: Array<{ name: ViewName; label: string }> = [
+  { name: "ask", label: "问答" },
+  { name: "browse", label: "浏览" },
+  { name: "graph", label: "图谱" },
+  { name: "wiki", label: "wiki" },
+  { name: "library", label: "资料库" },
+  { name: "settings", label: "设置" },
+];
 
 function isApiError(error: unknown): error is ApiError {
   return (
@@ -27,7 +39,10 @@ function App() {
   const [answer, setAnswer] = useState<AskResponse | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [focusQuestion, setFocusQuestion] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // 问答请求序号：实体联动预填时递增，使在途旧回答作废（防旧答案挂新问题下）
+  const askSeqRef = useRef(0);
 
   const refreshHealth = useCallback(async () => {
     setHealth("loading");
@@ -43,6 +58,26 @@ function App() {
     void refreshHealth();
   }, [refreshHealth]);
 
+  useEffect(() => {
+    if (focusQuestion && view === "ask") {
+      inputRef.current?.focus();
+      setFocusQuestion(false);
+    }
+  }, [focusQuestion, view]);
+
+  const askEntity = useCallback((name: string) => {
+    setQuestion(`请介绍「${name}」。`);
+    // 预填新问题必须清掉上一轮答案与状态：旧回答卡挂在下方会被误读为新问题的答案；
+    // 递增序号使在途旧回答的响应作废，防止其迟到后挂在新问题下
+    askSeqRef.current += 1;
+    setAnswer(null);
+    setAskState("idle");
+    setError(null);
+    setLocalError(null);
+    setView("ask");
+    setFocusQuestion(true);
+  }, []);
+
   const submit = async () => {
     const normalized = question.trim();
     if (!normalized) {
@@ -54,12 +89,19 @@ function App() {
     setError(null);
     setAnswer(null);
     setAskState("loading");
+    const seq = ++askSeqRef.current;
     try {
       const response = await askQuestion(normalized);
+      if (seq !== askSeqRef.current) {
+        return;
+      }
       setAnswer(response);
       setAskState("success");
       setHealth("ready");
     } catch (caught: unknown) {
+      if (seq !== askSeqRef.current) {
+        return;
+      }
       setError(
         isApiError(caught)
           ? caught
@@ -98,35 +140,28 @@ function App() {
         </header>
 
         <nav className="view-nav" aria-label="视图切换">
-          <button
-            type="button"
-            className={view === "ask" ? "nav-tab nav-tab-active" : "nav-tab"}
-            aria-pressed={view === "ask"}
-            onClick={() => setView("ask")}
-          >
-            问答
-          </button>
-          <button
-            type="button"
-            className={view === "library" ? "nav-tab nav-tab-active" : "nav-tab"}
-            aria-pressed={view === "library"}
-            onClick={() => setView("library")}
-          >
-            资料库
-          </button>
-          <button
-            type="button"
-            className={view === "settings" ? "nav-tab nav-tab-active" : "nav-tab"}
-            aria-pressed={view === "settings"}
-            onClick={() => setView("settings")}
-          >
-            设置
-          </button>
+          {NAV_ITEMS.map((item) => (
+            <button
+              key={item.name}
+              type="button"
+              className={view === item.name ? "nav-tab nav-tab-active" : "nav-tab"}
+              aria-pressed={view === item.name}
+              onClick={() => setView(item.name)}
+            >
+              {item.label}
+            </button>
+          ))}
         </nav>
 
         {view === "settings" && <SettingsView />}
 
         {view === "library" && <LibraryView />}
+
+        {view === "browse" && <BrowseView />}
+
+        {view === "graph" && <GraphView onAskEntity={askEntity} />}
+
+        {view === "wiki" && <WikiView />}
 
         {view === "ask" && (
         <>

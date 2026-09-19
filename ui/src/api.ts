@@ -118,17 +118,94 @@ export type LibraryJob = {
   error: string | null;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
+export type NoteSummary = {
+  source_id: string;
+  source_name: string;
+  note_path: string;
+  source_hash: string;
+  extractor: string;
+};
+
+export type NotesPage = {
+  notes: NoteSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type NoteDetail = NoteSummary & {
+  anchors: string[];
+  content: string;
+};
+
+export type GraphStats = {
+  nodes: number;
+  edges: number;
+  communities: number;
+  types: Record<string, number>;
+};
+
+export type GraphNode = {
+  entity_id: string;
+  name: string;
+  type: string;
+  degree: number;
+  community_id: number | null;
+};
+
+export type GraphEdge = {
+  source: string;
+  target: string;
+  type: string;
+};
+
+export type GraphSubgraph = {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  truncated: boolean;
+  total_nodes: number;
+  total_edges: number;
+};
+
+export type GraphSearchResult = GraphSubgraph & {
+  query: string;
+  limit: number;
+};
+
+export type WikiEntrySummary = {
+  community_id: number;
+  title: string;
+  generated_at: string;
+};
+
+export type WikiEntries = {
+  entries: WikiEntrySummary[];
+};
+
+export type WikiEntryDetail = {
+  community_id: number;
+  title: string;
+  content: string;
+  generated_at: string;
+};
 
 async function parseResponse<T>(response: Response): Promise<T> {
-  const payload: unknown = await response.json();
+  // 非 JSON 响应体（代理 502 HTML 等）不得让语法错误冒泡成「无法连接」：
+  // 解析失败时按错误状态回退稳定错误体
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
   if (!response.ok) {
-    const error = isRecord(payload) ? payload : {};
+    const error = typeof payload === "object" && payload !== null ? payload : {};
     throw {
-      code: typeof error.code === "string" ? error.code : "http_error",
-      message: typeof error.message === "string" ? error.message : "请求失败，请稍后重试。",
+      code: "code" in error && typeof error.code === "string" ? error.code : "http_error",
+      message:
+        "message" in error && typeof error.message === "string"
+          ? error.message
+          : "请求失败，请稍后重试。",
     } satisfies ApiError;
   }
   return payload as T;
@@ -206,4 +283,45 @@ export async function rebuildIndex(): Promise<LibraryJob> {
       body: JSON.stringify({ confirm: true }),
     }),
   );
+}
+
+export async function getNotes(page: number, pageSize: number): Promise<NotesPage> {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  return parseResponse<NotesPage>(await fetch(`/api/notes?${params.toString()}`));
+}
+
+export async function getNote(sourceId: string): Promise<NoteDetail> {
+  return parseResponse<NoteDetail>(await fetch(`/api/notes/${encodeURIComponent(sourceId)}`));
+}
+
+export async function getGraphStats(): Promise<GraphStats> {
+  return parseResponse<GraphStats>(await fetch("/api/graph/stats"));
+}
+
+export async function getGraphOverview(limit: number): Promise<GraphSubgraph> {
+  return parseResponse<GraphSubgraph>(await fetch(`/api/graph/overview?limit=${limit}`));
+}
+
+export async function searchGraphEntities(query: string, limit: number): Promise<GraphSearchResult> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return parseResponse<GraphSearchResult>(await fetch(`/api/graph/search?${params.toString()}`));
+}
+
+export async function getGraphNeighbors(
+  entityId: string,
+  limit: number,
+  depth: number,
+): Promise<GraphSubgraph> {
+  const params = new URLSearchParams({ limit: String(limit), depth: String(depth) });
+  return parseResponse<GraphSubgraph>(
+    await fetch(`/api/graph/neighbors/${encodeURIComponent(entityId)}?${params.toString()}`),
+  );
+}
+
+export async function getWikiEntries(): Promise<WikiEntries> {
+  return parseResponse<WikiEntries>(await fetch("/api/wiki/entries"));
+}
+
+export async function getWikiEntry(communityId: number): Promise<WikiEntryDetail> {
+  return parseResponse<WikiEntryDetail>(await fetch(`/api/wiki/entries/${communityId}`));
 }
