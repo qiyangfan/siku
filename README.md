@@ -2,7 +2,7 @@
 
 > 把你所有的文档丢进来：自动摄取、自动织成知识图谱、自动编成 wiki，然后用自然语言向它提问。
 
-siku 取意《四库全书》——历史上最大规模的"汇总天下文献 → 自动编目（总目提要）→ 结构化检索"工程。本项目是它的个人本地版：**本地优先**，语料永不离开你的磁盘（仅图谱抽取/问答时按需调用你自己的 LLM API key）。
+siku 取意《四库全书》——历史上最大规模的"汇总天下文献 → 自动编目（总目提要）→ 结构化检索"工程。本项目是它的个人本地版：**本地优先**，语料与索引永不离开你的磁盘；模型一律 BYOK 端点供给（ADR-0009）——图谱抽取、问答走你的 LLM 端点，向量检索/重排走你的 embedding/rerank 端点（本地 Ollama 或云端 API）。
 
 🚧 当前处于脚手架阶段。架构定稿（北极星）见 [docs/architecture.md](docs/architecture.md)，
 不可协商红线见 [openspec/project.md](openspec/project.md)（宪法）。
@@ -12,7 +12,7 @@ siku 取意《四库全书》——历史上最大规模的"汇总天下文献 �
 | 想知道 | 去哪 |
 |---|---|
 | 接下来干什么、哪些先不做 | `docs/ROADMAP.md`（阶段闸门 + 触发器台账 + Backlog） |
-| 某个选型为什么这么定 | `docs/adr/`（ADR-0001~0008） |
+| 某个选型为什么这么定 | `docs/adr/`（ADR-0001~0009） |
 | 哪些规则碰不得 | `openspec/project.md`（宪法红线 + 工程口径） |
 | 当前进度与接手状态 | `docs/HANDOFF.md` + `docs/ROADMAP.md` |
 | 系统应如何行为 | `openspec/specs/`（随 change 归档生长） |
@@ -34,7 +34,7 @@ siku 取意《四库全书》——历史上最大规模的"汇总天下文献 �
 | 存储 | SQLite（元数据 + FTS5）+ LanceDB（向量）+ 内存图 + parquet（图谱） |
 | 事实层 | Obsidian vault 兼容 Markdown，原件留存 `attachments/` |
 | 摄取 | PDF：Docling / MinerU · Word：pandoc · PPT：python-pptx · Excel：openpyxl |
-| 检索质量 | bge-m3 向量 + BM25 混合召回 + reranker 重排 + golden set 回归 |
+| 检索质量 | BM25 + 向量混合召回 + 可选 rerank 端点重排（`reranker=none` 为一等公民）+ 通道化 golden set 回归 |
 
 ## 快速开始
 
@@ -54,6 +54,43 @@ uv sync
 # 冒烟验证
 uv run siku version
 ```
+
+### 模型端点配置（BYOK，必需）
+
+siku 不内置模型（ADR-0009）：检索（embedding）、可选重排（rerank）与问答/图谱
+（LLM）一律调用你自己的端点。配置优先级：CLI 参数 > 环境变量 > `config.toml`。
+
+本地 Ollama 一分钟路径（`ollama pull bge-m3` 后即可检索）：
+
+```bash
+uv run siku index \
+  --embedding-base-url http://127.0.0.1:11434/v1 --embedding-model bge-m3
+uv run siku search "你的问题" \
+  --embedding-base-url http://127.0.0.1:11434/v1 --embedding-model bge-m3 --reranker none
+```
+
+或写入配置文件（`~/.config/siku/config.toml`；macOS 为
+`~/Library/Application Support/siku/config.toml`，Windows 为 `%APPDATA%\siku\config.toml`，
+含明文 key 时 siku 自动以 0600 创建/重写）：
+
+```toml
+[embedding]
+base_url = "http://127.0.0.1:11434/v1"   # 本地端点无需 key
+model = "bge-m3"
+
+[llm]
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+api_key_env = "SIKU_LLM_API_KEY"         # 与 api_key 明文二选一
+
+[rerank]                                  # 可选；未配置时按 reranker=none（RRF-only）
+base_url = "https://api.siliconflow.cn/v1"
+model = "BAAI/bge-reranker-v2-m3"
+api_key_env = "SILICONFLOW_API_KEY"
+```
+
+环境变量 `SIKU_EMBEDDING_*` / `SIKU_RERANK_*` / `SIKU_LLM_*` 与 config.toml 字段同形；
+key 不进日志、索引元数据与评测基线。桌面端配置说明见 [docs/desktop.md](docs/desktop.md)。
 
 ### 经 muniu 网关使用（可选）
 

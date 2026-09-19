@@ -1,7 +1,8 @@
 # benchmarks/ — 检索质量基准
 
-golden set 与基线快照是检索链路的**可执行规格**（ADR-0006）：任何改动检索链路的
+golden set 与基线快照是检索链路的**可执行规格**（ADR-0006/0009）：任何改动检索链路的
 change（切块/embedding/召回/重排/参数）必须重跑评测并通过基线门禁，未跑不得合入。
+基线按**模型通道**保存：每个通道一份快照，闸门语义不变（同通道不低于基线即通过）。
 
 ## 布局
 
@@ -9,28 +10,36 @@ change（切块/embedding/召回/重排/参数）必须重跑评测并通过基�
 benchmarks/
   corpus/                  # 基准语料（入库）：PDF/DOCX/PPTX/XLSX 各一 + 生成脚本
   golden-set-v0.jsonl      # golden set v0（入库）：27 条问题-期望来源标注对
-  retrieval-baseline-v0.json  # 基线快照 v0（入库）：评测分数 + 模型/参数/环境元数据
+  retrieval-baseline-v0.json  # 历史记录（进程内 bge 时代的 v0 基线，不再参与比较）
+  baselines/{channel}.json    # 通道基线（入库）：如 local-bge-m3.json
   vault/                   # 派生：语料投影（gitignore）
   data/                    # 派生：检索索引（gitignore）
 ```
 
-## 复现评测
+## 复现评测（BYOK：先配置 embedding/rerank 端点）
 
 ```bash
-uv sync --all-extras                      # 检索模型与向量运行时在 extras 里
+uv sync                                   # 核心依赖即可；模型经端点供给（ADR-0009）
 uv run siku ingest benchmarks/corpus --vault benchmarks/vault
-uv run siku index --vault benchmarks/vault --data-dir benchmarks/data
-# 首次生成基线（文件已存在时换新版本号，绝不覆盖旧基线）：
+# 首次生成某通道基线（文件已存在时换新通道/版本号，绝不覆盖旧基线）：
 uv run siku evaluate-retrieval \
   --golden-set benchmarks/golden-set-v0.jsonl \
   --data-dir benchmarks/data \
-  --save-baseline benchmarks/retrieval-baseline-v0.json
-# 回归门禁（默认对比 data/retrieval-baseline.json，用 --baseline 指向入库基线）：
+  --embedding-base-url http://127.0.0.1:11434/v1 --embedding-model bge-m3 \
+  --channel local-bge-m3 \
+  --save-baseline benchmarks/baselines/local-bge-m3.json
+# 回归门禁（默认对比 benchmarks/baselines/{通道}.json，可用 --baseline 覆盖）：
 uv run siku evaluate-retrieval \
   --golden-set benchmarks/golden-set-v0.jsonl \
   --data-dir benchmarks/data \
-  --baseline benchmarks/retrieval-baseline-v0.json
+  --embedding-base-url http://127.0.0.1:11434/v1 --embedding-model bge-m3 \
+  --channel local-bge-m3
 ```
+
+`--reranker api --rerank-* ...` 启用重排通道；`--reranker none` 或未配置 rerank
+端点时按 RRF-only 评测（provider_kind 记为 `rerank-none`）。评测报告的 config 段
+记录通道身份（provider_kind、模型、端点主机——不含凭证），跨通道分数不可比。
+rerank=none vs rerank 的增量由双通道基线分数对比呈现。
 
 ## 标注语义
 

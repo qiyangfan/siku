@@ -38,25 +38,65 @@ brew install --cask qiyangfan/tap/siku
 - 当前阶段桌面端没有资料导入/索引界面（见 proposal Non-goals）；语料摄取与索引请用
   CLI 对同一目录操作，或等待后续资料管理 change。
 
-## API key（BYO key）
+## 模型端点配置（BYOK，ADR-0009）
 
-问答使用 openai 兼容 LLM 通道。key 只从环境变量读取，不进入安装包、Tauri 配置或
-前端状态：
+siku 不内置任何模型：问答（LLM）、向量检索（embedding）与可选重排（rerank）一律
+调用你自己配置的端点（本地 Ollama / vLLM / LiteLLM，或云端 API）。key 只进请求头，
+不进入安装包、Tauri 配置、前端状态、日志与索引产物。
 
-- 默认读取 `SIKU_LLM_API_KEY`（`--api-key-env` 可改）；默认通道为 DeepSeek。
-- macOS 图形启动不继承 shell 环境：`launchctl setenv SIKU_LLM_API_KEY <key>` 后重启
-  应用，或从终端 `open -a siku` 继承当前 shell 环境。
-- 桌面壳启动的 sidecar 支持 `SIKU_LLM_BASE_URL` / `SIKU_LLM_MODEL` 环境变量切换通道，
-  语义与 CLI 的 `--llm-base-url` / `--llm-model` 一致。
-- 缺 key 时检索与拒答仍可用；提交真实问答会返回配置指引类错误。
+配置优先级：CLI 参数 > 环境变量 > 配置文件 `config.toml`：
+
+| 平台 | 配置文件路径 |
+|---|---|
+| macOS | `~/Library/Application Support/siku/config.toml` |
+| Windows | `%APPDATA%\siku\config.toml` |
+| Linux | `~/.config/siku/config.toml` |
+
+最小模板（本地 Ollama 一分钟路径：`ollama pull bge-m3` 后即可检索）：
+
+```toml
+[embedding]
+base_url = "http://127.0.0.1:11434/v1"
+model = "bge-m3"                # 本地端点无需 key
+
+[llm]
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+api_key_env = "SIKU_LLM_API_KEY"   # 与 api_key 明文二选一
+```
+
+云端示例（硅基流动提供 embedding 与 rerank 通道）：
+
+```toml
+[embedding]
+base_url = "https://api.siliconflow.cn/v1"
+model = "BAAI/bge-m3"
+api_key_env = "SILICONFLOW_API_KEY"
+
+[rerank]
+base_url = "https://api.siliconflow.cn/v1"
+model = "BAAI/bge-reranker-v2-m3"
+api_key_env = "SILICONFLOW_API_KEY"
+```
+
+- 明文 `api_key` 写入 config.toml 时，siku 创建/重写该文件一律为 0600；也可用
+  `api_key_env` 只存环境变量名。任何路径下 key 不进日志与持久化产物。
+- 未配置 embedding 端点时，检索/问答返回配置指引类错误（不静默降级）；
+  rerank 未配置时按 `reranker=none`（RRF-only）检索，serve 启动日志会明示三通道
+  的解析结果（embedding/rerank/llm）。
+- macOS 图形启动不继承 shell 环境：`launchctl setenv SIKU_LLM_API_KEY <key>` 后
+  重启应用，或从终端 `open -a siku` 继承当前 shell 环境；`SIKU_LLM_BASE_URL` /
+  `SIKU_LLM_MODEL` / `SIKU_EMBEDDING_*` / `SIKU_RERANK_*` 环境变量与 config.toml
+  同形，可整体替代配置文件。
 
 ## 故障排查
 
 | 现象 | 处置 |
 |---|---|
-| 窗口停留在"正在启动本地内核"很久 | 查 `sidecar.log`；首次解压与加载模型可能需要数十秒 |
+| 窗口停留在"正在启动本地内核"很久 | 查 `sidecar.log`；首次解压可能需要数十秒 |
 | 启动失败页"内核启动即退出" | 查 `sidecar.log` 的最后几行；常见为磁盘空间不足或权限问题 |
-| 问答报 LLM/key 错误 | 确认 API key 环境变量已在应用可见的环境中设置 |
+| 检索/问答报"模型端点未配置" | 按 BYOK 指引配置 `config.toml`（本地 Ollama 或云端端点），见上文模板 |
+| 问答报 LLM/key 错误 | 确认端点配置与 API key 在应用可见的环境中已设置 |
 | 关闭应用后端口仍被占用 | 不应发生（关闭时先优雅退出、超时强制回收整个进程组）；若出现请附带 `sidecar.log` 反馈 |
 | 双实例同时运行 | 单实例隔离：第二次启动只会聚焦已有窗口 |
 
@@ -68,9 +108,9 @@ brew install --cask qiyangfan/tap/siku
 # 1. 前端构建产物（桌面壳以 resources 挂载 ui/dist）
 cd ui && npm ci && npm run build && cd ..
 
-# 2. sidecar（PyInstaller onedir + 内置模型权重，产出 ui/src-tauri/binaries/）
-uv sync --extra retrieval
-uv run python scripts/build_sidecar.py          # --skip-models 可快速迭代（不带权重）
+# 2. sidecar（PyInstaller onedir，BYOK 瘦身版约 305 MiB，产出 ui/src-tauri/binaries/）
+uv sync
+uv run python scripts/build_sidecar.py
 
 # 3. 桌面应用
 cd ui && npx tauri build                        # 产物在 src-tauri/target/release/bundle/
@@ -82,8 +122,9 @@ cd ui && npx tauri build                        # 产物在 src-tauri/target/rel
   `siku-sidecar serve --with-ui --host 127.0.0.1 --port <动态端口> --vault <绝对路径>
   --data-dir <绝对路径> --ui-dir <绝对路径> --watch-stdin`。
 - `--watch-stdin`：stdin EOF（壳进程消亡）时 sidecar 受控退出，作为孤儿进程兜底防线。
-- 模型权重（bge-m3、bge-reranker-v2-m3）按冻结 revision 打包进 sidecar 目录并离线
-  加载，安装后无需联网；构建输入清单见 `ui/src-tauri/binaries/siku-sidecar/BUILD_INFO.json`。
+- sidecar 不内置任何模型（ADR-0009）：LLM/embedding/rerank 一律经 config.toml 或
+  环境变量指向用户端点；构建输入清单见
+  `ui/src-tauri/binaries/siku-sidecar/BUILD_INFO.json`（`models_included: false`）。
 - 开发期调试壳本身：`cd ui && npx tauri dev`（同样需要第 1、2 步产物先存在）；仅开发
   前端时不需要壳：`siku serve` + `npm run dev`（Vite 代理），与 Phase 4 流程一致。
 
