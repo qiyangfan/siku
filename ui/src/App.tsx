@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { askQuestion, type ApiError, type AskResponse, checkHealth } from "./api";
+import { SettingsView } from "./SettingsView";
 import "./styles.css";
 
 type HealthState = "loading" | "ready" | "offline";
 type AskState = "idle" | "loading" | "success" | "error";
+type ViewName = "ask" | "settings";
 
 function isApiError(error: unknown): error is ApiError {
   return (
@@ -17,6 +19,7 @@ function isApiError(error: unknown): error is ApiError {
 }
 
 function App() {
+  const [view, setView] = useState<ViewName>("ask");
   const [question, setQuestion] = useState("");
   const [health, setHealth] = useState<HealthState>("loading");
   const [askState, setAskState] = useState<AskState>("idle");
@@ -93,6 +96,29 @@ function App() {
           </div>
         </header>
 
+        <nav className="view-nav" aria-label="视图切换">
+          <button
+            type="button"
+            className={view === "ask" ? "nav-tab nav-tab-active" : "nav-tab"}
+            aria-pressed={view === "ask"}
+            onClick={() => setView("ask")}
+          >
+            问答
+          </button>
+          <button
+            type="button"
+            className={view === "settings" ? "nav-tab nav-tab-active" : "nav-tab"}
+            aria-pressed={view === "settings"}
+            onClick={() => setView("settings")}
+          >
+            设置
+          </button>
+        </nav>
+
+        {view === "settings" && <SettingsView />}
+
+        {view === "ask" && (
+        <>
         <form
           className="question-card"
           onSubmit={(event) => {
@@ -207,6 +233,8 @@ function App() {
               </span>
             </footer>
           </article>
+        )}
+        </>
         )}
       </section>
     </main>

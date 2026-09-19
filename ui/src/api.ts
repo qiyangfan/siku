@@ -32,6 +32,48 @@ export type HealthResponse = {
   version: string;
 };
 
+export type ChannelName = "llm" | "embedding" | "rerank";
+
+export type ChannelSettingsView = {
+  base_url: string | null;
+  model: string | null;
+  api_key_env: string | null;
+  api_key_set: boolean;
+  env_overrides: string[];
+};
+
+export type SettingsResponse = {
+  config_path: string;
+  llm: ChannelSettingsView;
+  embedding: ChannelSettingsView;
+  rerank: ChannelSettingsView;
+};
+
+export type SettingsWriteResponse = SettingsResponse & {
+  warnings: string[];
+};
+
+export type ChannelSettingsPayload = {
+  base_url?: string | null;
+  model?: string | null;
+  api_key?: string | null;
+  api_key_env?: string | null;
+};
+
+export type SettingsUpdatePayload = {
+  llm?: ChannelSettingsPayload;
+  embedding?: ChannelSettingsPayload;
+  rerank?: ChannelSettingsPayload;
+};
+
+export type SettingsTestPayload = { channel: ChannelName } & ChannelSettingsPayload;
+
+export type SettingsTestResponse = {
+  ok: boolean;
+  channel: string;
+  latency_ms: number;
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -58,6 +100,32 @@ export async function askQuestion(question: string): Promise<AskResponse> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
+    }),
+  );
+}
+
+export async function getSettings(): Promise<SettingsResponse> {
+  return parseResponse<SettingsResponse>(await fetch("/api/settings"));
+}
+
+export async function updateSettings(
+  update: SettingsUpdatePayload,
+): Promise<SettingsWriteResponse> {
+  return parseResponse<SettingsWriteResponse>(
+    await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(update),
+    }),
+  );
+}
+
+export async function testChannel(payload: SettingsTestPayload): Promise<SettingsTestResponse> {
+  return parseResponse<SettingsTestResponse>(
+    await fetch("/api/settings/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     }),
   );
 }
