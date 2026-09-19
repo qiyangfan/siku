@@ -8,10 +8,10 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, File, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -19,6 +19,15 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from siku import __version__
+from siku.api.library import (
+    IndexRunner,
+    LibraryJobBusyError,
+    LibraryJobManager,
+    LibraryJobNotRunningError,
+    build_library_view,
+    discard_staged,
+    stage_upload,
+)
 from siku.api.messages import map_ask_error, map_domain_error
 from siku.api.models import (
     AskCitationResponse,
@@ -32,6 +41,9 @@ from siku.api.models import (
     HealthResponse,
     IngestRequest,
     IngestResponse,
+    LibraryJobResponse,
+    LibraryRebuildRequest,
+    LibraryResponse,
     SearchRequest,
     SearchResponse,
     SearchResultResponse,
@@ -75,7 +87,8 @@ from siku.model_supply import (
 from siku.qa.providers import AnswerProvider
 from siku.qa.service import AnswerService
 from siku.retrieve.errors import InvalidQueryError, ModelNotAvailableError
-from siku.retrieve.models import SearchOptions
+from siku.retrieve.indexer import sync_index
+from siku.retrieve.models import IndexReport, SearchOptions
 from siku.retrieve.service import SearchService
 from siku.wiki.service import WikiResult, generate_wiki
 from siku.wiki.summarizer import CommunitySummarizer, Summarizer
@@ -183,6 +196,29 @@ def _close_if_supported(resource: object) -> None:
         close()
 
 
+def _supply_index_runner(
+    vault: Path,
+    data_dir: Path,
+    embedding_supply: ChannelValues | None,
+    embedding_dimensions: int | None,
+) -> IndexRunner:
+    """构建每个任务现解析 embedding 通道的索引执行器。
+
+    与 LLM 每请求现解析同口径：设置中心写入后，资料库任务（增量同步与全量重建）
+    免重启生效。provider 按任务构造、用后关闭。
+    """
+
+    def runner(rebuild: bool) -> IndexReport:
+        channel = resolve_embedding_channel(embedding_supply)
+        embedding = build_embedding_provider(channel, dimensions=embedding_dimensions)
+        try:
+            return sync_index(vault, data_dir, embedding, rebuild=rebuild)
+        finally:
+            embedding.close()
+
+    return runner
+
+
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -200,6 +236,7 @@ def create_app(
     rerank_supply: ChannelValues | None = None,
     embedding_dimensions: int | None = None,
     ingest_handler: IngestHandler = ingest_path,
+    index_runner: IndexRunner | None = None,
     search_service_factory: SearchServiceFactory | None = None,
     graph_extractor_factory: GraphExtractorFactory | None = None,
     graph_builder: GraphBuilder = build_graph,
@@ -240,6 +277,15 @@ def create_app(
     application.state.api_key_env = api_key_env
     application.state.search_supply_cache = search_cache
     application.state.ingest_handler = ingest_handler
+    library_jobs = LibraryJobManager(
+        vault=vault,
+        ingest_handler=ingest_handler,
+        index_runner=index_runner
+        or _supply_index_runner(vault, data_dir, embedding_supply, embedding_dimensions),
+        api_key_env=api_key_env,
+    )
+    # state 仅为内省/测试挂同一实例；端点经闭包局部变量引用以保类型
+    application.state.library_jobs = library_jobs
     application.state.search_service_factory = resolved_search_factory
     application.state.graph_extractor_factory = graph_extractor_factory or (
         lambda: LlmGraphExtractor(provider=llm_providers())
@@ -297,6 +343,82 @@ def create_app(
             skipped=report.skipped,
             ignored=report.ignored,
         )
+
+    @application.get("/api/library", response_model=LibraryResponse)
+    def library() -> LibraryResponse | JSONResponse:
+        """桌面 vault 来源级清单：全部派生自既有摄取元数据，只读不落盘。"""
+        try:
+            return build_library_view(application.state.vault, application.state.data_dir)
+        except Exception as exc:
+            logger.debug(
+                "API library listing failed: error_class=%s", type(exc).__name__, exc_info=True
+            )
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+
+    @application.post("/api/library/ingest", response_model=LibraryJobResponse)
+    def library_ingest(
+        files: Annotated[list[UploadFile], File()],
+    ) -> LibraryJobResponse | JSONResponse:
+        """导入上传文件并触发单任务槽摄取：暂存落盘 → 逐文件幂等摄取 → 增量索引。"""
+        staged: list[Path] = []
+        try:
+            for upload in files:
+                staged.append(stage_upload(upload.filename or "", upload.file))
+        except ValueError:
+            for path in staged:
+                discard_staged(path)
+            return _error_response(422, "invalid_request", "请求参数无效，请检查后重试。")
+        except OSError:
+            for path in staged:
+                discard_staged(path)
+            logger.debug("API library staging failed", exc_info=True)
+            return _error_response(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
+        # 同请求内重复上传（同内容同名）指向同一路径，去重避免无效重跑
+        staged = list(dict.fromkeys(staged))
+        try:
+            return library_jobs.start_ingest(staged)
+        except LibraryJobBusyError:
+            for path in staged:
+                discard_staged(path)
+            return _error_response(
+                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
+            )
+
+    @application.get("/api/library/jobs/{job_id}", response_model=LibraryJobResponse)
+    def library_job(job_id: str) -> LibraryJobResponse | JSONResponse:
+        """轮询摄取/重建任务进度；任务只存内存，进程重启后旧 id 即失效。"""
+        snapshot = library_jobs.snapshot(job_id)
+        if snapshot is None:
+            return _error_response(404, "job_not_found", "任务不存在或服务已重启，请重新触发。")
+        return snapshot
+
+    @application.post("/api/library/jobs/{job_id}/cancel", response_model=LibraryJobResponse)
+    def library_job_cancel(job_id: str) -> LibraryJobResponse | JSONResponse:
+        """协作式取消：当前文件处理完毕后停止，已完成部分保留（幂等兜底）。"""
+        try:
+            snapshot = library_jobs.request_cancel(job_id)
+        except LibraryJobNotRunningError:
+            return _error_response(409, "library_job_not_running", "任务已结束，无需取消。")
+        if snapshot is None:
+            return _error_response(404, "job_not_found", "任务不存在或服务已重启，请重新触发。")
+        return snapshot
+
+    @application.post("/api/library/rebuild", response_model=LibraryJobResponse)
+    def library_rebuild(request: LibraryRebuildRequest) -> LibraryJobResponse | JSONResponse:
+        """全量重建检索索引：需显式确认标记，进度经任务快照轮询反馈。"""
+        if not request.confirm:
+            return _error_response(
+                422,
+                "rebuild_confirm_required",
+                "全量重建需要显式确认：请在请求中携带 confirm=true。",
+            )
+        try:
+            return library_jobs.start_rebuild()
+        except LibraryJobBusyError:
+            return _error_response(
+                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
+            )
 
     @application.post("/api/search", response_model=SearchResponse)
     def search(request: SearchRequest) -> SearchResponse | JSONResponse:

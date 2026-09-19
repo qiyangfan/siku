@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
+    # 资料库导入端点的 multipart 解析（FastAPI 文件上传官方必需件，纯解析轻依赖）
+    "python-multipart>=0.0.20",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",

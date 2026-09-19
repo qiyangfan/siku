@@ -226,3 +226,49 @@ class SettingsTestResponse(BaseModel):
     ok: bool
     channel: str
     latency_ms: int
+
+
+class LibrarySourceResponse(BaseModel):
+    """资料库清单中的单条来源（全部派生自既有摄取元数据，只读）。"""
+
+    name: str
+    path: str
+    source_hash: str
+    ingest_status: Literal["ingested", "stale", "pending", "ignored"]
+    index_status: Literal["indexed", "stale", "missing"]
+
+
+class LibraryResponse(BaseModel):
+    """桌面 vault 来源级清单。"""
+
+    sources: list[LibrarySourceResponse]
+
+
+class LibraryJobItemResponse(BaseModel):
+    """任务内单文件结果。"""
+
+    name: str
+    path: str
+    status: Literal["created", "updated", "skipped", "ignored", "failed"]
+    detail: str | None = None
+
+
+class LibraryJobResponse(BaseModel):
+    """摄取/重建任务的进度快照（HTTP 轮询读取）。"""
+
+    job_id: str
+    kind: Literal["ingest", "rebuild"]
+    state: Literal["running", "succeeded", "failed", "cancelled"]
+    phase: Literal["ingesting", "indexing"]
+    total: int
+    done: int
+    failed: int
+    current: str | None
+    items: list[LibraryJobItemResponse]
+    error: str | None
+
+
+class LibraryRebuildRequest(BaseModel):
+    """全量重建请求：必须显式携带确认标记。"""
+
+    confirm: bool = False

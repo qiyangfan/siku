@@ -63,6 +63,183 @@
         }
       }
     },
+    "/api/library": {
+      "get": {
+        "summary": "Library",
+        "description": "桌面 vault 来源级清单：全部派生自既有摄取元数据，只读不落盘。",
+        "operationId": "library_api_library_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/ingest": {
+      "post": {
+        "summary": "Library Ingest",
+        "description": "导入上传文件并触发单任务槽摄取：暂存落盘 → 逐文件幂等摄取 → 增量索引。",
+        "operationId": "library_ingest_api_library_ingest_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_library_ingest_api_library_ingest_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/jobs/{job_id}": {
+      "get": {
+        "summary": "Library Job",
+        "description": "轮询摄取/重建任务进度；任务只存内存，进程重启后旧 id 即失效。",
+        "operationId": "library_job_api_library_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/jobs/{job_id}/cancel": {
+      "post": {
+        "summary": "Library Job Cancel",
+        "description": "协作式取消：当前文件处理完毕后停止，已完成部分保留（幂等兜底）。",
+        "operationId": "library_job_cancel_api_library_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/rebuild": {
+      "post": {
+        "summary": "Library Rebuild",
+        "description": "全量重建检索索引：需显式确认标记，进度经任务快照轮询反馈。",
+        "operationId": "library_rebuild_api_library_rebuild_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryRebuildRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/search": {
       "post": {
         "summary": "Search",
@@ -457,6 +634,23 @@
         "title": "AskRetrievalResponse",
         "description": "问答响应中的检索摘要。"
       },
+      "Body_library_ingest_api_library_ingest_post": {
+        "properties": {
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files"
+          }
+        },
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "title": "Body_library_ingest_api_library_ingest_post"
+      },
       "ChannelSettingsUpdate": {
         "properties": {
           "base_url": {
@@ -776,6 +970,212 @@
         ],
         "title": "IngestResponse",
         "description": "来源级摄取统计。"
+      },
+      "LibraryJobItemResponse": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "created",
+              "updated",
+              "skipped",
+              "ignored",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "status"
+        ],
+        "title": "LibraryJobItemResponse",
+        "description": "任务内单文件结果。"
+      },
+      "LibraryJobResponse": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "ingest",
+              "rebuild"
+            ],
+            "title": "Kind"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "phase": {
+            "type": "string",
+            "enum": [
+              "ingesting",
+              "indexing"
+            ],
+            "title": "Phase"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "done": {
+            "type": "integer",
+            "title": "Done"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryJobItemResponse"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job_id",
+          "kind",
+          "state",
+          "phase",
+          "total",
+          "done",
+          "failed",
+          "current",
+          "items",
+          "error"
+        ],
+        "title": "LibraryJobResponse",
+        "description": "摄取/重建任务的进度快照（HTTP 轮询读取）。"
+      },
+      "LibraryRebuildRequest": {
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "title": "Confirm",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "LibraryRebuildRequest",
+        "description": "全量重建请求：必须显式携带确认标记。"
+      },
+      "LibraryResponse": {
+        "properties": {
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/LibrarySourceResponse"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "title": "LibraryResponse",
+        "description": "桌面 vault 来源级清单。"
+      },
+      "LibrarySourceResponse": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "source_hash": {
+            "type": "string",
+            "title": "Source Hash"
+          },
+          "ingest_status": {
+            "type": "string",
+            "enum": [
+              "ingested",
+              "stale",
+              "pending",
+              "ignored"
+            ],
+            "title": "Ingest Status"
+          },
+          "index_status": {
+            "type": "string",
+            "enum": [
+              "indexed",
+              "stale",
+              "missing"
+            ],
+            "title": "Index Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "path",
+          "source_hash",
+          "ingest_status",
+          "index_status"
+        ],
+        "title": "LibrarySourceResponse",
+        "description": "资料库清单中的单条来源（全部派生自既有摄取元数据，只读）。"
       },
       "SearchRequest": {
         "properties": {
