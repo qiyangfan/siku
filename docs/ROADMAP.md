@@ -18,10 +18,12 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 |---|---|---|---|
 | 0 | 脚手架与治理层 | uv 项目、CI 三作业绿、宪法+ADR+openspec、ROADMAP | ✅ 已完成（2026-09-17） |
 | 1 | 摄取纵切面 | `Extractor` 协议 + MD 投影 + `source_hash` 幂等 + vault 布局；PDF/Word/PPT/Excel 各通一格式 | ✅ 已完成（2026-09-17，归档 `2026-09-17-add-ingest-vertical-slice`） |
-| 2 | 检索纵切面 | SQLite schema + FTS5 中文分词 + LanceDB + bge-m3 + BM25 混合召回 + reranker + **golden set v0** | ✅ 已完成（2026-09-17，归档 `2026-09-17-add-retrieval-vertical-slice`；baseline v0：Recall@5=1.000 / MRR@10=0.957，`benchmarks/retrieval-baseline-v0.json`） |
+| 2 | 检索纵切面 | SQLite schema + FTS5 中文分词 + LanceDB + BM25 混合召回 + reranker + **golden set v0** | ✅ 已完成（2026-09-17，归档 `2026-09-17-add-retrieval-vertical-slice`；baseline v0：Recall@5=1.000 / MRR@10=0.957，该基线已随 BYOK 退役为历史记录，见 Phase 5+ 行） |
 | 3 | 图谱与 wiki | 抽取后端（graphify 方法复用）+ 实体/关系/社区落 parquet + 总目条目生成 | ✅ 已完成（2026-09-18，归档 `2026-09-18-add-graph-wiki-vertical-slice`；幂等闸门 + 五剧本 fake 全绿，真实冒烟 DeepSeek 通道 10 次调用质量复核合格） |
 | 4 | WebUI 最小集与问答 | 问答编排 + `/api/ask` + React 对话最小闭环；浏览/图谱/wiki 为支撑视图 | ✅ 已完成（2026-09-18，归档 `2026-09-18-add-qa-vertical-slice`；无状态、非流式） |
-| 5 | Tauri 壳（阶段二） | 无签名桌面包，GitHub Releases + Homebrew | 双击安装到问答全链路在三平台手工冒烟通过 |
+| 5 | Tauri 壳（阶段二） | 无签名桌面包，GitHub Releases + Homebrew | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell`，desktop-shell spec 入主 specs；macOS arm64 冒烟 ✅，Windows/Linux 冒烟经用户裁决豁免、移触发器台账；Release 无限期禁用） |
+| 5+ | 模型供给 BYOK 端点化（发布前瘦身打磨） | 删除进程内模型（torch/权重），LLM/embedding/rerank 全走用户端点；分层 config.toml；sidecar 305MiB；通道化基线 | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-byok-model-supply`；model-supply spec 入主 specs；双通道基线实测由用户裁决豁免，可随时按 benchmarks/README.md 补录） |
+| 5++ | 桌面上手补齐（配模型 → 进资料 → 看知识） | 设置中心 / 资料管理 / 浏览·图谱·wiki 视图 | 设置中心 ✅ 已完成（2026-09-19，归档 `2026-09-19-add-ui-settings-center`，三端点 + 免重启生效 + React 设置视图，http-api/web-ui spec 增量入主 specs）；资料管理已立项（`add-desktop-library`，待 apply）；知识视图已立项（`add-browse-graph-wiki-views`，待 apply） |
 | 6 | 签名与更新（阶段三） | Apple 公证 + Windows 签名 + 自动更新 | 更新链路灰度可用 |
 
 阶段依赖：1→2→3→4 严格串行（2 依赖 1 的投影，3 依赖 2 的元数据）；Phase 4 的 UI
@@ -53,10 +55,14 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 中文分词成为检索瓶颈 | 重开 FTS5 分词器选型 | ADR-0006 / ADR-0003 |
 | 强多人协作需求 | 独立产品线评估，不改单机内核契约 | ADR-0002 |
 | 商业化决策 | 商标全类目清查（SIKU 玩具品牌） | ADR-0007 |
+| 发布解禁（Release 重启 / Phase 6 启动） | 执行 Windows/Linux 实机安装冒烟并回填（清单见 docs/desktop.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell` |
+| 有 Ollama / 云端 key 的环境 | 补录双通道基线（复现路径见 benchmarks/README.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-byok-model-supply` |
+| 有真实 BYOK 端点环境 | 设置中心 Tauri 壳内手工冒烟（自动化等价冒烟已覆盖 serve+UI 全链路，见归档 change review.md） | 归档 `2026-09-19-add-ui-settings-center` |
 
 ## Backlog（明确不进当前阶段，防 scope creep）
 
-Ollama 全离线通道（Phase 2 只留接口位）· 只读发布 / vault 同步伴侣功能（Phase 5 后）·
+Ollama 全离线通道（✅ 已随 BYOK 端点化落地为自部署端点供给，2026-09-19）·
+只读发布 / vault 同步伴侣功能（Phase 5 后）·
 DuckDB 直查 Excel（见触发器）· 附件链接模式（见触发器）· 大语料增量图谱更新
 （当前全量重建已够快）· EPUB/HTML 摄取（零边际成本，Phase 1 顺手带走，不入闸门）·
 多语言界面 · 移动端阅读。
