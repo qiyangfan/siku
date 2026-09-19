@@ -90,3 +90,14 @@
 
 - 按任务清单门禁：macOS 链路证据充分，但「三平台安装后问答冒烟」未闭环，本 change
   **暂不归档**、主 spec 暂不同步；待 Release 产物实机冒烟回填后归档。
+
+### 归档判定更新（2026-09-19：用户裁决解除挂起）
+
+- 2026-09-18 原判定的前提（三平台冒烟为归档门禁）已由用户裁决变更：现阶段仅 macOS
+  为验收平台，Windows/Linux 实机冒烟移出验收关键路径，随发布解禁一并另行安排
+  （已登记 docs/ROADMAP.md 触发器台账）。
+- 据此该任务按「正式豁免」处置完毕，本 change 归档并同步主 spec（desktop-shell 入
+  openspec/specs/）；Release 无限期禁用状态不变，发布解禁时按 docs/desktop.md 冒烟
+  清单补测 Windows/Linux 并回填。
+- 归档前门禁复验（2026-09-19）：pytest 492 passed、ruff check/format、mypy、
+  openspec strict 全绿。

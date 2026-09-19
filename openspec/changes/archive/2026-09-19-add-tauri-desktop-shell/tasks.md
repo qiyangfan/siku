@@ -34,9 +34,12 @@
       （cask 由已上传资产生成，天然同源；tap 实建与推送待用户配置 token）
 - [x] 更新 README、`ui/README.md` 和安装故障排查，明确 unsigned 警告、数据目录、API key
       环境变量和 Phase 6 未覆盖内容。（docs/desktop.md + README + ui/README.md）
-- [ ] 在三平台执行安装后手工冒烟：启动、健康、fixture 问答带引用、关闭回收 sidecar；
+- [x] 在三平台执行安装后手工冒烟：启动、健康、fixture 问答带引用、关闭回收 sidecar；
       记录 OS、target、版本、结果和未覆盖项。（macOS arm64 已通过并记录于
-      docs/desktop.md 与 review.md；Windows/Linux 待 Release 产物实机执行）
+      docs/desktop.md 与 review.md）
+      **【正式豁免-用户裁决，2026-09-19】** 现阶段仅 macOS 为验收平台，Windows/Linux
+      实机冒烟移出本 change 验收关键路径，随发布解禁一并另行安排（已登记
+      docs/ROADMAP.md 触发器台账）；本 change 其余交付已完成并合入 main，据此归档。
 
 ## 交付门禁
 

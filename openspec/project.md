@@ -2,13 +2,14 @@
 
 siku（四库）——本地优先的个人知识库：丢入全部文档（PDF/Word/PPT/Excel/EPUB/HTML/Markdown），
 自动摄取为 Markdown 事实层，构建知识图谱与 LLM wiki，通过自然语言问答检索。
-选型总表见 `docs/architecture.md`（北极星）；每项决策的完整论证见 `docs/adr/`（ADR-0001~0008）。
+选型总表见 `docs/architecture.md`（北极星）；每项决策的完整论证见 `docs/adr/`（ADR-0001~0009）。
 本文是代码评审的基线；与根 `AGENTS.md` 铁律冲突时以 AGENTS.md 为准。
 
 ## 不可协商的红线
 
-1. **本地优先**（ADR-0002）：语料与索引永不离用户磁盘；远程仅允许用户自配 key 的 LLM API
-   瞬时调用与用户显式开启的模型下载。禁止引入账号体系、遥测上传、云端存储。这是"丢进
+1. **本地优先**（ADR-0002；模型供给范围由 ADR-0009 修订）：语料与索引永不离用户磁盘；
+   远程仅允许用户自配 key 的模型 API 瞬时调用（LLM/embedding/rerank，BYOK 端点）与用户
+   显式开启的模型下载。禁止引入账号体系、遥测上传、云端存储。这是"丢进
    全部个人文档"这一场景唯一说得通的信任方案——服务器持久化语料 = 产品不成立。
 2. **UI ↔ 内核进程边界**（ADR-0002）：UI 只经 localhost HTTP API 访问内核，
    业务逻辑禁止进入前端或 Tauri 壳。这不是洁癖：三阶段发布路线（localhost WebUI →
