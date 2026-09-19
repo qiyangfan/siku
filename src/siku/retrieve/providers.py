@@ -1,7 +1,7 @@
 """embedding 与 reranker 的项目自有 provider 协议。
 
 领域层只依赖本协议，不暴露任何第三方模型对象（ADR-0005 数据主权红线）。
-测试注入可编程 fake；生产使用 `local_models` 的延迟加载适配器。
+测试注入可编程 fake；生产使用 `api_providers` 的 BYOK 端点适配器（ADR-0009）。
 """
 
 from __future__ import annotations
@@ -9,8 +9,22 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
+from urllib.parse import urlsplit
 
 from siku.retrieve.errors import ProviderError
+
+
+def base_url_host(base_url: str) -> str:
+    """base_url 的主机名（不含端口、路径、query 与凭证），供通道标识记录。
+
+    畸形 URL（如括号不匹配的 IPv6 形）不抛裸异常：主机标签回退空串——
+    调用方（启动明示/通道 slug/索引元数据）只做展示与记录，真正的配置
+    错误由请求路径的领域错误回流。
+    """
+    try:
+        return urlsplit(base_url).hostname or ""
+    except ValueError:
+        return ""
 
 
 @runtime_checkable
@@ -63,12 +77,18 @@ def validate_embedding_output(
 
 @dataclass(frozen=True)
 class IndexModelMetadata:
-    """进入索引元数据的模型侧信息，用于拒绝配置不一致的混用。"""
+    """进入索引元数据的模型侧信息，用于拒绝配置不一致的混用。
+
+    `embedding_channel_host` 记录建库端点主机（不含端口/路径/凭证，ADR-0009
+    通道化语义）；仅作追溯展示，不参与 matches_provider 比较——同一模型经不同
+    端点供给时向量语义兼容，无需强制重建。
+    """
 
     embedding_model_id: str
     embedding_model_revision: str | None
     embedding_dimensions: int
     tokenizer_version: str
+    embedding_channel_host: str = ""
 
     def as_meta_dict(self) -> dict[str, str]:
         return {
@@ -76,6 +96,7 @@ class IndexModelMetadata:
             "embedding_model_revision": self.embedding_model_revision or "",
             "embedding_dimensions": str(self.embedding_dimensions),
             "tokenizer_version": self.tokenizer_version,
+            "embedding_channel_host": self.embedding_channel_host,
         }
 
     @classmethod
@@ -87,6 +108,8 @@ class IndexModelMetadata:
                 embedding_model_revision=meta.get("embedding_model_revision") or None,
                 embedding_dimensions=int(meta["embedding_dimensions"]),
                 tokenizer_version=meta["tokenizer_version"],
+                # 旧版本索引无此字段，读作空串保持向后兼容
+                embedding_channel_host=meta.get("embedding_channel_host", ""),
             )
         except (KeyError, ValueError):
             return None

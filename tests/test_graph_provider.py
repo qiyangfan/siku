@@ -145,6 +145,20 @@ class TestHttpxLlmProvider:
         with pytest.raises(LlmRateLimitError):
             provider.complete(SYSTEM_PROMPT, USER_PROMPT)
 
+    def test_malformed_base_url_maps_to_domain_error(self) -> None:
+        """畸形 base_url（InvalidURL，非 HTTPError 体系）必须翻译为领域错误。"""
+        provider = HttpxLlmProvider(base_url="http://[::1/v1", model_id="m", api_key="k")
+        with pytest.raises(LlmConnectionError):
+            provider.complete(SYSTEM_PROMPT, USER_PROMPT)
+        provider.close()
+
+    def test_closed_client_maps_to_domain_error(self) -> None:
+        """关闭后的连接池再发请求（裸 RuntimeError）必须翻译为领域错误。"""
+        provider = HttpxLlmProvider(base_url="http://127.0.0.1:9/v1", model_id="m", api_key="k")
+        provider.close()
+        with pytest.raises(LlmConnectionError):
+            provider.complete(SYSTEM_PROMPT, USER_PROMPT)
+
     def test_disconnect_maps_to_domain_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection reset by peer")

@@ -1,10 +1,14 @@
-"""混合召回与重排服务：BM25 + 向量 → RRF 融合 → reranker → 稳定排序。
+"""混合召回与重排服务：BM25 + 向量 → RRF 融合 → reranker（可选）→ 稳定排序。
 
 固定阶段顺序（design.md《混合召回与重排》，不得被参数改变）：
 1. 预分词 BM25 与 embedding 向量双路召回，各取 candidate_k；
 2. 等权 Reciprocal Rank Fusion（默认 rrf_k=60），相同候选去重；
-3. 融合分数前 candidate_k 进入 reranker；
+3. 配置了 reranker 时，融合分数前 candidate_k 进入 reranker；
 4. 按 (rerank_score 降序, hybrid_score 降序, chunk_id 升序) 稳定排序取 top_k。
+
+reranker=none（ADR-0009 一等公民，自部署端点无 rerank API 场景）时跳过阶段 3，
+按 (hybrid_score 降序, chunk_id 升序) 直接排序；rerank_score 回填最终排序所用的
+融合分数，保持 SearchResult / OpenAPI 契约零漂移。
 """
 
 from __future__ import annotations
@@ -79,8 +83,9 @@ class SearchService:
         self,
         data_dir: Path,
         embedding_provider: EmbeddingProvider,
-        reranker_provider: RerankerProvider,
+        reranker_provider: RerankerProvider | None = None,
     ) -> None:
+        """``reranker_provider`` 为 None 即 reranker=none：按 RRF 融合分数直接排序。"""
         self._data_dir = data_dir
         self._embedding = embedding_provider
         self._reranker = reranker_provider
@@ -122,6 +127,17 @@ class SearchService:
             index.close()
             raise
         return index, vector_store
+
+    def close(self) -> None:
+        """释放持有的 provider 连接池（serve 设置失效重建缓存时调用）。
+
+        索引/向量库在每次检索内开合，不持长连接；这里只负责两个 provider 的
+        httpx 连接池。provider 无 close（如测试 fake）时静默跳过。
+        """
+        for provider in (self._embedding, self._reranker):
+            release = getattr(provider, "close", None)
+            if callable(release):
+                release()
 
     def search(self, query: str, options: SearchOptions | None = None) -> list[SearchResult]:
         """执行固定顺序的混合检索；合法但无命中的查询返回空列表。"""
@@ -166,18 +182,25 @@ class SearchService:
                 "run 'siku index --rebuild' to regenerate the index."
             )
 
-        rerank_texts = [chunks[c.chunk_id].text for c in candidates]
-        rerank_scores = self._reranker.rerank(query, rerank_texts)
-        if len(rerank_scores) != len(candidates):
-            raise ProviderError(
-                f"Reranker provider {self._reranker.model_id!r} returned "
-                f"{len(rerank_scores)} scores for {len(candidates)} candidates"
+        if self._reranker is None:
+            # reranker=none：按 RRF 融合分数直接排序；rerank_score 回填最终排序
+            # 所用分数，保证 CLI/HTTP 结果字段语义仍是"最终排序的第一关键字"
+            scored = [
+                (candidate, candidate.hybrid_score)
+                for candidate in sorted(candidates, key=lambda c: (-c.hybrid_score, c.chunk_id))
+            ]
+        else:
+            rerank_texts = [chunks[c.chunk_id].text for c in candidates]
+            rerank_scores = self._reranker.rerank(query, rerank_texts)
+            if len(rerank_scores) != len(candidates):
+                raise ProviderError(
+                    f"Reranker provider {self._reranker.model_id!r} returned "
+                    f"{len(rerank_scores)} scores for {len(candidates)} candidates"
+                )
+            scored = sorted(
+                zip(candidates, rerank_scores, strict=True),
+                key=lambda pair: (-pair[1], -pair[0].hybrid_score, pair[0].chunk_id),
             )
-
-        scored = sorted(
-            zip(candidates, rerank_scores, strict=True),
-            key=lambda pair: (-pair[1], -pair[0].hybrid_score, pair[0].chunk_id),
-        )
         results = [
             SearchResult(
                 chunk_id=candidate.chunk_id,

@@ -216,20 +216,32 @@ def build_config(
     embedding_model_id: str,
     embedding_model_revision: str | None,
     embedding_dimensions: int,
-    reranker_model_id: str,
+    reranker_model_id: str | None,
     reranker_model_revision: str | None,
     tokenizer_version: str,
     top_k: int,
     candidate_k: int,
     rrf_k: int,
+    *,
+    provider_kind: str,
+    embedding_base_url_host: str,
+    reranker_base_url_host: str | None,
 ) -> dict[str, object]:
-    """基线快照的 config 段：模型、分词器与检索参数全部入档。"""
+    """基线快照的 config 段：模型、通道身份、分词器与检索参数全部入档。
+
+    通道化语义（ADR-0009）：`provider_kind` 标识通道形态（`api`=embedding+rerank
+    双端点，`rerank-none`=仅 embedding 端点）；主机名不含凭证、端口与路径，基线
+    文件按通道命名，跨通道分数不可比。
+    """
     return {
+        "provider_kind": provider_kind,
         "embedding_model_id": embedding_model_id,
         "embedding_model_revision": embedding_model_revision,
+        "embedding_base_url_host": embedding_base_url_host,
         "embedding_dimensions": embedding_dimensions,
         "reranker_model_id": reranker_model_id,
         "reranker_model_revision": reranker_model_revision,
+        "reranker_base_url_host": reranker_base_url_host,
         "tokenizer_version": tokenizer_version,
         "top_k": top_k,
         "candidate_k": candidate_k,
@@ -310,6 +322,38 @@ def load_baseline(path: Path) -> dict[str, object]:
 class BaselineComparison:
     passed: bool
     dropped_metrics: tuple[str, ...]
+
+
+def check_channel_identity(
+    baseline: dict[str, object],
+    current_config: dict[str, object],
+) -> None:
+    """通道身份前置校验：基线记录了通道身份且与当前不一致时拒绝比较（ADR-0009）。
+
+    「跨通道分数不可比」不能只靠文件命名约定；显式 `--baseline` 指到他通道文件时
+    必须硬失败。旧版基线（历史 v0，config 无通道字段）跳过本检查，仅保留
+    fixture 指纹门禁。
+    """
+    baseline_config = baseline.get("config")
+    if not isinstance(baseline_config, dict):
+        return
+    # 仅当基线带通道字段（ADR-0009 新增）时才做通道比较；历史 v0 基线只有
+    # 模型/参数字段，跳过本检查，仅保留 fixture 指纹门禁
+    if not ({"provider_kind", "embedding_base_url_host"} & set(baseline_config)):
+        return
+    identity_keys = ("provider_kind", "embedding_model_id", "embedding_base_url_host")
+    mismatches = [
+        f"{key}: baseline={baseline_config.get(key)!r} current={current_config.get(key)!r}"
+        for key in identity_keys
+        if key in baseline_config and baseline_config.get(key) != current_config.get(key)
+    ]
+    if mismatches:
+        raise EvaluationError(
+            "Baseline belongs to a different model channel; cross-channel scores "
+            "are not comparable (ADR-0009). Point --baseline at this channel's "
+            "snapshot or generate one with --save-baseline. Mismatched fields: "
+            + "; ".join(mismatches)
+        )
 
 
 def check_fixture_fingerprint(

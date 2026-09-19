@@ -92,7 +92,8 @@ class SearchResult:
     - `bm25_score`：FTS5 bm25() 取负后的正值，越大越相关；仅 BM25 召回的候选有值；
     - `vector_score`：余弦相似度（1 - 余弦距离）；仅向量召回的候选有值；
     - `hybrid_score`：RRF 融合分数；
-    - `rerank_score`：重排模型分数，最终排序的第一关键字。
+    - `rerank_score`：重排模型分数，最终排序的第一关键字；`reranker=none` 时
+      回填最终排序所用的 RRF 融合分数（ADR-0009）。
     """
 
     chunk_id: str

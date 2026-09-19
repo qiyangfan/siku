@@ -45,7 +45,7 @@ class FtsUnavailableError(RetrievalError):
 
 
 class ModelNotAvailableError(RetrievalError):
-    """缺少 retrieval optional extra、模型运行时或本地模型文件。"""
+    """模型端点未配置、凭证被拒或端点不可用（BYOK，ADR-0009）。"""
 
 
 class ProviderError(RetrievalError):

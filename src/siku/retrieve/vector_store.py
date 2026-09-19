@@ -1,8 +1,9 @@
 """嵌入式向量存储（ADR-0003 定稿：LanceDB）。
 
-`lancedb` 属于 `retrieval` optional extra 的向量运行时，本模块在函数体内
-延迟导入；核心安装不触碰。向量表按目录整体作为"一个版本"由索引同步流程
-构建于临时目录并在校验通过后原子切换，这里只提供单版本目录内的读写。
+`lancedb` 是核心依赖（ADR-0003 三件套；ADR-0009 起不再属于任何 extra），
+本模块保留函数体内延迟导入以加快 CLI 冷启动。向量表按目录整体作为"一个
+版本"由索引同步流程构建于临时目录并在校验通过后原子切换，这里只提供单版本
+目录内的读写。
 """
 
 from __future__ import annotations
@@ -61,13 +62,13 @@ def read_commit_marker(vectors_dir: Path) -> str | None:
 
 
 def _import_lancedb() -> Any:
-    """延迟导入 lancedb；缺 retrieval extra 时给出安装方向而非裸 ImportError。"""
+    """延迟导入 lancedb（ADR-0009 起为核心依赖）；缺失时给方向而非裸 ImportError。"""
     try:
         import lancedb
     except ImportError as exc:
         raise ModelNotAvailableError(
-            "Vector store requires the optional 'retrieval' extra (lancedb). "
-            "Install it with: uv sync --extra retrieval"
+            "Vector store requires lancedb, which is a core dependency of siku. "
+            "Reinstall the package (e.g. uv sync) to restore it."
         ) from exc
     return lancedb
 
@@ -77,8 +78,8 @@ def _import_pyarrow() -> Any:
         import pyarrow
     except ImportError as exc:
         raise ModelNotAvailableError(
-            "Vector store requires the optional 'retrieval' extra (pyarrow). "
-            "Install it with: uv sync --extra retrieval"
+            "Vector store requires pyarrow, which is a core dependency of siku. "
+            "Reinstall the package (e.g. uv sync) to restore it."
         ) from exc
     return pyarrow
 

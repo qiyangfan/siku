@@ -98,8 +98,10 @@ class HttpxLlmProvider:
                 headers={"Authorization": f"Bearer {api_key}"},
                 json=payload,
             )
-        except httpx.HTTPError as exc:
-            # 超时/断连/响应解码失败等全部 HTTP 层异常统一翻译，禁止裸穿透
+        except (httpx.HTTPError, httpx.InvalidURL, RuntimeError) as exc:
+            # 超时/断连/响应解码失败等全部 HTTP 层异常统一翻译，禁止裸穿透；
+            # InvalidURL（畸形 URL）与 RuntimeError（连接池被关闭后在途调用）
+            # 不在 HTTPError 体系内，需显式纳入
             raise LlmConnectionError(f"LLM request failed: {exc}") from exc
         return self._interpret(response)
 

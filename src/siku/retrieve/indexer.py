@@ -28,6 +28,7 @@ from siku.retrieve.notes_reader import read_note, scan_note_frontmatters
 from siku.retrieve.providers import (
     EmbeddingProvider,
     IndexModelMetadata,
+    base_url_host,
     validate_embedding_output,
 )
 from siku.retrieve.store import SCHEMA_VERSION, SqliteIndex
@@ -273,6 +274,8 @@ def sync_index(
                 embedding_model_revision=embedding_provider.model_revision,
                 embedding_dimensions=embedding_provider.dimensions,
                 tokenizer_version=TOKENIZER_VERSION,
+                # 端点通道标识（ADR-0009）：协议未约定 base_url 的 fake provider 留空
+                embedding_channel_host=base_url_host(getattr(embedding_provider, "base_url", "")),
             )
             .as_meta_dict()
             .items()
