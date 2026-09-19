@@ -1,23 +1,50 @@
 """检索 CLI 行为测试：index/search/evaluate-retrieval 的人类与 JSON 输出、错误路径。
 
 CLI 走真实 sync/search 链路（fake provider 注入通过 monkeypatch 替换
-LocalEmbeddingProvider/LocalRerankerProvider），保证命令层与领域层一起被覆盖。
+``_embedding_component``/``_reranker_component`` 装配点），保证命令层与领域层
+一起被覆盖；未配置指引路径走真实分层解析（config 指向不存在的路径）。
 """
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner, Result
 
 from fakes import FakeEmbeddingProvider, FakeRerankerProvider
-from siku.cli import app
+from siku.cli import RerankerMode, app
+from siku.model_supply import ResolvedChannel
 
 runner = CliRunner()
 
 VAULT = "vault"
+
+FAKE_EMBEDDING_CHANNEL = ResolvedChannel(
+    base_url="http://127.0.0.1:11434/v1",
+    model="fake-embed",
+    api_key=None,
+    api_key_env=None,
+)
+FAKE_RERANK_CHANNEL = ResolvedChannel(
+    base_url="http://127.0.0.1:4000/v1",
+    model="fake-rerank",
+    api_key=None,
+    api_key_env=None,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_siku_supply_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔离宿主机上可能存在的 SIKU_* 供给环境变量与真实 config.toml。"""
+    for name in list(os.environ):
+        if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        "siku.model_supply.config_file_path", lambda: Path("/nonexistent/config.toml")
+    )
 
 
 def write_projection(vault: Path, name: str, source_id: str, source_hash: str, body: str) -> None:
@@ -73,8 +100,18 @@ def patched_providers(
 ) -> tuple[FakeEmbeddingProvider, FakeRerankerProvider]:
     embedding = FakeEmbeddingProvider()
     reranker = FakeRerankerProvider()
-    monkeypatch.setattr("siku.cli.LocalEmbeddingProvider", lambda: embedding)
-    monkeypatch.setattr("siku.cli.LocalRerankerProvider", lambda: reranker)
+
+    def fake_embedding(_cli_values: object, _dimensions: int | None) -> object:
+        return FAKE_EMBEDDING_CHANNEL, embedding
+
+    def fake_reranker(mode: object, _cli_values: object) -> object:
+        # 与真实装配点同语义：显式 none 返回无重排器
+        if mode is RerankerMode.NONE:
+            return None, None
+        return FAKE_RERANK_CHANNEL, reranker
+
+    monkeypatch.setattr("siku.cli._embedding_component", fake_embedding)
+    monkeypatch.setattr("siku.cli._reranker_component", fake_reranker)
     return embedding, reranker
 
 
@@ -137,24 +174,86 @@ class TestIndexCommand:
         assert result.exit_code == 1
         assert "索引失败" in result.output
 
-    def test_model_unavailable_gives_install_hint(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from siku.retrieve.errors import ModelNotAvailableError
-        from siku.retrieve.local_models import LocalEmbeddingProvider
-
-        def boom() -> LocalEmbeddingProvider:
-            raise ModelNotAvailableError("missing extra")
-
-        monkeypatch.setattr("siku.cli.LocalEmbeddingProvider", boom)
-        (tmp_path / VAULT / "notes").mkdir(parents=True)
+    def test_unconfigured_embedding_gives_actionable_guidance(self, tmp_path: Path) -> None:
+        # 未配置 embedding 端点：走真实分层解析（config 指向不存在路径且无
+        # 环境变量），必须以可行动指引报错，不得回退内置端点
         write_projection(tmp_path / VAULT, "a.md", "a" * 12, "1" * 64, "## page:1\n\n内容\n")
         result = runner.invoke(
             app,
             ["index", "--vault", str(tmp_path / VAULT), "--data-dir", str(tmp_path / "data")],
         )
         assert result.exit_code == 1
-        assert "uv sync --extra retrieval" in result.output
+        assert "模型端点" in result.output
+        assert "--embedding-base-url" in result.output
+
+    def test_reranker_none_mode_announced_not_silent(
+        self, tmp_path: Path, patched_providers: object
+    ) -> None:
+        write_corpus(tmp_path / VAULT)
+        assert (
+            runner.invoke(
+                app,
+                [
+                    "index",
+                    "--vault",
+                    str(tmp_path / VAULT),
+                    "--data-dir",
+                    str(tmp_path / "data"),
+                ],
+            ).exit_code
+            == 0
+        )
+        result = runner.invoke(
+            app,
+            [
+                "search",
+                "检索增强",
+                "--data-dir",
+                str(tmp_path / "data"),
+                "--reranker",
+                "none",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "RRF-only" in result.output
+
+    def test_reranker_api_without_channel_errors_with_guidance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # 只注入 embedding 装配点：rerank 走真实分层解析，显式 api 模式但
+        # 通道缺失必须以配置指引报错
+        embedding = FakeEmbeddingProvider()
+        monkeypatch.setattr(
+            "siku.cli._embedding_component",
+            lambda _cli_values, _dimensions: (FAKE_EMBEDDING_CHANNEL, embedding),
+        )
+        write_corpus(tmp_path / VAULT)
+        assert (
+            runner.invoke(
+                app,
+                [
+                    "index",
+                    "--vault",
+                    str(tmp_path / VAULT),
+                    "--data-dir",
+                    str(tmp_path / "data"),
+                ],
+            ).exit_code
+            == 0
+        )
+        result = runner.invoke(
+            app,
+            [
+                "search",
+                "检索增强",
+                "--data-dir",
+                str(tmp_path / "data"),
+                "--reranker",
+                "api",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "模型端点" in result.output
 
 
 class TestSearchCommand:
@@ -239,6 +338,10 @@ class TestSearchCommand:
 
     def test_top_k_invalid_value_rejected(self, indexed: Path) -> None:
         result = self.invoke_search(indexed, "--top-k", "0")
+        assert result.exit_code != 0
+
+    def test_invalid_reranker_mode_rejected(self, indexed: Path) -> None:
+        result = self.invoke_search(indexed, "--reranker", "bogus")
         assert result.exit_code != 0
 
 
@@ -370,3 +473,76 @@ class TestEvaluateCommand:
         )
         assert result.exit_code == 0
         assert "[PART]" in result.output
+
+
+class TestChannelizedBaseline:
+    """通道化基线（ADR-0009）：--channel、provider_kind 与输出明示。"""
+
+    @pytest.fixture()
+    def indexed(self, tmp_path: Path, patched_providers: object) -> Path:
+        write_corpus(tmp_path / VAULT)
+        runner.invoke(
+            app,
+            ["index", "--vault", str(tmp_path / VAULT), "--data-dir", str(tmp_path / "data")],
+        )
+        (tmp_path / "golden.jsonl").write_text(
+            json.dumps(
+                {
+                    "id": "zh-01",
+                    "query": "检索增强",
+                    "expected": [{"source": "a--aaaaaaaaaaaa.md", "anchor": "page:1"}],
+                    "note": "中文短语",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return tmp_path
+
+    def test_channel_metadata_and_mode_displayed(self, indexed: Path) -> None:
+        baseline = indexed / "baselines" / "my-chan.json"
+        result = runner.invoke(
+            app,
+            [
+                "evaluate-retrieval",
+                "--golden-set",
+                str(indexed / "golden.jsonl"),
+                "--data-dir",
+                str(indexed / "data"),
+                "--channel",
+                "my-chan",
+                "--reranker",
+                "none",
+                "--save-baseline",
+                str(baseline),
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["config"]["provider_kind"] == "rerank-none"
+        assert payload["config"]["embedding_base_url_host"] == "127.0.0.1"
+        assert payload["config"]["embedding_model_id"] == "fake-embed"
+        assert baseline.exists()  # 通道目录按需创建
+
+    def test_announces_channel_in_human_output(self, indexed: Path) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "evaluate-retrieval",
+                "--golden-set",
+                str(indexed / "golden.jsonl"),
+                "--data-dir",
+                str(indexed / "data"),
+                "--channel",
+                "my-chan",
+                "--reranker",
+                "none",
+                "--save-baseline",
+                str(indexed / "b2.json"),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "通道 my-chan" in result.output
+        assert "RRF-only" in result.output

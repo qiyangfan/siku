@@ -9,6 +9,7 @@ import sys
 import threading
 from collections.abc import Callable
 from dataclasses import asdict
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, BinaryIO, NoReturn
 
@@ -34,20 +35,26 @@ from siku.graph.errors import (
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.providers import (
     DEFAULT_API_KEY_ENV,
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL_ID,
     HttpxLlmProvider,
 )
 from siku.graph.report import SCALE_WARN_EDGES
 from siku.graph.service import build_graph
 from siku.ingest import IngestError, ingest_path
-from siku.retrieve.errors import EvaluationError, RetrievalError
-from siku.retrieve.indexer import sync_index
-from siku.retrieve.local_models import (
-    LocalEmbeddingProvider,
-    LocalRerankerProvider,
+from siku.model_supply import (
+    ChannelValues,
+    ResolvedChannel,
+    base_url_host,
+    build_embedding_provider,
+    build_reranker_provider,
+    channel_slug,
+    resolve_embedding_channel,
+    resolve_llm_channel,
+    resolve_rerank_channel,
 )
+from siku.retrieve.errors import EvaluationError, ModelNotAvailableError, RetrievalError
+from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import SearchOptions
+from siku.retrieve.providers import EmbeddingProvider, RerankerProvider
 from siku.retrieve.service import SearchService
 from siku.wiki.service import generate_wiki
 from siku.wiki.summarizer import CommunitySummarizer
@@ -63,7 +70,149 @@ app = typer.Typer(
 DEFAULT_VAULT = Path("vault")
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_UI_DIST = Path("ui") / "dist"
-DEFAULT_BASELINE_NAME = "retrieval-baseline.json"
+# 通道化基线目录（ADR-0009）：基线文件按通道命名 {channel}.json；
+# 既有 retrieval-baseline-v0.json 保留为历史记录，不再参与比较
+BASELINES_DIR = Path("benchmarks") / "baselines"
+
+# ---- 模型供给 CLI 选项（三通道同构；缺省时走 环境变量 > config.toml 分层解析）----
+EmbeddingBaseUrlOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--embedding-base-url",
+        help="openai 兼容 embedding 端点 base URL（如 Ollama: http://127.0.0.1:11434/v1）。",
+    ),
+]
+EmbeddingModelOpt = Annotated[
+    str | None,
+    typer.Option("--embedding-model", help="embedding 模型名称（如 bge-m3）。"),
+]
+EmbeddingApiKeyEnvOpt = Annotated[
+    str | None,
+    typer.Option("--embedding-api-key-env", help="存放 embedding 端点 API key 的环境变量名。"),
+]
+EmbeddingDimensionsOpt = Annotated[
+    int | None,
+    typer.Option(
+        "--embedding-dimensions",
+        min=1,
+        help="显式指定向量维度，跳过首索引时的探针请求（防端点返回维度与声明不符）。",
+    ),
+]
+
+
+class RerankerMode(StrEnum):
+    """重排模式：api=调用 rerank 端点；none=RRF-only（ADR-0009 一等公民）。"""
+
+    API = "api"
+    NONE = "none"
+
+
+RerankerModeOpt = Annotated[
+    RerankerMode | None,
+    typer.Option(
+        "--reranker",
+        help="重排模式：api（调用 rerank 端点）或 none（RRF-only）。缺省自动："
+        "配置了 rerank 通道即 api，否则 none。",
+    ),
+]
+RerankBaseUrlOpt = Annotated[
+    str | None,
+    typer.Option("--rerank-base-url", help="rerank 端点 base URL（/rerank 通用形）。"),
+]
+RerankModelOpt = Annotated[
+    str | None,
+    typer.Option("--rerank-model", help="rerank 模型名称（如 BAAI/bge-reranker-v2-m3）。"),
+]
+RerankApiKeyEnvOpt = Annotated[
+    str | None,
+    typer.Option("--rerank-api-key-env", help="存放 rerank 端点 API key 的环境变量名。"),
+]
+
+
+def _embedding_cli_values(
+    base_url: str | None, model: str | None, api_key_env: str | None
+) -> ChannelValues:
+    return ChannelValues(base_url=base_url, model=model, api_key_env=api_key_env)
+
+
+def _rerank_cli_values(
+    base_url: str | None, model: str | None, api_key_env: str | None
+) -> ChannelValues:
+    return ChannelValues(base_url=base_url, model=model, api_key_env=api_key_env)
+
+
+def _embedding_component(
+    cli_values: ChannelValues, dimensions: int | None
+) -> tuple[ResolvedChannel, EmbeddingProvider]:
+    """解析并装配 embedding 通道；未配置时抛带指引的 ModelNotAvailableError。"""
+    channel = resolve_embedding_channel(cli_values)
+    return channel, build_embedding_provider(channel, dimensions=dimensions)
+
+
+def _reranker_component(
+    reranker_mode: RerankerMode | None, cli_values: ChannelValues
+) -> tuple[ResolvedChannel | None, RerankerProvider | None]:
+    """解析并装配 rerank 通道；provider 为 None 即 reranker=none（RRF-only）。
+
+    显式 ``--reranker api`` 但通道缺失时报错；未指定模式时通道缺失不是错误
+    （reranker=none 是一等公民，运行输出会明示当前模式，不静默降级）。
+    """
+    if reranker_mode is RerankerMode.NONE:
+        return None, None
+    try:
+        channel = resolve_rerank_channel(cli_values)
+    except ModelNotAvailableError:
+        if reranker_mode is RerankerMode.API:
+            raise
+        return None, None
+    return channel, build_reranker_provider(channel)
+
+
+def _rerank_mode_text(reranker: RerankerProvider | None) -> str:
+    """检索/评测输出中的重排模式明示文案（rerank=none 不静默）。"""
+    if reranker is None:
+        return "none（RRF-only）"
+    return str(reranker.model_id)
+
+
+def _announce_supply_channels(
+    embedding_supply: ChannelValues,
+    rerank_supply: ChannelValues,
+    llm: ResolvedChannel,
+) -> None:
+    """启动期在用户面明示三通道解析结果（BYOK 不静默）。
+
+    embedding 未配置只告警不阻止启动：检索/问答请求时会返回配置指引错误，
+    健康检查与静态 UI 不受影响（BYOK 产品的诚实行为，见 ADR-0009）。
+    """
+    try:
+        embedding_channel = resolve_embedding_channel(embedding_supply)
+        embedding_text = f"{embedding_channel.model}@{base_url_host(embedding_channel.base_url)}"
+    except ModelNotAvailableError:
+        embedding_text = "未配置（检索/问答将返回配置指引错误）"
+    try:
+        rerank_channel = resolve_rerank_channel(rerank_supply)
+        rerank_text = f"{rerank_channel.model}@{base_url_host(rerank_channel.base_url)}"
+    except ModelNotAvailableError:
+        rerank_text = "none（RRF-only）"
+    typer.echo(
+        f"模型供给: embedding={embedding_text} rerank={rerank_text} "
+        f"llm={llm.model}@{base_url_host(llm.base_url)}",
+        err=True,
+    )
+    logger.info(
+        "model supply channels: llm=%s@%s embedding=%s rerank=%s",
+        llm.model,
+        base_url_host(llm.base_url),
+        embedding_text,
+        rerank_text,
+    )
+
+
+def _close_quietly(resource: object) -> None:
+    close = getattr(resource, "close", None)
+    if callable(close):
+        close()
 
 
 @app.callback()
@@ -123,13 +272,28 @@ def index(
     rebuild: Annotated[
         bool, typer.Option("--rebuild", help="忽略旧派生数据，全量重建索引。")
     ] = False,
+    embedding_base_url: EmbeddingBaseUrlOpt = None,
+    embedding_model: EmbeddingModelOpt = None,
+    embedding_api_key_env: EmbeddingApiKeyEnvOpt = None,
+    embedding_dimensions: EmbeddingDimensionsOpt = None,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
-    """同步检索索引（默认增量；--rebuild 全量重建）。"""
+    """同步检索索引（默认增量；--rebuild 全量重建）。embedding 端点经分层配置供给。"""
+    embedding: EmbeddingProvider | None = None
     try:
-        report = sync_index(vault, data_dir, LocalEmbeddingProvider(), rebuild=rebuild)
+        embedding_channel, embedding = _embedding_component(
+            _embedding_cli_values(embedding_base_url, embedding_model, embedding_api_key_env),
+            embedding_dimensions,
+        )
+        report = sync_index(vault, data_dir, embedding, rebuild=rebuild)
     except RetrievalError as exc:
         _fail(f"索引失败: {_retrieval_error_message(exc)}", exc)
+    finally:
+        if embedding is not None:
+            _close_quietly(embedding)
+    channel_label = channel_slug(
+        embedding_channel.base_url, embedding_channel.model, rerank_active=False
+    )
     if json_output:
         typer.echo(
             json.dumps(
@@ -147,7 +311,8 @@ def index(
         )
         return
     typer.echo(
-        "索引完成: "
+        f"索引完成（通道 {channel_label}，模型 {embedding_channel.model}"
+        f"@{base_url_host(embedding_channel.base_url)}）: "
         f"created={report.created} updated={report.updated} "
         f"skipped={report.skipped} removed={report.removed} "
         f"chunks={report.total_chunks} version={report.index_version}"
@@ -166,14 +331,37 @@ def search(
     candidate_k: Annotated[
         int, typer.Option("--candidate-k", min=1, help="每路召回候选数。")
     ] = SearchOptions.candidate_k,
+    embedding_base_url: EmbeddingBaseUrlOpt = None,
+    embedding_model: EmbeddingModelOpt = None,
+    embedding_api_key_env: EmbeddingApiKeyEnvOpt = None,
+    embedding_dimensions: EmbeddingDimensionsOpt = None,
+    reranker_mode: RerankerModeOpt = None,
+    rerank_base_url: RerankBaseUrlOpt = None,
+    rerank_model: RerankModelOpt = None,
+    rerank_api_key_env: RerankApiKeyEnvOpt = None,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
-    """在已建索引上执行混合检索并返回带来源锚点的结果。"""
+    """在已建索引上执行混合检索并返回带来源锚点的结果。模型端点经分层配置供给。"""
+    embedding: EmbeddingProvider | None = None
+    reranker: RerankerProvider | None = None
     try:
-        service = SearchService(data_dir, LocalEmbeddingProvider(), LocalRerankerProvider())
+        _, embedding = _embedding_component(
+            _embedding_cli_values(embedding_base_url, embedding_model, embedding_api_key_env),
+            embedding_dimensions,
+        )
+        _, reranker = _reranker_component(
+            reranker_mode,
+            _rerank_cli_values(rerank_base_url, rerank_model, rerank_api_key_env),
+        )
+        service = SearchService(data_dir, embedding, reranker)
         results = service.search(query, SearchOptions(top_k=top_k, candidate_k=candidate_k))
     except RetrievalError as exc:
         _fail(f"检索失败: {_retrieval_error_message(exc)}", exc)
+    finally:
+        if embedding is not None:
+            _close_quietly(embedding)
+        if reranker is not None:
+            _close_quietly(reranker)
     if json_output:
         typer.echo(
             json.dumps(
@@ -187,7 +375,7 @@ def search(
             )
         )
         return
-    typer.echo(f"检索完成: 命中 {len(results)} 条")
+    typer.echo(f"检索完成: 命中 {len(results)} 条（重排: {_rerank_mode_text(reranker)}）")
     for position, result in enumerate(results, start=1):
         typer.echo(
             f"{position:>3}. [rerank={result.rerank_score:.4f}] "
@@ -206,21 +394,39 @@ def evaluate_retrieval(
     baseline: Annotated[
         Path | None,
         typer.Option(
-            "--baseline", help="用于对比的基线快照路径，默认 data/retrieval-baseline.json。"
+            "--baseline",
+            help="用于对比的基线快照路径，默认 benchmarks/baselines/{通道}.json。",
         ),
     ] = None,
     save_baseline: Annotated[
         Path | None,
         typer.Option("--save-baseline", help="把本次结果保存为新基线快照（不覆盖已存在的文件）。"),
     ] = None,
+    channel: Annotated[
+        str | None,
+        typer.Option(
+            "--channel",
+            help="通道标签（基线命名与归档单位）；缺省由端点主机 + 模型名派生。",
+        ),
+    ] = None,
+    embedding_base_url: EmbeddingBaseUrlOpt = None,
+    embedding_model: EmbeddingModelOpt = None,
+    embedding_api_key_env: EmbeddingApiKeyEnvOpt = None,
+    reranker_mode: RerankerModeOpt = None,
+    rerank_base_url: RerankBaseUrlOpt = None,
+    rerank_model: RerankModelOpt = None,
+    rerank_api_key_env: RerankApiKeyEnvOpt = None,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
-    """运行 golden set 评测并执行基线回归门禁。"""
+    """运行 golden set 评测并执行通道基线回归门禁（模型端点经分层配置供给）。"""
     from siku.retrieve.evaluation import (
         baseline_payload as _baseline_payload,
     )
     from siku.retrieve.evaluation import (
         build_config as _build_config,
+    )
+    from siku.retrieve.evaluation import (
+        check_channel_identity as _check_channel_identity,
     )
     from siku.retrieve.evaluation import (
         check_fixture_fingerprint as _check_fixture_fingerprint,
@@ -242,13 +448,25 @@ def evaluate_retrieval(
     )
     from siku.retrieve.tokenizer import TOKENIZER_VERSION
 
+    embedding: EmbeddingProvider | None = None
+    reranker: RerankerProvider | None = None
     try:
         cases = _load_golden_set(golden_set)
-        embedding = LocalEmbeddingProvider()
-        reranker = LocalRerankerProvider()
+        embedding_channel, embedding = _embedding_component(
+            _embedding_cli_values(embedding_base_url, embedding_model, embedding_api_key_env),
+            None,
+        )
+        rerank_channel, reranker = _reranker_component(
+            reranker_mode,
+            _rerank_cli_values(rerank_base_url, rerank_model, rerank_api_key_env),
+        )
         service = SearchService(data_dir, embedding, reranker)
         options = SearchOptions()
         report = _evaluate(cases, lambda query: service.search(query, options))
+        rerank_active = reranker is not None
+        resolved_channel = channel or channel_slug(
+            embedding_channel.base_url, embedding_channel.model, rerank_active=rerank_active
+        )
         report = report.__class__(
             metrics=report.metrics,
             cases=report.cases,
@@ -256,15 +474,22 @@ def evaluate_retrieval(
                 embedding_model_id=embedding.model_id,
                 embedding_model_revision=embedding.model_revision,
                 embedding_dimensions=embedding.dimensions,
-                reranker_model_id=reranker.model_id,
-                reranker_model_revision=reranker.model_revision,
+                reranker_model_id=reranker.model_id if reranker else None,
+                reranker_model_revision=reranker.model_revision if reranker else None,
                 tokenizer_version=TOKENIZER_VERSION,
                 top_k=options.top_k,
                 candidate_k=options.candidate_k,
                 rrf_k=options.rrf_k,
+                provider_kind="api" if rerank_active else "rerank-none",
+                embedding_base_url_host=base_url_host(embedding_channel.base_url),
+                reranker_base_url_host=(
+                    base_url_host(rerank_channel.base_url) if rerank_channel else None
+                ),
             ),
         )
-        baseline_path = baseline if baseline is not None else data_dir / DEFAULT_BASELINE_NAME
+        baseline_path = (
+            baseline if baseline is not None else BASELINES_DIR / f"{resolved_channel}.json"
+        )
         compared = baseline_path.exists()
         passed: bool | None = None
         dropped: tuple[str, ...] = ()
@@ -272,13 +497,15 @@ def evaluate_retrieval(
             stored_baseline = _load_baseline(baseline_path)
             # 指纹前置校验：基线与当前 fixture 不同源时拒绝比较，防止静默无效回归
             _check_fixture_fingerprint(stored_baseline, golden_set)
+            # 通道身份前置校验：显式 --baseline 指到其他通道时硬失败（ADR-0009）
+            _check_channel_identity(stored_baseline, report.config)
             comparison = _compare_with_baseline(report.metrics, stored_baseline)
             passed = comparison.passed
             dropped = comparison.dropped_metrics
         elif save_baseline is None:
             raise EvaluationError(
-                f"Baseline snapshot does not exist: {baseline_path}; "
-                "generate one with --save-baseline first."
+                f"Baseline snapshot for channel {resolved_channel!r} does not exist: "
+                f"{baseline_path}; generate one with --save-baseline first."
             )
         baseline_saved: Path | None = None
         if save_baseline is not None:
@@ -286,6 +513,11 @@ def evaluate_retrieval(
             baseline_saved = save_baseline
     except RetrievalError as exc:
         _fail(f"评测失败: {_retrieval_error_message(exc)}", exc)
+    finally:
+        if embedding is not None:
+            _close_quietly(embedding)
+        if reranker is not None:
+            _close_quietly(reranker)
 
     if json_output:
         typer.echo(
@@ -317,7 +549,10 @@ def evaluate_retrieval(
             )
         )
     else:
-        typer.echo(f"评测完成: 用例 {len(report.cases)} 条")
+        typer.echo(
+            f"评测完成（通道 {resolved_channel}）: 用例 {len(report.cases)} 条"
+            f"（重排: {_rerank_mode_text(reranker)}）"
+        )
         typer.echo(f"Recall@5 = {report.metrics['recall_at_5']:.4f}")
         typer.echo(f"MRR@10   = {report.metrics['mrr_at_10']:.4f}")
         for case in report.cases:
@@ -353,31 +588,37 @@ def graph(
         Path, typer.Option("--data-dir", help="派生图谱数据目录。")
     ] = DEFAULT_DATA_DIR,
     api_key_env: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--api-key-env",
-            help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
+            help="存放 LLM API key 的环境变量名（BYO key）；"
+            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}。",
         ),
-    ] = DEFAULT_API_KEY_ENV,
+    ] = None,
     llm_base_url: Annotated[
-        str,
-        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL。"),
-    ] = DEFAULT_BASE_URL,
+        str | None,
+        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL；缺省读分层配置。"),
+    ] = None,
     llm_model: Annotated[
-        str,
-        typer.Option("--llm-model", help="LLM 模型名称。"),
-    ] = DEFAULT_MODEL_ID,
+        str | None,
+        typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
+    ] = None,
     rebuild: Annotated[
         bool, typer.Option("--rebuild", help="忽略抽取缓存，强制全部重抽。")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
     """构建知识图谱并输出体检报告（LLM 抽取，BYO key）。"""
+    llm = resolve_llm_channel(
+        ChannelValues(base_url=llm_base_url, model=llm_model, api_key_env=api_key_env)
+    )
+    resolved_key_env = llm.api_key_env or DEFAULT_API_KEY_ENV
     extractor = LlmGraphExtractor(
         provider=HttpxLlmProvider(
-            base_url=llm_base_url,
-            model_id=llm_model,
-            api_key_env=api_key_env,
+            base_url=llm.base_url,
+            model_id=llm.model,
+            api_key_env=resolved_key_env,
+            api_key=llm.api_key.get_secret_value() if llm.api_key else None,
         )
     )
     summarizer: CommunitySummarizer | None = None
@@ -387,23 +628,24 @@ def graph(
             data_dir,
             extractor,
             rebuild=rebuild,
-            summary_identity=SummaryIdentity(model_id=llm_model),
+            summary_identity=SummaryIdentity(model_id=llm.model),
         )
         if result.empty_corpus:
             # spec：空语料产出空图谱与空 wiki——零社区不产生任何 LLM 调用，
             # 因此缺 key 也能完成空总目生成
             summarizer = CommunitySummarizer(
                 provider=HttpxLlmProvider(
-                    base_url=llm_base_url,
-                    model_id=llm_model,
-                    api_key_env=api_key_env,
+                    base_url=llm.base_url,
+                    model_id=llm.model,
+                    api_key_env=resolved_key_env,
+                    api_key=llm.api_key.get_secret_value() if llm.api_key else None,
                 )
             )
             generate_wiki(data_dir, summarizer)
     except (GraphError, RetrievalError) as exc:
         if isinstance(exc, RetrievalError):
             _fail(f"图谱构建失败: {_retrieval_error_message(exc)}", exc)
-        _fail(f"图谱构建失败: {_graph_error_message(exc, api_key_env)}", exc)
+        _fail(f"图谱构建失败: {_graph_error_message(exc, resolved_key_env)}", exc)
     finally:
         extractor.close()
         if summarizer is not None:
@@ -452,28 +694,33 @@ def wiki(
         Path, typer.Option("--data-dir", help="派生图谱数据目录。")
     ] = DEFAULT_DATA_DIR,
     api_key_env: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--api-key-env",
-            help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
+            help="存放 LLM API key 的环境变量名（BYO key）；"
+            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}。",
         ),
-    ] = DEFAULT_API_KEY_ENV,
+    ] = None,
     llm_base_url: Annotated[
-        str,
-        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL。"),
-    ] = DEFAULT_BASE_URL,
+        str | None,
+        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL；缺省读分层配置。"),
+    ] = None,
     llm_model: Annotated[
-        str,
-        typer.Option("--llm-model", help="LLM 模型名称。"),
-    ] = DEFAULT_MODEL_ID,
+        str | None,
+        typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
     """生成 wiki 总目条目（每社区一篇，LLM 摘要，BYO key）。"""
+    llm = resolve_llm_channel(
+        ChannelValues(base_url=llm_base_url, model=llm_model, api_key_env=api_key_env)
+    )
     summarizer = CommunitySummarizer(
         provider=HttpxLlmProvider(
-            base_url=llm_base_url,
-            model_id=llm_model,
-            api_key_env=api_key_env,
+            base_url=llm.base_url,
+            model_id=llm.model,
+            api_key_env=llm.api_key_env or DEFAULT_API_KEY_ENV,
+            api_key=llm.api_key.get_secret_value() if llm.api_key else None,
         )
     )
     try:
@@ -481,7 +728,10 @@ def wiki(
     except (GraphError, RetrievalError) as exc:
         if isinstance(exc, RetrievalError):
             _fail(f"wiki 生成失败: {_retrieval_error_message(exc)}", exc)
-        _fail(f"wiki 生成失败: {_graph_error_message(exc, api_key_env)}", exc)
+        _fail(
+            f"wiki 生成失败: {_graph_error_message(exc, llm.api_key_env or DEFAULT_API_KEY_ENV)}",
+            exc,
+        )
     finally:
         summarizer.close()
     if json_output:
@@ -510,20 +760,28 @@ def serve(
     host: Annotated[str, typer.Option("--host", help="监听地址，默认仅本机可访问。")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", min=1, max=65535, help="监听端口。")] = 8000,
     api_key_env: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--api-key-env",
-            help=f"存放 LLM API key 的环境变量名（BYO key），默认 {DEFAULT_API_KEY_ENV}。",
+            help="存放 LLM API key 的环境变量名（BYO key）；"
+            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}。",
         ),
-    ] = DEFAULT_API_KEY_ENV,
+    ] = None,
     llm_base_url: Annotated[
-        str,
-        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL。"),
-    ] = DEFAULT_BASE_URL,
+        str | None,
+        typer.Option("--llm-base-url", help="openai 兼容 LLM 服务的 base URL；缺省读分层配置。"),
+    ] = None,
     llm_model: Annotated[
-        str,
-        typer.Option("--llm-model", help="LLM 模型名称。"),
-    ] = DEFAULT_MODEL_ID,
+        str | None,
+        typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
+    ] = None,
+    embedding_base_url: EmbeddingBaseUrlOpt = None,
+    embedding_model: EmbeddingModelOpt = None,
+    embedding_api_key_env: EmbeddingApiKeyEnvOpt = None,
+    embedding_dimensions: EmbeddingDimensionsOpt = None,
+    rerank_base_url: RerankBaseUrlOpt = None,
+    rerank_model: RerankModelOpt = None,
+    rerank_api_key_env: RerankApiKeyEnvOpt = None,
     with_ui: Annotated[bool, typer.Option("--with-ui", help="挂载 ui/dist 静态前端。")] = False,
     vault: Annotated[
         Path | None,
@@ -545,7 +803,7 @@ def serve(
         ),
     ] = False,
 ) -> None:
-    """启动 localhost HTTP API 服务。"""
+    """启动 localhost HTTP API 服务。模型端点经分层配置供给并透传到应用工厂。"""
     resolved_vault = DEFAULT_VAULT if vault is None else vault
     resolved_data_dir = DEFAULT_DATA_DIR if data_dir is None else data_dir
     resolved_ui_dir: Path | None
@@ -562,12 +820,21 @@ def serve(
         resolved_ui_dir = None
     if host == "0.0.0.0":
         typer.echo("警告：服务将监听所有网卡，请确认这是你的明确选择。", err=True)
+    llm_cli = ChannelValues(base_url=llm_base_url, model=llm_model, api_key_env=api_key_env)
+    llm = resolve_llm_channel(llm_cli)
+    embedding_supply = _embedding_cli_values(
+        embedding_base_url, embedding_model, embedding_api_key_env
+    )
+    rerank_supply = _rerank_cli_values(rerank_base_url, rerank_model, rerank_api_key_env)
+    _announce_supply_channels(embedding_supply, rerank_supply, llm)
     application = create_app(
         vault=resolved_vault,
         data_dir=resolved_data_dir,
-        api_key_env=api_key_env,
-        llm_base_url=llm_base_url,
-        llm_model=llm_model,
+        api_key_env=llm.api_key_env or DEFAULT_API_KEY_ENV,
+        llm_supply=llm_cli,
+        embedding_supply=embedding_supply,
+        rerank_supply=rerank_supply,
+        embedding_dimensions=embedding_dimensions,
         ui_dir=resolved_ui_dir,
     )
     if watch_stdin:

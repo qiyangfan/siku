@@ -250,3 +250,45 @@ class TestSearchErrors:
         )
         results = service.search("检索")
         assert isinstance(results, list)
+
+
+class TestRrfOnlyPath:
+    """reranker=none（ADR-0009 一等公民）：按 RRF 融合分数直接排序。"""
+
+    def test_none_reranker_sorts_by_hybrid_and_backfills_rerank_score(
+        self, corpus: tuple[Path, Path]
+    ) -> None:
+        _, data_dir = corpus
+        service = SearchService(data_dir, FakeEmbeddingProvider(), None)
+        results = service.search("检索增强")
+        assert results
+        for position in range(1, len(results)):
+            assert results[position - 1].hybrid_score >= results[position].hybrid_score
+        # rerank_score 回填最终排序所用的融合分数，保持结果契约零漂移
+        for result in results:
+            assert result.rerank_score == result.hybrid_score
+
+    def test_none_reranker_same_input_same_order(self, corpus: tuple[Path, Path]) -> None:
+        _, data_dir = corpus
+        service = SearchService(data_dir, FakeEmbeddingProvider(), None)
+        first = service.search("向量数据库 LanceDB")
+        second = service.search("向量数据库 LanceDB")
+        assert [result.chunk_id for result in first] == [result.chunk_id for result in second]
+
+    def test_none_reranker_returns_same_candidates_as_rerank_path(
+        self, corpus: tuple[Path, Path]
+    ) -> None:
+        # 融合候选集合不因 reranker 缺席而变化，只影响最终排序
+        _, data_dir = corpus
+        rerank_only = SearchService(data_dir, FakeEmbeddingProvider(), FakeRerankerProvider())
+        rrf_only = SearchService(data_dir, FakeEmbeddingProvider(), None)
+        assert {result.chunk_id for result in rerank_only.search("预算 显卡")} == {
+            result.chunk_id for result in rrf_only.search("预算 显卡")
+        }
+
+    def test_none_reranker_tied_scores_stable_by_chunk_id(self, corpus: tuple[Path, Path]) -> None:
+        _, data_dir = corpus
+        service = SearchService(data_dir, FakeEmbeddingProvider(), None)
+        first = service.search("机器学习")
+        second = service.search("机器学习")
+        assert [result.chunk_id for result in first] == [result.chunk_id for result in second]

@@ -272,3 +272,97 @@ class TestFixtureFingerprint:
         save_baseline(path, {"metrics": {}})
         with pytest.raises(BaselineExistsError):
             save_baseline(path, {"metrics": {}})
+
+
+class TestChannelIdentity:
+    """通道化基线（ADR-0009）：config 扩展字段与跨通道比较拒绝。"""
+
+    def _baseline(self, config: dict[str, object]) -> dict[str, object]:
+        return {
+            "baseline_version": 1,
+            "metrics": {"recall_at_5": 1.0, "mrr_at_10": 1.0},
+            "config": config,
+        }
+
+    def test_build_config_includes_channel_identity(self) -> None:
+        from siku.retrieve.evaluation import build_config
+
+        config = build_config(
+            embedding_model_id="bge-m3",
+            embedding_model_revision=None,
+            embedding_dimensions=1024,
+            reranker_model_id=None,
+            reranker_model_revision=None,
+            tokenizer_version="v1",
+            top_k=10,
+            candidate_k=50,
+            rrf_k=60,
+            provider_kind="rerank-none",
+            embedding_base_url_host="127.0.0.1",
+            reranker_base_url_host=None,
+        )
+        assert config["provider_kind"] == "rerank-none"
+        assert config["embedding_base_url_host"] == "127.0.0.1"
+        assert config["reranker_model_id"] is None
+
+    def test_same_channel_identity_passes(self) -> None:
+        from siku.retrieve.evaluation import build_config, check_channel_identity
+
+        config = build_config(
+            "m",
+            None,
+            4,
+            None,
+            None,
+            "v1",
+            10,
+            50,
+            60,
+            provider_kind="rerank-none",
+            embedding_base_url_host="127.0.0.1",
+            reranker_base_url_host=None,
+        )
+        check_channel_identity(self._baseline(config), config)
+
+    def test_cross_channel_identity_rejected(self) -> None:
+        from siku.retrieve.evaluation import build_config, check_channel_identity
+
+        baseline_config = build_config(
+            "bge-m3",
+            None,
+            1024,
+            "reranker",
+            None,
+            "v1",
+            10,
+            50,
+            60,
+            provider_kind="api",
+            embedding_base_url_host="api.siliconflow.cn",
+            reranker_base_url_host="api.siliconflow.cn",
+        )
+        current_config = build_config(
+            "bge-m3",
+            None,
+            1024,
+            None,
+            None,
+            "v1",
+            10,
+            50,
+            60,
+            provider_kind="rerank-none",
+            embedding_base_url_host="127.0.0.1",
+            reranker_base_url_host=None,
+        )
+        with pytest.raises(EvaluationError, match="different model channel"):
+            check_channel_identity(self._baseline(baseline_config), current_config)
+
+    def test_legacy_baseline_without_channel_fields_skips_check(self) -> None:
+        from siku.retrieve.evaluation import check_channel_identity
+
+        # 历史 v0 基线的 config 无 provider_kind 等字段：仅保留指纹门禁
+        check_channel_identity(
+            self._baseline({"embedding_model_id": "legacy", "top_k": 10}),
+            {"embedding_model_id": "anything"},
+        )

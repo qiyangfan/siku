@@ -1,11 +1,13 @@
-"""构建 siku 桌面 sidecar：PyInstaller onedir + 内置模型权重 + 可复现输入记录。
+"""构建 siku 桌面 sidecar：PyInstaller onedir（BYOK 瘦身版，不含任何模型）。
 
-用法（需先 `uv sync --extra retrieval` 装齐 torch 系运行时）：
+用法（核心依赖即可，无需 extras）：
 
-    uv run python scripts/build_sidecar.py                # 当前平台默认 target
-    uv run python scripts/build_sidecar.py --skip-models  # 快速迭代，不带模型
+    uv run python scripts/build_sidecar.py    # 当前平台默认 target
 
 产物：ui/src-tauri/binaries/siku-sidecar/（Tauri 以 bundle.resources 引用该目录）。
+
+ADR-0009 后 sidecar 不内置任何模型：LLM/embedding/rerank 一律经用户端点供给，
+体积从 7.3 GiB（torch + bge 权重）降至数百 MB 量级。
 """
 
 from __future__ import annotations
@@ -13,7 +15,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import platform
 import shutil
 import subprocess
@@ -26,22 +27,14 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = REPO_ROOT / "ui" / "src-tauri" / "binaries"
 
-# 冻结的模型 revision：不同机器/CI 构建出的 sidecar 语义保持一致（可复现输入）
-MODEL_REVISIONS = {
-    "BAAI/bge-m3": "5617a9f61b028005a4858fdac845db406aefb181",
-    "BAAI/bge-reranker-v2-m3": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
-}
-
-# BUILD_INFO 记录的运行时包版本（体积与行为的关键输入）
+# BUILD_INFO 记录的运行时包版本（体积与行为的关键输入；无 torch 系包）
 RECORDED_PACKAGES = (
-    "torch",
-    "transformers",
-    "sentence-transformers",
     "lancedb",
     "pyarrow",
     "fastapi",
     "uvicorn",
     "pydantic",
+    "httpx",
 )
 
 
@@ -60,14 +53,14 @@ def default_target_triple() -> str:
 
 
 def assert_runtime_env() -> None:
-    """sidecar 必须在带 retrieval extra 的环境构建，缺失时给出可行动指引。"""
-    required = ("torch", "sentence_transformers", "lancedb", "PyInstaller")
+    """构建环境必须装齐核心运行时与 PyInstaller，缺失时给出可行动指引。"""
+    required = ("lancedb", "fastapi", "PyInstaller")
     missing = [pkg for pkg in required if not _importable(pkg)]
     if missing:
         raise SystemExit(
             "sidecar 构建环境缺少依赖: "
             + ", ".join(missing)
-            + "；请先执行 uv sync --extra retrieval 并安装 dev 组（含 pyinstaller）。"
+            + "；请先执行 uv sync 并安装 dev 组（含 pyinstaller）。"
         )
 
 
@@ -79,44 +72,6 @@ def _importable(name: str) -> bool:
     return True
 
 
-def ensure_model_snapshots() -> dict[str, Path]:
-    """按冻结 revision 取回模型快照，返回 repo → 本地快照目录。"""
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError as exc:  # pragma: no cover - 环境缺依赖
-        raise SystemExit("需要 huggingface_hub（随 retrieval extra 安装）") from exc
-    snapshots: dict[str, Path] = {}
-    for repo, revision in MODEL_REVISIONS.items():
-        print(f"[models] resolving {repo}@{revision[:12]}…", flush=True)
-        snapshots[repo] = Path(snapshot_download(repo_id=repo, revision=revision))
-    return snapshots
-
-
-def _link_or_copy(src: str, dst: str) -> None:
-    """同文件系统优先硬链接（6.4GB 权重零拷贝，CI runner 磁盘有限），失败再真拷贝。"""
-    if os.name == "posix":
-        try:
-            os.link(src, dst)
-            return
-        except OSError:
-            pass  # 跨文件系统或链接数超限时回退复制
-    shutil.copy2(src, dst)
-
-
-def copy_models(hub_dest: Path, snapshots: dict[str, Path]) -> None:
-    """把模型快照复制成离线 hub 缓存布局：models/hub/models--<org>--<name>/。"""
-    for repo, snapshot in snapshots.items():
-        revision = MODEL_REVISIONS[repo]
-        repo_dir = hub_dest / f"models--{repo.replace('/', '--')}"
-        target = repo_dir / "snapshots" / revision
-        print(f"[models] copying {repo} -> {target}", flush=True)
-        # symlinks=False：把 blob 的软链解引用为真实文件，Windows 无 symlink 权限也能构建
-        shutil.copytree(snapshot, target, symlinks=False, copy_function=_link_or_copy)
-        refs_dir = repo_dir / "refs"
-        refs_dir.mkdir(parents=True, exist_ok=True)
-        (refs_dir / "main").write_text(revision, encoding="utf-8")
-
-
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -125,27 +80,8 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def model_manifest(snapshots: dict[str, Path]) -> dict[str, object]:
-    """逐文件 sha256 清单：发布产物可与本清单比对以验证一致性。"""
-    manifest: dict[str, object] = {}
-    for repo, snapshot in snapshots.items():
-        files: dict[str, object] = {}
-        for file_path in sorted(p for p in snapshot.rglob("*") if p.is_file()):
-            resolved = file_path.resolve()
-            files[str(file_path.relative_to(snapshot))] = {
-                "sha256": _hash_file(resolved),
-                "bytes": resolved.stat().st_size,
-            }
-        manifest[repo] = {"revision": MODEL_REVISIONS[repo], "files": files}
-    return manifest
-
-
-def write_build_info(
-    dest: Path,
-    target_triple: str,
-    models_included: bool,
-    manifest: dict[str, object] | None,
-) -> None:
+def write_build_info(dest: Path, target_triple: str) -> None:
+    """记录可复现构建输入：版本、Python、uv.lock 指纹与运行时包版本。"""
     uv_lock = REPO_ROOT / "uv.lock"
     info = {
         "siku_version": metadata.version("siku"),
@@ -158,8 +94,8 @@ def write_build_info(
             name: (metadata.version(name) if _importable_pkg(name) else None)
             for name in RECORDED_PACKAGES
         },
-        "models_included": models_included,
-        "models": manifest,
+        # ADR-0009：sidecar 无内置模型，字段保留以便分发校验脚本兼容
+        "models_included": False,
     }
     (dest / "BUILD_INFO.json").write_text(
         json.dumps(info, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -178,7 +114,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", default=default_target_triple(), help="目标 triple（仅记录用）")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="产物根目录")
-    parser.add_argument("--skip-models", action="store_true", help="跳过模型复制（快速迭代）")
     args = parser.parse_args()
 
     assert_runtime_env()
@@ -186,10 +121,6 @@ def main() -> None:
     if target_dir.exists():
         print(f"[build] removing stale {target_dir}", flush=True)
         shutil.rmtree(target_dir)
-
-    snapshots: dict[str, Path] = {}
-    if not args.skip_models:
-        snapshots = ensure_model_snapshots()
 
     with tempfile.TemporaryDirectory(prefix="siku-sidecar-") as workdir:
         work = Path(workdir)
@@ -215,14 +146,10 @@ def main() -> None:
         print(f"[build] assembling {target_dir}", flush=True)
         shutil.move(str(built), str(target_dir))
 
-    manifest: dict[str, object] | None = None
-    if snapshots:
-        copy_models(target_dir / "models" / "hub", snapshots)
-        manifest = model_manifest(snapshots)
-    write_build_info(target_dir, args.target, bool(snapshots), manifest)
+    write_build_info(target_dir, args.target)
 
-    size_gb = sum(f.stat().st_size for f in target_dir.rglob("*") if f.is_file()) / 1024**3
-    print(f"[build] done: {target_dir} ({size_gb:.2f} GiB, models={bool(snapshots)})", flush=True)
+    size_mb = sum(f.stat().st_size for f in target_dir.rglob("*") if f.is_file()) / 1024**2
+    print(f"[build] done: {target_dir} ({size_mb:.0f} MiB, models=none)", flush=True)
 
 
 if __name__ == "__main__":

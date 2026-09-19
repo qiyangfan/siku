@@ -5,7 +5,7 @@
 # - 公开空仓库 qiyangfan/homebrew-tap（可用 env HOMEBREW_TAP_REPO 覆盖）
 # - secret HOMEBREW_TAP_TOKEN：对该 tap 有写权限的 fine-grained PAT（缺省时跳过 Cask 步骤）
 #
-# 约束：本工作流不访问任何真实 LLM；模型下载仅来自 HuggingFace（检索 embedding 用）。
+# 约束：本工作流不访问任何真实模型端点；sidecar 无内置模型（ADR-0009 BYOK）。
 
 name: Release
 
@@ -91,8 +91,8 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
-      # 模型快照 + PyInstaller 产物 + torch venv 合计 ~30GB，超出 ubuntu runner 默认可用空间，
-      # 必须先回收预装工具链占位（~25GB），否则构建中途磁盘耗尽
+      # BYOK 瘦身后 sidecar 仅数百 MB；保留磁盘回收作为 runner 保险措施
+      # （历史：模型快照 + torch venv 时代合计 ~30GB，曾致构建中途磁盘耗尽）
       - name: 释放 runner 磁盘空间
         if: runner.os == 'Linux'
         run: |
@@ -102,16 +102,10 @@ jobs:
           sudo docker image prune --all --force > /dev/null 2>&1 || true
           df -h /
 
-      - name: 同步 Python 运行时（锁定 uv.lock + retrieval extra）
-        run: uv sync --locked --extra retrieval
+      - name: 同步 Python 运行时（锁定 uv.lock；BYOK 后无 extras）
+        run: uv sync --locked
 
-      - name: 缓存 HuggingFace 模型
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/huggingface/hub
-          key: hf-models-bge-m3-5617a9f6-bge-reranker-953dc6f6
-
-      - name: 构建 sidecar（PyInstaller onedir + 内置模型）
+      - name: 构建 sidecar（PyInstaller onedir，BYOK 瘦身版）
         run: uv run python scripts/build_sidecar.py --target ${{ matrix.target }}
 
       - name: 安装 Rust target

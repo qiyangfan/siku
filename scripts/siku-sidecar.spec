@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""siku 桌面 sidecar 的 PyInstaller 描述（onedir，含 torch 系检索运行时）。
+"""siku 桌面 sidecar 的 PyInstaller 描述（onedir，BYOK 瘦身版，无模型运行时）。
 
-由 scripts/build_sidecar.py 驱动；模型权重不在此打包，构建完成后由脚本复制到
-siku-sidecar/models/hub（离线缓存布局见 src/siku/sidecar.py）。
+由 scripts/build_sidecar.py 驱动；ADR-0009 后内核不含 torch 系依赖，也无需
+hiddenimports 点名——全部依赖走常规静态分析即可收集。
 """
 
 a = Analysis(
@@ -10,12 +10,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    # torch/transformers/sentence_transformers 走方法体内延迟导入，需显式点名
-    hiddenimports=[
-        "sentence_transformers",
-        "transformers",
-        "torch",
-    ],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
