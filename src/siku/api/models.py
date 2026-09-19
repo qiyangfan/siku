@@ -272,3 +272,96 @@ class LibraryRebuildRequest(BaseModel):
     """全量重建请求：必须显式携带确认标记。"""
 
     confirm: bool = False
+
+
+class NoteSummaryResponse(BaseModel):
+    """浏览清单中的单条笔记投影元数据（只读派生）。"""
+
+    source_id: str
+    source_name: str
+    note_path: str
+    source_hash: str
+    extractor: str
+
+
+class NotesPageResponse(BaseModel):
+    """浏览清单分页响应：note_path 字典序稳定排序。"""
+
+    notes: list[NoteSummaryResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class NoteDetailResponse(NoteSummaryResponse):
+    """单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点序列。"""
+
+    anchors: list[str]
+    content: str
+
+
+class GraphStatsResponse(BaseModel):
+    """图谱聚合统计。"""
+
+    nodes: int
+    edges: int
+    communities: int
+    types: dict[str, int]
+
+
+class GraphNodeResponse(BaseModel):
+    """画布节点：度数与社区着色依据。"""
+
+    entity_id: str
+    name: str
+    type: str
+    degree: int
+    community_id: int | None
+
+
+class GraphEdgeResponse(BaseModel):
+    """画布边：两端实体 id 与关系类型。"""
+
+    source: str
+    target: str
+    type: str
+
+
+class GraphSubgraphResponse(BaseModel):
+    """有界子图查询响应：截断标记与候选总数由服务端裁决。"""
+
+    nodes: list[GraphNodeResponse]
+    edges: list[GraphEdgeResponse]
+    truncated: bool
+    total_nodes: int
+    total_edges: int
+
+
+class GraphSearchResponse(GraphSubgraphResponse):
+    """实体搜索响应：附查询词与生效上限。"""
+
+    query: str
+    limit: int
+
+
+class WikiEntrySummaryResponse(BaseModel):
+    """wiki 条目清单条目：时效元数据取条目文件 mtime。"""
+
+    community_id: int
+    title: str
+    generated_at: str
+
+
+class WikiEntriesResponse(BaseModel):
+    """wiki 条目清单响应。"""
+
+    entries: list[WikiEntrySummaryResponse]
+
+
+class WikiEntryDetailResponse(BaseModel):
+    """wiki 单条读取响应：Markdown 全文 + 时效元数据。"""
+
+    community_id: int
+    title: str
+    content: str
+    generated_at: str

@@ -240,6 +240,100 @@
         }
       }
     },
+    "/api/notes": {
+      "get": {
+        "summary": "Notes List View",
+        "description": "浏览清单：笔记投影分页读取，note_path 字典序稳定排序，只读不落盘。",
+        "operationId": "notes_list_view_api_notes_get",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Page Size"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotesPageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/notes/{source_id}": {
+      "get": {
+        "summary": "Note Detail View",
+        "description": "单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点，只读。",
+        "operationId": "note_detail_view_api_notes__source_id__get",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteDetailResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/search": {
       "post": {
         "summary": "Search",
@@ -354,6 +448,185 @@
         }
       }
     },
+    "/api/graph/stats": {
+      "get": {
+        "summary": "Graph Stats View",
+        "description": "图谱聚合统计：节点/边/社区计数与类型分布，只读现读三件表。",
+        "operationId": "graph_stats_view_api_graph_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphStatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/graph/overview": {
+      "get": {
+        "summary": "Graph Overview View",
+        "description": "初始画布：度数 top-N 节点与集合内诱导边；超限明示截断（服务端硬顶）。",
+        "operationId": "graph_overview_view_api_graph_overview_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphSubgraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/graph/search": {
+      "get": {
+        "summary": "Graph Search View",
+        "description": "实体搜索：名称大小写不敏感包含匹配，度数降序，截断明示。",
+        "operationId": "graph_search_view_api_graph_search_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "title": "Q"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphSearchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/graph/neighbors/{entity_id}": {
+      "get": {
+        "summary": "Graph Neighbors View",
+        "description": "有界邻域展开：自中心 BFS 至 depth，节点数受服务端上限约束并明示截断。",
+        "operationId": "graph_neighbors_view_api_graph_neighbors__entity_id__get",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "depth",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 2,
+              "minimum": 1,
+              "default": 1,
+              "title": "Depth"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphSubgraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wiki": {
       "post": {
         "summary": "Wiki",
@@ -375,6 +648,65 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/WikiResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wiki/entries": {
+      "get": {
+        "summary": "Wiki Entries View",
+        "description": "wiki 条目清单：只读派生自 data/wiki/entries，绝不触发生成路径。",
+        "operationId": "wiki_entries_view_api_wiki_entries_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WikiEntriesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wiki/entries/{community_id}": {
+      "get": {
+        "summary": "Wiki Entry View",
+        "description": "wiki 单条读取：Markdown 全文与时效元数据，只读不触发生成。",
+        "operationId": "wiki_entry_view_api_wiki_entries__community_id__get",
+        "parameters": [
+          {
+            "name": "community_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Community Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WikiEntryDetailResponse"
                 }
               }
             }
@@ -762,6 +1094,30 @@
         "title": "ChannelSettingsView",
         "description": "单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。"
       },
+      "GraphEdgeResponse": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "target",
+          "type"
+        ],
+        "title": "GraphEdgeResponse",
+        "description": "画布边：两端实体 id 与关系类型。"
+      },
       "GraphExtractorResponse": {
         "properties": {
           "id": {
@@ -785,6 +1141,47 @@
         ],
         "title": "GraphExtractorResponse",
         "description": "图谱抽取器身份。"
+      },
+      "GraphNodeResponse": {
+        "properties": {
+          "entity_id": {
+            "type": "string",
+            "title": "Entity Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "degree": {
+            "type": "integer",
+            "title": "Degree"
+          },
+          "community_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Community Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entity_id",
+          "name",
+          "type",
+          "degree",
+          "community_id"
+        ],
+        "title": "GraphNodeResponse",
+        "description": "画布节点：度数与社区着色依据。"
       },
       "GraphRequest": {
         "properties": {
@@ -882,6 +1279,128 @@
         ],
         "title": "GraphResponse",
         "description": "与 `siku graph --json` 同构的体检报告。"
+      },
+      "GraphSearchResponse": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/GraphNodeResponse"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GraphEdgeResponse"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          },
+          "total_nodes": {
+            "type": "integer",
+            "title": "Total Nodes"
+          },
+          "total_edges": {
+            "type": "integer",
+            "title": "Total Edges"
+          },
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges",
+          "truncated",
+          "total_nodes",
+          "total_edges",
+          "query",
+          "limit"
+        ],
+        "title": "GraphSearchResponse",
+        "description": "实体搜索响应：附查询词与生效上限。"
+      },
+      "GraphStatsResponse": {
+        "properties": {
+          "nodes": {
+            "type": "integer",
+            "title": "Nodes"
+          },
+          "edges": {
+            "type": "integer",
+            "title": "Edges"
+          },
+          "communities": {
+            "type": "integer",
+            "title": "Communities"
+          },
+          "types": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Types"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges",
+          "communities",
+          "types"
+        ],
+        "title": "GraphStatsResponse",
+        "description": "图谱聚合统计。"
+      },
+      "GraphSubgraphResponse": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/GraphNodeResponse"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GraphEdgeResponse"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          },
+          "total_nodes": {
+            "type": "integer",
+            "title": "Total Nodes"
+          },
+          "total_edges": {
+            "type": "integer",
+            "title": "Total Edges"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges",
+          "truncated",
+          "total_nodes",
+          "total_edges"
+        ],
+        "title": "GraphSubgraphResponse",
+        "description": "有界子图查询响应：截断标记与候选总数由服务端裁决。"
       },
       "HTTPValidationError": {
         "properties": {
@@ -1176,6 +1695,119 @@
         ],
         "title": "LibrarySourceResponse",
         "description": "资料库清单中的单条来源（全部派生自既有摄取元数据，只读）。"
+      },
+      "NoteDetailResponse": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name"
+          },
+          "note_path": {
+            "type": "string",
+            "title": "Note Path"
+          },
+          "source_hash": {
+            "type": "string",
+            "title": "Source Hash"
+          },
+          "extractor": {
+            "type": "string",
+            "title": "Extractor"
+          },
+          "anchors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Anchors"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id",
+          "source_name",
+          "note_path",
+          "source_hash",
+          "extractor",
+          "anchors",
+          "content"
+        ],
+        "title": "NoteDetailResponse",
+        "description": "单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点序列。"
+      },
+      "NoteSummaryResponse": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "source_name": {
+            "type": "string",
+            "title": "Source Name"
+          },
+          "note_path": {
+            "type": "string",
+            "title": "Note Path"
+          },
+          "source_hash": {
+            "type": "string",
+            "title": "Source Hash"
+          },
+          "extractor": {
+            "type": "string",
+            "title": "Extractor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id",
+          "source_name",
+          "note_path",
+          "source_hash",
+          "extractor"
+        ],
+        "title": "NoteSummaryResponse",
+        "description": "浏览清单中的单条笔记投影元数据（只读派生）。"
+      },
+      "NotesPageResponse": {
+        "properties": {
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/NoteSummaryResponse"
+            },
+            "type": "array",
+            "title": "Notes"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          }
+        },
+        "type": "object",
+        "required": [
+          "notes",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "NotesPageResponse",
+        "description": "浏览清单分页响应：note_path 字典序稳定排序。"
       },
       "SearchRequest": {
         "properties": {
@@ -1533,6 +2165,76 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WikiEntriesResponse": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/WikiEntrySummaryResponse"
+            },
+            "type": "array",
+            "title": "Entries"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entries"
+        ],
+        "title": "WikiEntriesResponse",
+        "description": "wiki 条目清单响应。"
+      },
+      "WikiEntryDetailResponse": {
+        "properties": {
+          "community_id": {
+            "type": "integer",
+            "title": "Community Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content"
+          },
+          "generated_at": {
+            "type": "string",
+            "title": "Generated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "community_id",
+          "title",
+          "content",
+          "generated_at"
+        ],
+        "title": "WikiEntryDetailResponse",
+        "description": "wiki 单条读取响应：Markdown 全文 + 时效元数据。"
+      },
+      "WikiEntrySummaryResponse": {
+        "properties": {
+          "community_id": {
+            "type": "integer",
+            "title": "Community Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "generated_at": {
+            "type": "string",
+            "title": "Generated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "community_id",
+          "title",
+          "generated_at"
+        ],
+        "title": "WikiEntrySummaryResponse",
+        "description": "wiki 条目清单条目：时效元数据取条目文件 mtime。"
       },
       "WikiRequest": {
         "properties": {

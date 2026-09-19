@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -38,12 +38,18 @@ from siku.api.models import (
     GraphExtractorResponse,
     GraphRequest,
     GraphResponse,
+    GraphSearchResponse,
+    GraphStatsResponse,
+    GraphSubgraphResponse,
     HealthResponse,
     IngestRequest,
     IngestResponse,
     LibraryJobResponse,
     LibraryRebuildRequest,
     LibraryResponse,
+    NoteDetailResponse,
+    NotesPageResponse,
+    NoteSummaryResponse,
     SearchRequest,
     SearchResponse,
     SearchResultResponse,
@@ -52,8 +58,25 @@ from siku.api.models import (
     SettingsTestResponse,
     SettingsUpdateRequest,
     SettingsWriteResponse,
+    WikiEntriesResponse,
+    WikiEntryDetailResponse,
+    WikiEntrySummaryResponse,
     WikiRequest,
     WikiResponse,
+)
+from siku.api.reading import (
+    GraphEntityNotFoundError,
+    NoteNotFoundError,
+    WikiEntryNotFoundError,
+    WikiMissingError,
+    graph_neighbors,
+    graph_overview,
+    graph_search,
+    graph_stats,
+    list_notes,
+    list_wiki_entries,
+    read_note_detail,
+    read_wiki_entry,
 )
 from siku.api.settings import (
     SettingsValidationError,
@@ -66,6 +89,7 @@ from siku.api.settings import (
     resolve_probe_target,
 )
 from siku.graph.community import SummaryIdentity
+from siku.graph.errors import GraphArtifactsMissingError
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.models import GraphExtractor
 from siku.graph.providers import (
@@ -420,6 +444,40 @@ def create_app(
                 409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
             )
 
+    @application.get("/api/notes", response_model=NotesPageResponse)
+    def notes_list_view(
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> NotesPageResponse | JSONResponse:
+        """浏览清单：笔记投影分页读取，note_path 字典序稳定排序，只读不落盘。"""
+        try:
+            notes, total = list_notes(application.state.vault, page, page_size)
+        except Exception as exc:
+            logger.debug("API notes listing failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return NotesPageResponse(
+            notes=[NoteSummaryResponse(**asdict(note)) for note in notes],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+
+    @application.get("/api/notes/{source_id}", response_model=NoteDetailResponse)
+    def note_detail_view(source_id: str) -> NoteDetailResponse | JSONResponse:
+        """单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点，只读。"""
+        try:
+            detail = read_note_detail(application.state.vault, source_id)
+        except NoteNotFoundError:
+            return _error_response(
+                404, "note_not_found", "请求的笔记不存在：可能已被移除或重新摄取。"
+            )
+        except Exception as exc:
+            logger.debug("API note detail failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return NoteDetailResponse(**asdict(detail))
+
     @application.post("/api/search", response_model=SearchResponse)
     def search(request: SearchRequest) -> SearchResponse | JSONResponse:
         options = SearchOptions(top_k=request.top_k, candidate_k=request.candidate_k)
@@ -531,6 +589,85 @@ def create_app(
             ),
         )
 
+    @application.get("/api/graph/stats", response_model=GraphStatsResponse)
+    def graph_stats_view() -> GraphStatsResponse | JSONResponse:
+        """图谱聚合统计：节点/边/社区计数与类型分布，只读现读三件表。"""
+        try:
+            stats = graph_stats(application.state.data_dir)
+        except GraphArtifactsMissingError:
+            return _error_response(
+                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
+            )
+        except Exception as exc:
+            logger.debug("API graph stats failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return GraphStatsResponse(**asdict(stats))
+
+    @application.get("/api/graph/overview", response_model=GraphSubgraphResponse)
+    def graph_overview_view(
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ) -> GraphSubgraphResponse | JSONResponse:
+        """初始画布：度数 top-N 节点与集合内诱导边；超限明示截断（服务端硬顶）。"""
+        try:
+            subgraph = graph_overview(application.state.data_dir, limit=limit)
+        except GraphArtifactsMissingError:
+            return _error_response(
+                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
+            )
+        except Exception as exc:
+            logger.debug("API graph overview failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return GraphSubgraphResponse(**asdict(subgraph))
+
+    @application.get("/api/graph/search", response_model=GraphSearchResponse)
+    def graph_search_view(
+        q: Annotated[str, Query(min_length=1)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    ) -> GraphSearchResponse | JSONResponse:
+        """实体搜索：名称大小写不敏感包含匹配，度数降序，截断明示。"""
+        if not q.strip():
+            return _error_response(422, "invalid_request", "请求参数无效，请检查后重试。")
+        try:
+            subgraph = graph_search(application.state.data_dir, query=q, limit=limit)
+        except GraphArtifactsMissingError:
+            return _error_response(
+                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
+            )
+        except Exception as exc:
+            logger.debug("API graph search failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return GraphSearchResponse(**asdict(subgraph))
+
+    @application.get("/api/graph/neighbors/{entity_id}", response_model=GraphSubgraphResponse)
+    def graph_neighbors_view(
+        entity_id: str,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        depth: Annotated[int, Query(ge=1, le=2)] = 1,
+    ) -> GraphSubgraphResponse | JSONResponse:
+        """有界邻域展开：自中心 BFS 至 depth，节点数受服务端上限约束并明示截断。"""
+        try:
+            subgraph = graph_neighbors(
+                application.state.data_dir, entity_id, limit=limit, depth=depth
+            )
+        except GraphEntityNotFoundError:
+            return _error_response(
+                404,
+                "graph_entity_not_found",
+                "图谱中不存在该实体：图谱可能已重建合并，请刷新后重试。",
+            )
+        except GraphArtifactsMissingError:
+            return _error_response(
+                404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。"
+            )
+        except Exception as exc:
+            logger.debug("API graph neighbors failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return GraphSubgraphResponse(**asdict(subgraph))
+
     @application.post("/api/wiki", response_model=WikiResponse)
     def wiki(request: WikiRequest) -> WikiResponse | JSONResponse:
         target_data_dir = request.data_dir or application.state.data_dir
@@ -556,6 +693,44 @@ def create_app(
             llm_calls=result.llm_calls,
             empty_graph=result.empty_graph,
         )
+
+    @application.get("/api/wiki/entries", response_model=WikiEntriesResponse)
+    def wiki_entries_view() -> WikiEntriesResponse | JSONResponse:
+        """wiki 条目清单：只读派生自 data/wiki/entries，绝不触发生成路径。"""
+        try:
+            entries = list_wiki_entries(application.state.data_dir)
+        except WikiMissingError:
+            return _error_response(
+                404, "wiki_missing", "wiki 尚未生成：请先构建图谱并执行 siku wiki。"
+            )
+        except Exception as exc:
+            logger.debug("API wiki entries listing failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return WikiEntriesResponse(
+            entries=[WikiEntrySummaryResponse(**asdict(entry)) for entry in entries]
+        )
+
+    @application.get("/api/wiki/entries/{community_id}", response_model=WikiEntryDetailResponse)
+    def wiki_entry_view(community_id: int) -> WikiEntryDetailResponse | JSONResponse:
+        """wiki 单条读取：Markdown 全文与时效元数据，只读不触发生成。"""
+        try:
+            entry = read_wiki_entry(application.state.data_dir, community_id)
+        except WikiEntryNotFoundError:
+            return _error_response(
+                404,
+                "wiki_entry_not_found",
+                "请求的 wiki 条目不存在：条目可能已随图谱重建更新。",
+            )
+        except WikiMissingError:
+            return _error_response(
+                404, "wiki_missing", "wiki 尚未生成：请先构建图谱并执行 siku wiki。"
+            )
+        except Exception as exc:
+            logger.debug("API wiki entry detail failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return WikiEntryDetailResponse(**asdict(entry))
 
     @application.get("/api/settings", response_model=SettingsResponse)
     def read_settings() -> SettingsResponse | JSONResponse:
