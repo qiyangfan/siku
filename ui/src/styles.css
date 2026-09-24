@@ -734,6 +734,104 @@ code {
   color: var(--color-ink-faint);
 }
 
+.library-badge-ingest-missing,
+.library-badge-ingest-superseded {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-wash);
+  color: var(--color-warning);
+}
+
+.library-origin {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-ink-faint);
+  font-size: var(--font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-sync-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.library-sync-header .hint {
+  margin: 0;
+}
+
+.library-sync-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.library-sync-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.library-sync-add input[type="text"] {
+  min-width: 0;
+  flex: 1;
+}
+
+.library-sync-full {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-ink-soft);
+  font-size: var(--font-caption);
+}
+
+.library-sync-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--color-border);
+  list-style: none;
+}
+
+.library-sync-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.library-sync-row + .library-sync-row {
+  border-top: 1px solid var(--color-border);
+}
+
+.library-sync-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: var(--font-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-sync-time {
+  flex-shrink: 0;
+  color: var(--color-ink-faint);
+  font-size: var(--font-caption);
+}
+
+.library-badge-sync-on {
+  border-color: transparent;
+  background: var(--color-accent-wash);
+  color: var(--color-accent-strong);
+}
+
 .library-empty {
   display: flex;
   flex-direction: column;

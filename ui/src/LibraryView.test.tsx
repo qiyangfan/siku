@@ -239,3 +239,192 @@ function withinDialog(dialog: HTMLElement, name: string): HTMLElement {
   }
   return button;
 }
+
+type RouteHandler = (method: string, init?: RequestInit) => unknown;
+
+function mockRoutes(routes: Record<string, RouteHandler>) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
+    const method = init?.method ?? "GET";
+    const handler = routes[url];
+    if (handler === undefined) {
+      throw new Error(`unexpected fetch: ${method} ${url}`);
+    }
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(handler(method, init)),
+    } as Response);
+  });
+}
+
+const emptySyncSources = { sources: [] };
+
+const oneSyncSource = {
+  sources: [
+    {
+      id: "sync-1",
+      path: "/Users/you/Documents/notes",
+      enabled: true,
+      created_at: "2026-09-23T10:00:00+08:00",
+      last_scan_at: null,
+    },
+  ],
+};
+
+const listingWithMarked = {
+  sources: [
+    {
+      name: "旧版报告.pdf",
+      path: "superseded/报告--a1b2c3d4e5f6.pdf",
+      source_hash: "c".repeat(64),
+      ingest_status: "superseded",
+      index_status: "missing",
+      origin_path: "/Users/you/Documents/notes/报告.pdf",
+    },
+    {
+      name: "缺失笔记.md",
+      path: "attachments/缺失笔记--b2c3d4e5f6a1.md",
+      source_hash: "d".repeat(64),
+      ingest_status: "missing",
+      index_status: "missing",
+      origin_path: null,
+    },
+  ],
+};
+
+describe("来源目录同步", () => {
+  it("展开后可添加来源目录并展示登记清单", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockRoutes({
+      "/api/library": () => emptyListing,
+      "/api/library/sources": () => emptySyncSources,
+      "/api/library/scan-settings": () => ({ interval_secs: 300 }),
+    });
+    render(<LibraryView />);
+
+    await screen.findByText("资料库还是空的");
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/library/sources")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
+
+    expect(
+      await screen.findByText(/尚未登记来源目录/),
+    ).toBeInTheDocument();
+    await user.type(screen.getByLabelText("来源目录路径"), "/Users/you/Documents/notes");
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/library/sources" && method === "POST") {
+        expect(String(init?.body)).toContain("/Users/you/Documents/notes");
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(oneSyncSource.sources[0]),
+        } as Response);
+      }
+      if (url === "/api/library/sources") {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(oneSyncSource),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(emptyListing),
+      } as Response);
+    });
+    await user.click(screen.getByRole("button", { name: "添加来源" }));
+
+    expect(await screen.findByText("/Users/you/Documents/notes")).toBeInTheDocument();
+    expect(screen.getByText("已启用")).toBeInTheDocument();
+    expect(screen.getByText("从未扫描")).toBeInTheDocument();
+  });
+
+  it("立即扫描触发扫描任务并展示入库结果", async () => {
+    const user = userEvent.setup();
+    const scanJob = (state: string) => ({
+      job_id: "scan-1",
+      kind: "scan",
+      state,
+      phase: "scanning",
+      total: 1,
+      done: 1,
+      failed: 0,
+      current: null,
+      items: [
+        { name: "新文档.pdf", path: "attachments/新文档--a1b2c3d4e5f6.pdf", status: "created", detail: null },
+      ],
+      error: null,
+    });
+    mockRoutes({
+      "/api/library": () => emptyListing,
+      "/api/library/sources": () => oneSyncSource,
+      "/api/library/scan-settings": () => ({ interval_secs: 300 }),
+      "/api/library/scan": (method, init) => {
+        expect(method).toBe("POST");
+        expect(String(init?.body)).toContain('"full":false');
+        return scanJob("succeeded");
+      },
+    });
+    render(<LibraryView />);
+
+    await screen.findByText("资料库还是空的");
+    await user.click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
+    await screen.findByText("/Users/you/Documents/notes");
+    await user.click(screen.getByRole("button", { name: "立即扫描" }));
+
+    expect(await screen.findByText("扫描完成：处理 1 项动作。")).toBeInTheDocument();
+  });
+
+  it("清单展示缺失、已替代徽标与来源路径", async () => {
+    mockRoutes({ "/api/library": () => listingWithMarked });
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    expect(list).toHaveTextContent("来源缺失");
+    expect(list).toHaveTextContent("已被替代");
+    expect(list).toHaveTextContent("来自 /Users/you/Documents/notes/报告.pdf");
+  });
+
+  it("清理需经确认对话框，取消时不发请求；确认后物理清理", async () => {
+    const user = userEvent.setup();
+    const purgeJob = {
+      job_id: "purge-1",
+      kind: "purge",
+      state: "succeeded",
+      phase: "purging",
+      total: 2,
+      done: 2,
+      failed: 0,
+      current: null,
+      items: [
+        { name: "旧版报告.pdf", path: "superseded/报告--a1b2c3d4e5f6.pdf", status: "removed", detail: "已物理清理。" },
+        { name: "缺失笔记.md", path: "attachments/缺失笔记--b2c3d4e5f6a1.md", status: "removed", detail: "已物理清理。" },
+      ],
+      error: null,
+    };
+    const fetchSpy = mockRoutes({
+      "/api/library": () => listingWithMarked,
+      "/api/library/purge": (method, init) => {
+        expect(method).toBe("POST");
+        expect(String(init?.body)).toContain('"confirm":true');
+        return purgeJob;
+      },
+    });
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    expect(list).toHaveTextContent("来源缺失");
+    await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
+
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("确认清理 2 项已标记文档？");
+    await user.click(withinDialog(dialog, "取消"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+      fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/library/purge"),
+    ).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
+    await user.click(withinDialog(screen.getByRole("dialog"), "确认清理"));
+    expect(await screen.findByText("清理完成：已物理移除 2 项标记文档。")).toBeInTheDocument();
+  });
+});

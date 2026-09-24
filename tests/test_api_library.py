@@ -426,7 +426,8 @@ def test_cancel_stops_after_current_file(tmp_path: Path) -> None:
     assert final["state"] == "cancelled"
     assert final["done"] == 2
     assert final["total"] == 3
-    assert calls == []  # 取消后不衔接索引
+    # 取消同样衔接索引：已入库部分必须发布，不扣到不确定的下轮（决议 #3 修订）
+    assert calls == [False]
     assert not staged_dir_for(payload_c).exists()  # 未处理文件的暂存也清理
 
 

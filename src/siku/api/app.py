@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
@@ -25,6 +27,7 @@ from siku.api.library import (
     LibraryJobBusyError,
     LibraryJobManager,
     LibraryJobNotRunningError,
+    SyncScheduler,
     build_library_view,
     discard_staged,
     stage_upload,
@@ -46,8 +49,17 @@ from siku.api.models import (
     IngestRequest,
     IngestResponse,
     LibraryJobResponse,
+    LibraryPurgeRequest,
     LibraryRebuildRequest,
     LibraryResponse,
+    LibraryScanRequest,
+    LibraryScanSettingsResponse,
+    LibraryScanSettingsUpdateRequest,
+    LibrarySourceCreateRequest,
+    LibrarySourceInfo,
+    LibrarySourceRemovedResponse,
+    LibrarySourcesResponse,
+    LibrarySourceUpdateRequest,
     NoteDetailResponse,
     NotesPageResponse,
     NoteSummaryResponse,
@@ -85,6 +97,7 @@ from siku.api.settings import (
     probe_channel,
     resolve_probe_target,
 )
+from siku.extractors import extractor_registry
 from siku.graph.community import SummaryIdentity
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.models import GraphExtractor
@@ -110,6 +123,9 @@ from siku.retrieve.errors import InvalidQueryError, ModelNotAvailableError
 from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import IndexReport, SearchOptions
 from siku.retrieve.service import SearchService
+from siku.sync.registry import SourceAlreadyRegisteredError, SyncRegistry, library_db_path
+from siku.sync.scanner import SourcePlan
+from siku.sync.service import ScanObserver, SyncService
 from siku.wiki.service import WikiResult, generate_wiki
 from siku.wiki.summarizer import CommunitySummarizer, Summarizer
 
@@ -246,6 +262,14 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     )
 
 
+def _paths_overlap(a: str, b: str) -> bool:
+    """判断两个已解析的绝对路径是否存在包含关系或相等（目录重叠）。"""
+    parts_a = Path(a).parts
+    parts_b = Path(b).parts
+    common = min(len(parts_a), len(parts_b))
+    return parts_a[:common] == parts_b[:common]
+
+
 def create_app(
     *,
     vault: Path = DEFAULT_VAULT,
@@ -279,16 +303,57 @@ def create_app(
         search_cache = _SearchSupplyCache(embedding_supply, rerank_supply, embedding_dimensions)
         resolved_search_factory = search_cache.get
     llm_providers = _llm_provider_factory(llm_supply)
+
+    # 来源目录同步（ADR-0010）：库域状态库 + 扫描执行体 + 单任务槽 + 轮询调度。
+    # 注册表随应用生命周期持有（状态非派生物）；调度线程经 lifespan 启停。
+    sync_registry = SyncRegistry(library_db_path(data_dir))
+    sync_service = SyncService(
+        sync_registry,
+        vault=vault,
+        ingest_handler=ingest_handler,
+        whitelist=set(extractor_registry()),
+    )
+
+    def _scan_job_body(full: bool, plans: list[SourcePlan] | None, observer: ScanObserver) -> None:
+        # plans 非 None = 自动路径（检测已在槽外完成）；None = 手动路径（体内计划）
+        if plans is None:
+            sync_service.run_scan_cycle(full=full, observer=observer)
+        else:
+            sync_service.execute_cycle(plans, observer)
+
+    library_jobs = LibraryJobManager(
+        vault=vault,
+        ingest_handler=ingest_handler,
+        index_runner=index_runner
+        or _supply_index_runner(vault, data_dir, embedding_supply, embedding_dimensions),
+        api_key_env=api_key_env,
+        scan_runner=_scan_job_body,
+        purge_runner=sync_service.run_purge,
+    )
+    sync_scheduler = SyncScheduler(
+        sync_registry,
+        library_jobs,
+        plan_provider=sync_service.plan_cycle,
+        reconcile_probe=sync_service.pending_reconcile,
+    )
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+        sync_scheduler.start()
+        yield
+        sync_scheduler.stop()
+
     application = FastAPI(
         title="siku API",
         version=__version__,
         description="siku 本地优先知识库的 localhost HTTP API。",
+        lifespan=_lifespan,
     )
     application.add_middleware(
         CORSMiddleware,
         allow_origins=list(ALLOWED_CORS_ORIGINS),
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
     )
 
@@ -299,15 +364,10 @@ def create_app(
     application.state.ingest_handler = ingest_handler
     # 附件哈希的 stat 快路径缓存随应用生命周期存在（正确性锚点见类 docstring）
     application.state.digest_cache = AttachmentDigestCache()
-    library_jobs = LibraryJobManager(
-        vault=vault,
-        ingest_handler=ingest_handler,
-        index_runner=index_runner
-        or _supply_index_runner(vault, data_dir, embedding_supply, embedding_dimensions),
-        api_key_env=api_key_env,
-    )
     # state 仅为内省/测试挂同一实例；端点经闭包局部变量引用以保类型
     application.state.library_jobs = library_jobs
+    application.state.sync_registry = sync_registry
+    application.state.sync_service = sync_service
     application.state.search_service_factory = resolved_search_factory
     application.state.graph_extractor_factory = graph_extractor_factory or (
         lambda: LlmGraphExtractor(provider=llm_providers())
@@ -368,12 +428,13 @@ def create_app(
 
     @application.get("/api/library", response_model=LibraryResponse)
     def library() -> LibraryResponse | JSONResponse:
-        """桌面 vault 来源级清单：全部派生自既有摄取元数据，只读不落盘。"""
+        """桌面 vault 来源级清单：派生自摄取元数据与库域登记，只读不落盘。"""
         try:
             return build_library_view(
                 application.state.vault,
                 application.state.data_dir,
                 digest_cache=application.state.digest_cache,
+                registry=application.state.sync_registry,
             )
         except Exception as exc:
             logger.debug(
@@ -381,6 +442,136 @@ def create_app(
             )
             mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
+
+    @application.get("/api/library/sources", response_model=LibrarySourcesResponse)
+    def library_sources_list() -> LibrarySourcesResponse:
+        """来源目录登记清单（库域注册表掩码视图，按路径排序）。"""
+        sources = sync_registry.list_sources()
+        return LibrarySourcesResponse(
+            sources=[
+                LibrarySourceInfo(
+                    id=source.id,
+                    path=source.path,
+                    enabled=source.enabled,
+                    created_at=source.created_at,
+                    last_scan_at=source.last_scan_at,
+                )
+                for source in sources
+            ]
+        )
+
+    @application.post("/api/library/sources", response_model=LibrarySourceInfo)
+    def library_sources_create(
+        request: LibrarySourceCreateRequest,
+    ) -> LibrarySourceInfo | JSONResponse:
+        """注册来源目录：校验存在且为目录，同一真实路径不重复登记。"""
+        try:
+            resolved = str(Path(request.path).expanduser().resolve())
+        except OSError as exc:
+            logger.debug("API source registration failed: detail=%s", exc)
+            return _error_response(422, "invalid_request", "无法解析目录路径，请检查后重试。")
+        if not Path(resolved).is_dir():
+            return _error_response(
+                422, "invalid_request", "来源目录不存在或不是目录，请检查后重试。"
+            )
+        # 单向喂养边界：来源目录不得与 vault 重叠（含把 vault 自身登记为来源），
+        # 否则扫描会把 vault 内部文件（含检疫副本）当上游再次喂入（评审 S3）
+        vault_resolved = str(Path(application.state.vault).resolve())
+        if _paths_overlap(resolved, vault_resolved):
+            return _error_response(
+                422,
+                "invalid_request",
+                "来源目录不能与资料库 vault 目录重叠，请另选外部目录。",
+            )
+        try:
+            source = sync_registry.add_source(resolved, enabled=request.enabled)
+        except SourceAlreadyRegisteredError:
+            return _error_response(
+                409, "source_already_registered", "该目录已登记为来源，无需重复添加。"
+            )
+        except sqlite3.IntegrityError:
+            # 并发注册同一真实路径：UNIQUE 约束兜底归一为 409（评审 S2）
+            return _error_response(
+                409, "source_already_registered", "该目录已登记为来源，无需重复添加。"
+            )
+        except OSError as exc:
+            logger.debug("API source registration failed: detail=%s", exc)
+            return _error_response(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
+        return LibrarySourceInfo(
+            id=source.id,
+            path=source.path,
+            enabled=source.enabled,
+            created_at=source.created_at,
+            last_scan_at=source.last_scan_at,
+        )
+
+    @application.put("/api/library/sources/{source_id}", response_model=LibrarySourceInfo)
+    def library_sources_update(
+        source_id: str, request: LibrarySourceUpdateRequest
+    ) -> LibrarySourceInfo | JSONResponse:
+        """启停来源目录：停用后扫描跳过该目录，登记与文档不受影响。"""
+        source = sync_registry.set_source_enabled(source_id, request.enabled)
+        if source is None:
+            return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
+        return LibrarySourceInfo(
+            id=source.id,
+            path=source.path,
+            enabled=source.enabled,
+            created_at=source.created_at,
+            last_scan_at=source.last_scan_at,
+        )
+
+    @application.delete(
+        "/api/library/sources/{source_id}", response_model=LibrarySourceRemovedResponse
+    )
+    def library_sources_delete(source_id: str) -> LibrarySourceRemovedResponse | JSONResponse:
+        """移除登记与检测缓存；已入库文档与既有标记不受影响。"""
+        if not sync_registry.remove_source(source_id):
+            return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
+        return LibrarySourceRemovedResponse(removed=True)
+
+    @application.post("/api/library/scan", response_model=LibraryJobResponse)
+    def library_scan(request: LibraryScanRequest) -> LibraryJobResponse | JSONResponse:
+        """立即执行一轮来源扫描：变更入库幂等，进度经任务快照轮询反馈。"""
+        try:
+            return library_jobs.start_scan(full=request.full)
+        except LibraryJobBusyError:
+            return _error_response(
+                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
+            )
+
+    @application.get("/api/library/scan-settings", response_model=LibraryScanSettingsResponse)
+    def library_scan_settings_read() -> LibraryScanSettingsResponse:
+        """自动扫描间隔（秒；0 = 关闭）。"""
+        return LibraryScanSettingsResponse(interval_secs=sync_registry.get_scan_interval())
+
+    @application.put("/api/library/scan-settings", response_model=LibraryScanSettingsResponse)
+    def library_scan_settings_write(
+        request: LibraryScanSettingsUpdateRequest,
+    ) -> LibraryScanSettingsResponse | JSONResponse:
+        """更新自动扫描间隔：调度线程每轮现读，免重启生效；负数非法。"""
+        if request.interval_secs < 0:
+            return _error_response(
+                422, "invalid_request", "扫描间隔不能为负数；0 表示关闭自动扫描。"
+            )
+        sync_registry.set_scan_interval(request.interval_secs)
+        return LibraryScanSettingsResponse(interval_secs=request.interval_secs)
+
+    @application.post("/api/library/purge", response_model=LibraryJobResponse)
+    def library_purge(request: LibraryPurgeRequest) -> LibraryJobResponse | JSONResponse:
+        """物理清理全部已标记文档：唯一删除路径，必须显式携带确认标记。"""
+        if not request.confirm:
+            return _error_response(
+                422,
+                "purge_confirm_required",
+                "清理需要显式确认：请在请求中携带 confirm=true。",
+            )
+        try:
+            return library_jobs.start_purge()
+        except LibraryJobBusyError:
+            return _error_response(
+                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
+            )
 
     @application.post("/api/library/ingest", response_model=LibraryJobResponse)
     def library_ingest(

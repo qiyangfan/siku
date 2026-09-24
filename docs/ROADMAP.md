@@ -24,6 +24,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 5 | Tauri 壳（阶段二） | 无签名桌面包，GitHub Releases + Homebrew | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell`，desktop-shell spec 入主 specs；macOS arm64 冒烟 ✅，Windows/Linux 冒烟经用户裁决豁免、移触发器台账；Release 无限期禁用） |
 | 5+ | 模型供给 BYOK 端点化（发布前瘦身打磨） | 删除进程内模型（torch/权重），LLM/embedding/rerank 全走用户端点；分层 config.toml；sidecar 305MiB；通道化基线 | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-byok-model-supply`；model-supply spec 入主 specs；双通道基线实测由用户裁决豁免，可随时按 benchmarks/README.md 补录） |
 | 5++ | 桌面上手补齐（配模型 → 进资料 → 看知识） | 设置中心 / 资料管理 / 浏览·图谱·wiki 视图 | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-ui-settings-center` 三端点 + 免重启生效 + React 设置视图；归档 `2026-09-19-add-desktop-library` 五端点 + 进程内单任务槽 + React 资料库视图；归档 `2026-09-19-add-browse-graph-wiki-views` 八个只读端点 + Sigma.js 图谱画布 + 浏览/wiki 视图 + 实体联动问答，http-api/web-ui spec 增量均已入主 specs）——上手链路（配模型 → 进资料 → 看知识）闭环 |
+| 5++⁺ | 来源目录同步（进资料自动化延伸） | 受管喂养 + 定时扫描 + 标记式删除 | ✅ 已完成（2026-09-24，归档 `2026-09-24-add-directory-sync`：`siku.sync` 内核 + `library.sqlite3` 库域状态 + serve 轮询调度 + 来源/扫描/间隔/清理端点 + `siku scan` + 资料库来源目录区；library-sync spec 入主 specs；ADR-0010；取消收尾衔接索引修订 desktop-library 决议 #3；评审循环四轮 + 追加裁决） |
 | 6 | 签名与更新（阶段三） | Apple 公证 + Windows 签名 + 自动更新 | 更新链路灰度可用 |
 
 阶段依赖：1→2→3→4 严格串行（2 依赖 1 的投影，3 依赖 2 的元数据）；Phase 4 的 UI

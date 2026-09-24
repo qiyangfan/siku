@@ -74,7 +74,13 @@ export type SettingsTestResponse = {
   latency_ms: number;
 };
 
-export type LibraryIngestStatus = "ingested" | "stale" | "pending" | "ignored";
+export type LibraryIngestStatus =
+  | "ingested"
+  | "stale"
+  | "pending"
+  | "ignored"
+  | "missing"
+  | "superseded";
 
 export type LibraryIndexStatus = "indexed" | "stale" | "missing";
 
@@ -84,13 +90,20 @@ export type LibrarySource = {
   source_hash: string;
   ingest_status: LibraryIngestStatus;
   index_status: LibraryIndexStatus;
+  origin_path: string | null;
 };
 
 export type LibraryResponse = {
   sources: LibrarySource[];
 };
 
-export type LibraryJobItemStatus = "created" | "updated" | "skipped" | "ignored" | "failed";
+export type LibraryJobItemStatus =
+  | "created"
+  | "updated"
+  | "skipped"
+  | "ignored"
+  | "failed"
+  | "removed";
 
 export type LibraryJobItem = {
   name: string;
@@ -99,11 +112,11 @@ export type LibraryJobItem = {
   detail: string | null;
 };
 
-export type LibraryJobKind = "ingest" | "rebuild";
+export type LibraryJobKind = "ingest" | "rebuild" | "scan" | "purge";
 
 export type LibraryJobState = "running" | "succeeded" | "failed" | "cancelled";
 
-export type LibraryJobPhase = "ingesting" | "indexing";
+export type LibraryJobPhase = "scanning" | "ingesting" | "purging" | "indexing";
 
 export type LibraryJob = {
   job_id: string;
@@ -116,6 +129,18 @@ export type LibraryJob = {
   current: string | null;
   items: LibraryJobItem[];
   error: string | null;
+};
+
+export type LibrarySyncSource = {
+  id: string;
+  path: string;
+  enabled: boolean;
+  created_at: string;
+  last_scan_at: string | null;
+};
+
+export type LibrarySyncSources = {
+  sources: LibrarySyncSource[];
 };
 
 export type NoteSummary = {
@@ -278,6 +303,75 @@ export async function cancelLibraryJob(jobId: string): Promise<LibraryJob> {
 export async function rebuildIndex(): Promise<LibraryJob> {
   return parseResponse<LibraryJob>(
     await fetch("/api/library/rebuild", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    }),
+  );
+}
+
+export async function getLibrarySources(): Promise<LibrarySyncSources> {
+  return parseResponse<LibrarySyncSources>(await fetch("/api/library/sources"));
+}
+
+export async function addLibrarySource(path: string, enabled: boolean): Promise<LibrarySyncSource> {
+  return parseResponse<LibrarySyncSource>(
+    await fetch("/api/library/sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, enabled }),
+    }),
+  );
+}
+
+export async function setLibrarySourceEnabled(
+  sourceId: string,
+  enabled: boolean,
+): Promise<LibrarySyncSource> {
+  return parseResponse<LibrarySyncSource>(
+    await fetch(`/api/library/sources/${encodeURIComponent(sourceId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
+  );
+}
+
+export async function removeLibrarySource(sourceId: string): Promise<{ removed: boolean }> {
+  return parseResponse<{ removed: boolean }>(
+    await fetch(`/api/library/sources/${encodeURIComponent(sourceId)}`, { method: "DELETE" }),
+  );
+}
+
+export async function scanLibrarySources(full: boolean): Promise<LibraryJob> {
+  return parseResponse<LibraryJob>(
+    await fetch("/api/library/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ full }),
+    }),
+  );
+}
+
+export type LibraryScanSettings = { interval_secs: number };
+
+export async function getScanSettings(): Promise<LibraryScanSettings> {
+  return parseResponse<LibraryScanSettings>(await fetch("/api/library/scan-settings"));
+}
+
+export async function updateScanSettings(intervalSecs: number): Promise<LibraryScanSettings> {
+  return parseResponse<LibraryScanSettings>(
+    await fetch("/api/library/scan-settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ interval_secs: intervalSecs }),
+    }),
+  );
+}
+
+export async function purgeLibrary(): Promise<LibraryJob> {
+  return parseResponse<LibraryJob>(
+    await fetch("/api/library/purge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirm: true }),

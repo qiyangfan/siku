@@ -28,6 +28,7 @@ from siku.api.messages import (
 from siku.api.messages import (
     retrieval_error_message as _retrieval_error_message,
 )
+from siku.extractors import extractor_registry
 from siku.graph.community import SummaryIdentity
 from siku.graph.errors import (
     GraphError,
@@ -56,6 +57,8 @@ from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import SearchOptions
 from siku.retrieve.providers import EmbeddingProvider, RerankerProvider
 from siku.retrieve.service import SearchService
+from siku.sync.registry import SyncRegistry, library_db_path
+from siku.sync.service import ScanOpResult, SyncService
 from siku.wiki.service import generate_wiki
 from siku.wiki.summarizer import CommunitySummarizer
 
@@ -316,6 +319,103 @@ def index(
         f"created={report.created} updated={report.updated} "
         f"skipped={report.skipped} removed={report.removed} "
         f"chunks={report.total_chunks} version={report.index_version}"
+    )
+
+
+class _CliScanObserver:
+    """扫描进度到终端的直通适配：逐动作一行中文报告。"""
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.had_changes = False
+        self.had_failures = False
+
+    def set_total(self, total: int) -> None:
+        if total == 0:
+            typer.echo("没有需要处理的变更。")
+        else:
+            typer.echo(f"共 {total} 项待处理。")
+
+    def op_started(self, label: str) -> None:
+        pass
+
+    def op_finished(self, result: ScanOpResult) -> None:
+        self.count += 1
+        if result.status in ("created", "updated", "removed"):
+            self.had_changes = True
+        if result.status == "failed":
+            self.had_failures = True
+        line = f"  [{result.status}] {result.name}"
+        if result.detail:
+            line += f" —— {result.detail}"
+        typer.echo(line)
+
+    def is_cancelled(self) -> bool:
+        return False
+
+
+@app.command()
+def scan(
+    vault: Annotated[Path, typer.Option("--vault", help="事实层 vault 目录。")] = DEFAULT_VAULT,
+    data_dir: Annotated[
+        Path, typer.Option("--data-dir", help="派生索引数据目录。")
+    ] = DEFAULT_DATA_DIR,
+    full: Annotated[
+        bool, typer.Option("--full", help="跳过 stat 快选，强制全量哈希校验。")
+    ] = False,
+    embedding_base_url: EmbeddingBaseUrlOpt = None,
+    embedding_model: EmbeddingModelOpt = None,
+    embedding_api_key_env: EmbeddingApiKeyEnvOpt = None,
+    embedding_dimensions: EmbeddingDimensionsOpt = None,
+) -> None:
+    """一次性扫描全部已登记来源目录：变更幂等入库并衔接增量索引。
+
+    常驻自动扫描由 `siku serve` 内置；本命令供脚本或偏好 OS 定时器的高级用户。
+    注意：不要与运行中的 `siku serve` 并发执行（两者的索引同步共享临时目录，
+    并发互踩风险与既有 `siku index` 相同）。来源目录经 Web 资料库登记
+    （Non-goals：CLI 不做来源 CRUD）。
+    """
+    registry = SyncRegistry(library_db_path(data_dir))
+    enabled_sources = [source for source in registry.list_sources() if source.enabled]
+    if not enabled_sources:
+        typer.echo("没有已启用的来源目录；请先在 Web 资料库「来源目录」区添加。")
+        raise typer.Exit()
+    service = SyncService(
+        registry,
+        vault=vault,
+        ingest_handler=ingest_path,
+        whitelist=set(extractor_registry()),
+    )
+    observer = _CliScanObserver()
+    label = f"开始扫描 {len(enabled_sources)} 个来源目录"
+    typer.echo(label + ("（全量哈希校验）" if full else "…"))
+    try:
+        service.run_scan_cycle(full=full, observer=observer)
+    except Exception as exc:
+        _fail(f"扫描执行失败: {exc}", exc)
+    typer.echo(f"扫描完成（{observer.count} 项动作）。")
+    if observer.had_failures:
+        # 失败项存在时非零退出：脚本/cron 场景需要可靠感知（评审建议）
+        typer.echo("部分条目处理失败，请检查上方输出后重试。")
+        raise typer.Exit(code=1)
+    if not observer.had_changes:
+        return
+    # 有实际入库/清理变更才衔接索引（与 serve 任务口径一致；决议 #5：无变更不重算）
+    embedding: EmbeddingProvider | None = None
+    try:
+        _channel, embedding = _embedding_component(
+            _embedding_cli_values(embedding_base_url, embedding_model, embedding_api_key_env),
+            embedding_dimensions,
+        )
+        report = sync_index(vault, data_dir, embedding, rebuild=False)
+    except RetrievalError as exc:
+        _fail(f"扫描已完成，但索引同步失败: {_retrieval_error_message(exc)}", exc)
+    finally:
+        if embedding is not None:
+            _close_quietly(embedding)
+    typer.echo(
+        f"索引已增量同步: created={report.created} updated={report.updated} "
+        f"skipped={report.skipped} removed={report.removed} chunks={report.total_chunks}"
     )
 
 

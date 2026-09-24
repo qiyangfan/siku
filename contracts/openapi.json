@@ -66,7 +66,7 @@
     "/api/library": {
       "get": {
         "summary": "Library",
-        "description": "桌面 vault 来源级清单：全部派生自既有摄取元数据，只读不落盘。",
+        "description": "桌面 vault 来源级清单：派生自摄取元数据与库域登记，只读不落盘。",
         "operationId": "library_api_library_get",
         "responses": {
           "200": {
@@ -75,6 +75,284 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/LibraryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/sources": {
+      "get": {
+        "summary": "Library Sources List",
+        "description": "来源目录登记清单（库域注册表掩码视图，按路径排序）。",
+        "operationId": "library_sources_list_api_library_sources_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibrarySourcesResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Library Sources Create",
+        "description": "注册来源目录：校验存在且为目录，同一真实路径不重复登记。",
+        "operationId": "library_sources_create_api_library_sources_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibrarySourceCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibrarySourceInfo"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/sources/{source_id}": {
+      "put": {
+        "summary": "Library Sources Update",
+        "description": "启停来源目录：停用后扫描跳过该目录，登记与文档不受影响。",
+        "operationId": "library_sources_update_api_library_sources__source_id__put",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibrarySourceUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibrarySourceInfo"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Library Sources Delete",
+        "description": "移除登记与检测缓存；已入库文档与既有标记不受影响。",
+        "operationId": "library_sources_delete_api_library_sources__source_id__delete",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibrarySourceRemovedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/scan": {
+      "post": {
+        "summary": "Library Scan",
+        "description": "立即执行一轮来源扫描：变更入库幂等，进度经任务快照轮询反馈。",
+        "operationId": "library_scan_api_library_scan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryScanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/scan-settings": {
+      "get": {
+        "summary": "Library Scan Settings Read",
+        "description": "自动扫描间隔（秒；0 = 关闭）。",
+        "operationId": "library_scan_settings_read_api_library_scan_settings_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryScanSettingsResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Library Scan Settings Write",
+        "description": "更新自动扫描间隔：调度线程每轮现读，免重启生效；负数非法。",
+        "operationId": "library_scan_settings_write_api_library_scan_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryScanSettingsUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryScanSettingsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/library/purge": {
+      "post": {
+        "summary": "Library Purge",
+        "description": "物理清理全部已标记文档：唯一删除路径，必须显式携带确认标记。",
+        "operationId": "library_purge_api_library_purge_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryPurgeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -1507,7 +1785,8 @@
               "updated",
               "skipped",
               "ignored",
-              "failed"
+              "failed",
+              "removed"
             ],
             "title": "Status"
           },
@@ -1542,7 +1821,9 @@
             "type": "string",
             "enum": [
               "ingest",
-              "rebuild"
+              "rebuild",
+              "scan",
+              "purge"
             ],
             "title": "Kind"
           },
@@ -1559,7 +1840,9 @@
           "phase": {
             "type": "string",
             "enum": [
+              "scanning",
               "ingesting",
+              "purging",
               "indexing"
             ],
             "title": "Phase"
@@ -1620,7 +1903,19 @@
           "error"
         ],
         "title": "LibraryJobResponse",
-        "description": "摄取/重建任务的进度快照（HTTP 轮询读取）。"
+        "description": "摄取/重建/扫描/清理任务的进度快照（HTTP 轮询读取）。"
+      },
+      "LibraryPurgeRequest": {
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "title": "Confirm",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "LibraryPurgeRequest",
+        "description": "清理请求：必须显式携带确认标记（唯一物理删除路径）。"
       },
       "LibraryRebuildRequest": {
         "properties": {
@@ -1651,6 +1946,120 @@
         "title": "LibraryResponse",
         "description": "桌面 vault 来源级清单。"
       },
+      "LibraryScanRequest": {
+        "properties": {
+          "full": {
+            "type": "boolean",
+            "title": "Full",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "LibraryScanRequest",
+        "description": "手动扫描请求；``full`` 跳过 stat 快选、强制全量哈希校验。"
+      },
+      "LibraryScanSettingsResponse": {
+        "properties": {
+          "interval_secs": {
+            "type": "integer",
+            "title": "Interval Secs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval_secs"
+        ],
+        "title": "LibraryScanSettingsResponse",
+        "description": "自动扫描间隔设置（秒；0 = 关闭自动扫描）。"
+      },
+      "LibraryScanSettingsUpdateRequest": {
+        "properties": {
+          "interval_secs": {
+            "type": "integer",
+            "title": "Interval Secs"
+          }
+        },
+        "type": "object",
+        "required": [
+          "interval_secs"
+        ],
+        "title": "LibraryScanSettingsUpdateRequest",
+        "description": "自动扫描间隔更新；调度线程每轮现读，免重启生效。"
+      },
+      "LibrarySourceCreateRequest": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "title": "LibrarySourceCreateRequest",
+        "description": "注册来源目录：绝对路径。"
+      },
+      "LibrarySourceInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "last_scan_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Scan At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "path",
+          "enabled",
+          "created_at",
+          "last_scan_at"
+        ],
+        "title": "LibrarySourceInfo",
+        "description": "一条来源目录登记（库域注册表的掩码视图）。"
+      },
+      "LibrarySourceRemovedResponse": {
+        "properties": {
+          "removed": {
+            "type": "boolean",
+            "title": "Removed"
+          }
+        },
+        "type": "object",
+        "required": [
+          "removed"
+        ],
+        "title": "LibrarySourceRemovedResponse",
+        "description": "来源目录移除结果。"
+      },
       "LibrarySourceResponse": {
         "properties": {
           "name": {
@@ -1671,7 +2080,9 @@
               "ingested",
               "stale",
               "pending",
-              "ignored"
+              "ignored",
+              "missing",
+              "superseded"
             ],
             "title": "Ingest Status"
           },
@@ -1683,6 +2094,17 @@
               "missing"
             ],
             "title": "Index Status"
+          },
+          "origin_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Path"
           }
         },
         "type": "object",
@@ -1694,7 +2116,38 @@
           "index_status"
         ],
         "title": "LibrarySourceResponse",
-        "description": "资料库清单中的单条来源（全部派生自既有摄取元数据，只读）。"
+        "description": "资料库清单中的单条来源（全部派生自既有摄取元数据与库域登记，只读）。"
+      },
+      "LibrarySourceUpdateRequest": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "LibrarySourceUpdateRequest",
+        "description": "启停来源目录（登记保留，仅扫描是否遍历）。"
+      },
+      "LibrarySourcesResponse": {
+        "properties": {
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/LibrarySourceInfo"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sources"
+        ],
+        "title": "LibrarySourcesResponse",
+        "description": "来源目录登记清单，按路径排序。"
       },
       "NoteDetailResponse": {
         "properties": {

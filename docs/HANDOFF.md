@@ -4,61 +4,61 @@
 > `AGENTS.md`、路线 `docs/ROADMAP.md`、相关决策 `docs/adr/`。本文件每次交接整体重写，
 > 只写接手者马上需要的状态。
 
-- **更新时间**：2026-09-19（第十一次，读取面语义收敛 + 四项质量修复已入库推送）
+- **更新时间**：2026-09-24（第十三次，add-directory-sync 已归档提交推送）
 - **仓库**：`~/siku` → github.com/qiyangfan/siku（私有；SSH 推送，gh keyring 认证）
 
 ## 现状
 
-- **读取面语义收敛 + 四项质量修复已入库（fix(api) b5d3c59，已推送）**，内容两块：
-  1. **wiki 读失败口径收敛**（归档件 add-browse-graph-wiki-views design.md 记账项）：
-     新增 `WikiEntryReadError`（read_text 与 mtime stat 双折叠），wiki 单条读失败
-     返回 422 `wiki_entry_parse_error`，与 notes 422 口径对齐（新增稳定错误码 1 个）。
-  2. **读取面四项质量修复**：①清单 fail-fast → 单条降级（notes 投影损坏跳过留痕、
-     wiki 单条损坏跳过留痕，目录级 OSError 分别降级空清单/404，读取面数据性问题
-     不再落 500；检索索引侧 `scan_note_frontmatters` 保持 fail-fast 不动）；
-     ②409/422 边界成文（整库级损坏 409、单条目级损坏 422，规则见
-     `reading.py` 模块 docstring）；③新增 `AttachmentDigestCache`（library 附件
-     SHA-256 的 stat 快路径，进程内不落盘，`GET /api/library` 不再每请求全量读盘）；
-     ④新增 `messages.map_read_error`（8 个只读端点错误码单一成文点，端点内联
-     字面量清零；GraphArtifactsMissingError 读 404/写 409 分野显式成文）。
-- 本笔验证：pytest **586**、ruff check/format、mypy 全绿；两轮独立子代理 review
-  均「无阻断缺陷」，改进项全部采纳。主 specs 与 OpenAPI 快照未动（无端点/模型
-  结构变化，无被冻结行为反转）。工作树干净，main 已与远端同步。
-- **遗留 tag 已清理**：`v0.1.0`（指向 main 上 1c07b8b）已删本地与远端；Release
-  无限期禁用不变。
-- **`add-browse-graph-wiki-views` 已归档提交**；桌面链路「配模型 → 进资料 →
-  看知识」闭环，ROADMAP Phase 5++ 全部勾稽。
+- **`2026-09-24-add-directory-sync` 已归档**（library-sync spec 入主 specs，8 个
+  spec strict 全过）并已提交推送。交付：`siku.sync` 内核包（registry/scanner/
+  service）、`data/library.sqlite3` 库域状态库（非派生物，重建不清除）、serve 内置
+  轮询调度（检测在槽外/执行在槽内，间隔免重启生效）、`/api/library/sources|scan|
+  scan-settings|purge` 端点、清单扩展（missing/superseded/origin_path）、`siku scan`
+  CLI、资料库视图来源目录管理区。核心语义见 ADR-0010：来源目录只读单向 copy-in；
+  超替 = tombstone + 移入 `vault/superseded/{attachments,notes}/`（借文件布局退出
+  索引，重建不复活）；物理删除仅显式 purge；定时路径零模型调用。
+- **评审循环四轮 + owner 追加裁决一轮**全部闭环：修复阻断 2（reconcile 槽外竞态
+  静默丢档、内容回退残留标记致 purge 误删在役版）、应修 5（任务体异常卡死单任务
+  槽、改名配对吞变更、检测占槽违反 spec、purge 失败清标记、跨来源身份混叠）及
+  修复自身缺陷 2（调度器 Event 复活、跨来源命名空间）。owner 依技术决策准则翻案
+  两条取舍：**取消收尾衔接索引**（修订 desktop-library 决议 #3，`_finish_with_index
+  (cancelled=True)`）与 **dir_id 用完整 32 位**（不截断）。证据见归档件 review.md。
+- 顺带入库：`messages.py` 问答未配置 key 文案改为引导「设置」页（owner 此前点名）。
+- 本笔验证：pytest **627**（+41 新增）、ruff check/format、mypy、pre-commit、UI
+  lint/test 47/build、openspec strict、serve 级真实冒烟（uvicorn+curl 全链路）全绿。
 - **下一阶段无明确任务，未预写 openspec 骨架**：Phase 6 签名与自动更新等发布解禁
   决策；触发器台账全等外部环境。开新 change 前先到 ROADMAP 对齐排序。
+- `graphify-out/` 为未跟踪杂散目录，不属本仓库交付物，勿提交勿删除（待 owner 处置）。
 
 ## 已知坑
 
-- **读取面错误语义边界**（`reading.py` docstring 为权威）：整库级损坏 → 409
-  `graph_store_corrupt`；单条目级损坏 → 422；清单面单条损坏（含权限等 OSError）
-  跳过留痕，wiki 单条按编号寻址 422、notes 损坏投影身份不可知按 404。全部读
-  错误码只在 `messages.map_read_error` 成文，端点禁止内联字面量——新只读端点照此。
-- **`AttachmentDigestCache` 边界**：stat 锚点（size+mtime_ns）仅供呈现层，误判
-  由摄取按真实 source_hash 自愈；**不得复用于跳过重抽等事实层决策**（届时须换
-  size+mtime+inode 或内容抽样锚点），不得跨 vault 共享实例。
-- **spec「领域错误归一」三类状态码（409/422/503）不含读面 404**：note/wiki/graph
-  的资源未生成类 404 是上批归档变更引入的既成事实；未来开 change 时可顺带把
-  「未生成/不存在 → 404」补进规格枚举。
-- **读取面实现口径**：notes 单篇按 source_id 现扫 frontmatter 匹配、图谱每请求
-  现读 parquet、wiki 时效取条目文件 mtime、孤立实体度数按 0 兜底；图谱/wiki
-  读取不做进程内缓存，量级复核归 ADR-0003。
-- **画布**：`GraphCanvas.tsx` 挂载即建 Sigma 实例，数据变更整体重建图内容；jsdom
-  无 WebGL，单测以 vi.mock 替身呈现、真实交互在归档 review.md 冒烟段记账。
-  社区着色 = community_id 对 12 色调色板取模。
-- **Markdown 安全渲染唯一入口** `ui/src/markdown.ts`（marked→DOMPurify）+ 只读
-  链接守卫；禁止裸 `dangerouslySetInnerHTML`。
-- 前端各视图异步操作用**独立请求序号 ref** 防竞态——跨操作不共用（评审循环教训）。
-- 资料库任务/serve 供给装配/设置合并语义/`mypy` 不带路径参数/pytest 勿在 ui/ 下跑
-  等沿袭既有归档件，不赘述。
+- **superseded 检疫是文件布局语义**：旧版移出 notes/ 即自然退出索引，重建不复活；
+  清单扫 `vault/superseded/attachments/`。**勿平铺检疫目录**（.md 源的原件与投影
+  同名，平铺互相覆盖丢原件字节）。
+- **库域状态库 `data/library.sqlite3` 是状态不是派生物**，与 `retrieval.sqlite3`
+  物理分离是 tombstone 活过重建的前提。
+- **身份三维派生**：来源文档 source_id = sha256(暂存路径)[:12]，暂存路径 =
+  `<hash12>/<完整 dir_id>/<来源内相对路径>`——不截断 dir_id、不去掉任何一维，
+  否则同名同内容多副本重新串扰（评审 R2/R3-2）。
+- **取消收尾衔接索引**（决议 #3 修订）：三类任务的取消都走增量索引发布已提交
+  事实；索引失败 → 任务 failed 诚实呈现，不伪装成 cancelled。
+- **自动扫描检测在槽外、执行在槽内**（spec SHALL）：`plan_cycle` 必须纯只读；
+  调度 1 秒切片，间隔修改 ≤1 秒生效；槽忙丢计划下轮重检；`pending_reconcile`
+  探测待对账情形。
+- 扫描 quick-check 锚点 (size, mtime_ns) 逃生门：`POST /api/library/scan
+  {"full":true}` / `siku scan --full`；与 `AttachmentDigestCache` 同级信任，
+  不得用于事实层决策。
+- `siku scan` 勿与运行中的 serve 并发（索引临时目录互踩，同 `siku index` 类
+  hazard）；CLI 不做来源 CRUD（登记走 Web 资料库）。
+- 读取面错误语义边界（`reading.py` docstring 权威）、Markdown 安全渲染唯一入口
+  `ui/src/markdown.ts`、前端防竞态用独立请求序号 ref、`mypy` 不带路径参数、pytest
+  勿在 ui/ 下跑——沿袭既有归档件，不赘述。
 - 手工冒烟缺真实模型时：openai 兼容 mock（/embeddings + /chat/completions）即可
   跑通全链路，做法见归档 review.md 冒烟段。
 
 ## 触发型（不主动做，全在 ROADMAP 台账有账）
 
-Phase 6 签名与自动更新（等发布解禁决策）；Windows/Linux 实机冒烟（等发布解禁，
-清单见 docs/desktop.md）；双通道基线补录（等 Ollama/云端 key 环境）；设置中心/
-资料库/三知识视图 Tauri 壳内真实端点界面级冒烟（等真实 BYOK 环境）。
+Phase 6 签名与自动更新（等发布解禁决策）；Windows/Linux 实机冒烟；双通道基线补录；
+三视图与来源目录区 Tauri 壳内界面级冒烟（等真实 BYOK 环境）；多设备同步 vault 强
+需求出现 → 同步伴侣另立项（ADR-0010 复核信号）；purge 误删反馈显著 → tombstone
+保留期策略。

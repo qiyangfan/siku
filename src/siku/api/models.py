@@ -229,13 +229,15 @@ class SettingsTestResponse(BaseModel):
 
 
 class LibrarySourceResponse(BaseModel):
-    """资料库清单中的单条来源（全部派生自既有摄取元数据，只读）。"""
+    """资料库清单中的单条来源（全部派生自既有摄取元数据与库域登记，只读）。"""
 
     name: str
     path: str
     source_hash: str
-    ingest_status: Literal["ingested", "stale", "pending", "ignored"]
+    ingest_status: Literal["ingested", "stale", "pending", "ignored", "missing", "superseded"]
     index_status: Literal["indexed", "stale", "missing"]
+    # 来源目录登记的上游路径；手动导入条目为 null（决议 #4）
+    origin_path: str | None = None
 
 
 class LibraryResponse(BaseModel):
@@ -249,17 +251,17 @@ class LibraryJobItemResponse(BaseModel):
 
     name: str
     path: str
-    status: Literal["created", "updated", "skipped", "ignored", "failed"]
+    status: Literal["created", "updated", "skipped", "ignored", "failed", "removed"]
     detail: str | None = None
 
 
 class LibraryJobResponse(BaseModel):
-    """摄取/重建任务的进度快照（HTTP 轮询读取）。"""
+    """摄取/重建/扫描/清理任务的进度快照（HTTP 轮询读取）。"""
 
     job_id: str
-    kind: Literal["ingest", "rebuild"]
+    kind: Literal["ingest", "rebuild", "scan", "purge"]
     state: Literal["running", "succeeded", "failed", "cancelled"]
-    phase: Literal["ingesting", "indexing"]
+    phase: Literal["scanning", "ingesting", "purging", "indexing"]
     total: int
     done: int
     failed: int
@@ -270,6 +272,65 @@ class LibraryJobResponse(BaseModel):
 
 class LibraryRebuildRequest(BaseModel):
     """全量重建请求：必须显式携带确认标记。"""
+
+    confirm: bool = False
+
+
+class LibrarySourceInfo(BaseModel):
+    """一条来源目录登记（库域注册表的掩码视图）。"""
+
+    id: str
+    path: str
+    enabled: bool
+    created_at: str
+    last_scan_at: str | None
+
+
+class LibrarySourcesResponse(BaseModel):
+    """来源目录登记清单，按路径排序。"""
+
+    sources: list[LibrarySourceInfo]
+
+
+class LibrarySourceCreateRequest(BaseModel):
+    """注册来源目录：绝对路径。"""
+
+    path: str
+    enabled: bool = True
+
+
+class LibrarySourceUpdateRequest(BaseModel):
+    """启停来源目录（登记保留，仅扫描是否遍历）。"""
+
+    enabled: bool
+
+
+class LibrarySourceRemovedResponse(BaseModel):
+    """来源目录移除结果。"""
+
+    removed: bool
+
+
+class LibraryScanRequest(BaseModel):
+    """手动扫描请求；``full`` 跳过 stat 快选、强制全量哈希校验。"""
+
+    full: bool = False
+
+
+class LibraryScanSettingsResponse(BaseModel):
+    """自动扫描间隔设置（秒；0 = 关闭自动扫描）。"""
+
+    interval_secs: int
+
+
+class LibraryScanSettingsUpdateRequest(BaseModel):
+    """自动扫描间隔更新；调度线程每轮现读，免重启生效。"""
+
+    interval_secs: int
+
+
+class LibraryPurgeRequest(BaseModel):
+    """清理请求：必须显式携带确认标记（唯一物理删除路径）。"""
 
     confirm: bool = False
 
