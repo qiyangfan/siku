@@ -147,7 +147,7 @@ jobs:
           Copy-Item "ui/src-tauri/target/release/bundle/nsis/*.exe" artifacts/
           Get-ChildItem artifacts
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}
           path: artifacts/*
