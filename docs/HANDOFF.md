@@ -4,63 +4,62 @@
 > `AGENTS.md`、路线 `docs/ROADMAP.md`、相关决策 `docs/adr/`。本文件每次交接整体重写，
 > 只写接手者马上需要的状态。
 
-- **更新时间**：2026-09-24（第十三次，add-directory-sync 已归档提交推送）
+- **更新时间**：2026-09-24（第十五次，三层积压改动已按 change 分笔提交至
+  `edce9f6` 并推送 origin/main）
 - **仓库**：`~/siku` → github.com/qiyangfan/siku（私有；SSH 推送，gh keyring 认证）
 
 ## 现状
 
-- **`2026-09-24-add-directory-sync` 已归档**（library-sync spec 入主 specs，8 个
-  spec strict 全过）并已提交推送。交付：`siku.sync` 内核包（registry/scanner/
-  service）、`data/library.sqlite3` 库域状态库（非派生物，重建不清除）、serve 内置
-  轮询调度（检测在槽外/执行在槽内，间隔免重启生效）、`/api/library/sources|scan|
-  scan-settings|purge` 端点、清单扩展（missing/superseded/origin_path）、`siku scan`
-  CLI、资料库视图来源目录管理区。核心语义见 ADR-0010：来源目录只读单向 copy-in；
-  超替 = tombstone + 移入 `vault/superseded/{attachments,notes}/`（借文件布局退出
-  索引，重建不复活）；物理删除仅显式 purge；定时路径零模型调用。
-- **评审循环四轮 + owner 追加裁决一轮**全部闭环：修复阻断 2（reconcile 槽外竞态
-  静默丢档、内容回退残留标记致 purge 误删在役版）、应修 5（任务体异常卡死单任务
-  槽、改名配对吞变更、检测占槽违反 spec、purge 失败清标记、跨来源身份混叠）及
-  修复自身缺陷 2（调度器 Event 复活、跨来源命名空间）。owner 依技术决策准则翻案
-  两条取舍：**取消收尾衔接索引**（修订 desktop-library 决议 #3，`_finish_with_index
-  (cancelled=True)`）与 **dir_id 用完整 32 位**（不截断）。证据见归档件 review.md。
-- 顺带入库：`messages.py` 问答未配置 key 文案改为引导「设置」页（owner 此前点名）。
-- 本笔验证：pytest **627**（+41 新增）、ruff check/format、mypy、pre-commit、UI
-  lint/test 47/build、openspec strict、serve 级真实冒烟（uvicorn+curl 全链路）全绿。
-- **下一阶段无明确任务，未预写 openspec 骨架**：Phase 6 签名与自动更新等发布解禁
-  决策；触发器台账全等外部环境。开新 change 前先到 ROADMAP 对齐排序。
-- pre-commit 的 ruff rev 已对齐 uv.lock（v0.16.8）——升级 uv.lock 里的 ruff 时
-  **必须同步** `.pre-commit-config.yaml` 的 rev，否则钩子与 CI 格式检查会互相
-  打架（2026-09-24 门禁挂因）。
+- 本批三笔提交（owner 指示「归档、写好 handoff、提交所有代码」后落地）：
+  - **`160b08e` feat(api): 问答就绪门控**（add-ask-readiness-gate 归档）：内核
+    `ask_readiness`、settings 响应带 `{ready, missing[]}`、问答未配置置灰 + 引导
+    卡片 + fail-open、OpenAPI 快照刷新。
+  - **`cee4caa` feat(ui): 设置中心 key_mode 分段凭证**（并行任务，无独立 change，
+    owner 指示随批提交；SettingsView 同时携带就绪 change 的保存回调增量）。
+  - **`edce9f6` feat(ui): 图谱与 wiki 生成入口界面化**（add-graph-wiki-ui-generation
+    归档）：api.ts `buildGraph/generateWiki`（体 `{}` 幂等缓存路径）；图谱空态
+    「构建图谱」+ 已建态「更新图谱」；wiki 空态「生成 wiki」+ 图谱缺失两段式引导
+    （构建成功自动续跑）+ 已建态「重新生成 wiki」（清空旧选中）；失败在视图内展示
+    中文 message（空态/已建态均有刷新失败落点）。后端零改动、无 OpenAPI 变更。
+- 门禁基线：pytest **642**、vitest **68**、ruff、mypy、eslint、tsc、build、
+  pre-commit 全绿。DashScope 真实冒烟（qwen-plus，env 层 + tmp 投影语料 + GUI
+  黑盒点击）：构建 → 35 实体画布 → wiki 9 条目 → 更新/重新生成全缓存命中
+  （llm_calls=0）。graph-wiki 笔经独立评审修复 3 缺陷（empty_corpus 不刷新、
+  已建态图谱缺失静默、刷新失败无落点），详见归档 review.md 评审循环追记。
+- **上报待立项（既有缺陷，非本批引入）**：① 凭证被拒（401/403）误报「请补全
+  base_url/model」——需分型 `EndpointCredentialError` 三面加映射；② config.toml
+  损坏同文案死路；③ serve CLI 参数启动时 ask_readiness 偏保守；④ 生成路径错误
+  文案仍 CLI 导向（如 `notes_dir_missing` 提示「执行 siku ingest」），宜与 ① 同批
+  做 HTTP/CLI 文案分面。均记在两份归档 review.md。
+- 工作区干净；下一阶段无明确任务，未预写 openspec 骨架；开新 change 前先到
+  ROADMAP 对齐排序，归档后回写勾稽。
 
 ## 已知坑
 
-- **superseded 检疫是文件布局语义**：旧版移出 notes/ 即自然退出索引，重建不复活；
-  清单扫 `vault/superseded/attachments/`。**勿平铺检疫目录**（.md 源的原件与投影
-  同名，平铺互相覆盖丢原件字节）。
-- **库域状态库 `data/library.sqlite3` 是状态不是派生物**，与 `retrieval.sqlite3`
-  物理分离是 tombstone 活过重建的前提。
-- **身份三维派生**：来源文档 source_id = sha256(暂存路径)[:12]，暂存路径 =
-  `<hash12>/<完整 dir_id>/<来源内相对路径>`——不截断 dir_id、不去掉任何一维，
-  否则同名同内容多副本重新串扰（评审 R2/R3-2）。
-- **取消收尾衔接索引**（决议 #3 修订）：三类任务的取消都走增量索引发布已提交
-  事实；索引失败 → 任务 failed 诚实呈现，不伪装成 cancelled。
-- **自动扫描检测在槽外、执行在槽内**（spec SHALL）：`plan_cycle` 必须纯只读；
-  调度 1 秒切片，间隔修改 ≤1 秒生效；槽忙丢计划下轮重检；`pending_reconcile`
-  探测待对账情形。
-- 扫描 quick-check 锚点 (size, mtime_ns) 逃生门：`POST /api/library/scan
-  {"full":true}` / `siku scan --full`；与 `AttachmentDigestCache` 同级信任，
-  不得用于事实层决策。
-- `siku scan` 勿与运行中的 serve 并发（索引临时目录互踩，同 `siku index` 类
-  hazard）；CLI 不做来源 CRUD（登记走 Web 资料库）。
-- 读取面错误语义边界（`reading.py` docstring 权威）、Markdown 安全渲染唯一入口
-  `ui/src/markdown.ts`、前端防竞态用独立请求序号 ref、`mypy` 不带路径参数、pytest
-  勿在 ui/ 下跑——沿袭既有归档件，不赘述。
-- 手工冒烟缺真实模型时：openai 兼容 mock（/embeddings + /chat/completions）即可
-  跑通全链路，做法见归档 review.md 冒烟段。
+- **superseded 检疫是文件布局语义**：旧版移出 notes/ 即自然退出索引；**勿平铺**
+  `vault/superseded/`（.md 的原件与投影同名互覆）。
+- **`data/library.sqlite3` 是状态不是派生物**，与 `retrieval.sqlite3` 物理分离是
+  tombstone 活过重建的前提。
+- **身份三维派生**：source_id = sha256(暂存路径)[:12]，暂存路径含完整 dir_id——
+  不截断、不去维，否则多副本串扰。
+- **自动扫描检测在槽外、执行在槽内**；取消收尾衔接索引（失败诚实 failed）。
+- **`ask_readiness` 判定住内核、UI 只渲染**：`missing` token 是跨语言契约，新增
+  缺项时同步 `model_supply` 常量与 `ui/src/App.tsx` 的 `MISSING_LABELS`；UI 端
+  `normalizeReadiness` 的 fail-open 语义勿改成阻塞式。
+- **生成入口语义（graph-wiki 笔冻结，勿回退）**：按钮走幂等缓存路径，不暴露
+  `rebuild=true` 与目录覆写；不做就绪门控（llm-only 就绪是触发型候选）；空语料
+  也落空产物，按钮必须照常刷新数据面；`graphMissingKnown` 任何 200 都要清除。
+- **手工冒烟语料必须是 `vault/notes/` 下的标准投影**（frontmatter JSON 值 +
+  `## anchor` 区块；裸 md 触发 `notes_dir_missing`/解析错）；幂等验证看响应
+  `llm_calls=0`；`serve --with-ui --port <非默认>` + env 层 + tmp 语料，勿用仓库内
+  vault/data。
+- pre-commit ruff rev 需与 uv.lock 同步升级（v0.16.8）；`mypy` 不带路径参数；
+  pytest 勿在 ui/ 下跑（会收集 src-tauri 构建产物）；`siku scan` 勿与 serve 并发；
+  Markdown 安全渲染唯一入口 `ui/src/markdown.ts`。
 
 ## 触发型（不主动做，全在 ROADMAP 台账有账）
 
 Phase 6 签名与自动更新（等发布解禁决策）；Windows/Linux 实机冒烟；双通道基线补录；
-三视图与来源目录区 Tauri 壳内界面级冒烟（等真实 BYOK 环境）；多设备同步 vault 强
-需求出现 → 同步伴侣另立项（ADR-0010 复核信号）；purge 误删反馈显著 → tombstone
-保留期策略。
+三视图 Tauri 壳内界面级冒烟（等真实 BYOK 环境）；llm-only 就绪门控（若 owner 要
+求生成入口置灰语义时另立项）；多设备同步 vault 强需求出现 → 同步伴侣另立项
+（ADR-0010 复核信号）；purge 误删反馈显著 → tombstone 保留期策略。
