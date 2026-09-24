@@ -28,7 +28,9 @@
   lint/test 47/build、openspec strict、serve 级真实冒烟（uvicorn+curl 全链路）全绿。
 - **下一阶段无明确任务，未预写 openspec 骨架**：Phase 6 签名与自动更新等发布解禁
   决策；触发器台账全等外部环境。开新 change 前先到 ROADMAP 对齐排序。
-- `graphify-out/` 为未跟踪杂散目录，不属本仓库交付物，勿提交勿删除（待 owner 处置）。
+- pre-commit 的 ruff rev 已对齐 uv.lock（v0.16.8）——升级 uv.lock 里的 ruff 时
+  **必须同步** `.pre-commit-config.yaml` 的 rev，否则钩子与 CI 格式检查会互相
+  打架（2026-09-24 门禁挂因）。
 
 ## 已知坑
 
