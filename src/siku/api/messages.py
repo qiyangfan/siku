@@ -65,7 +65,8 @@ def map_ask_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
         return ErrorMapping(
             503,
             "llm_not_configured",
-            f"未配置 LLM API key：请先设置环境变量 {api_key_env}，再重试问答。",
+            f"未配置 LLM API key：请在「设置」页为 LLM 通道填写 base_url、model 与"
+            f" api_key，保存后立即生效；也可设置环境变量 {api_key_env}。完成后重试问答。",
         )
     if isinstance(exc, LlmInputTooLongError):
         return ErrorMapping(
