@@ -1107,6 +1107,39 @@ code {
   gap: var(--space-4);
 }
 
+/* 图谱/wiki 视图头部：标题区 + 生成入口右侧对齐（与 library-toolbar 同构） */
+.graph-header,
+.wiki-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.graph-header-actions,
+.wiki-header-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: var(--space-2);
+}
+
+@media (max-width: 40rem) {
+  .graph-header,
+  .wiki-header {
+    flex-direction: column;
+  }
+
+  .graph-header-actions,
+  .wiki-header-actions {
+    width: 100%;
+  }
+
+  .graph-header-actions button,
+  .wiki-header-actions button {
+    width: 100%;
+  }
+}
+
 .browse-toolbar h2,
 .graph-header h2,
 .wiki-header h2 {

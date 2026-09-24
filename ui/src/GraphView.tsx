@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
+  buildGraph,
   getGraphNeighbors,
   getGraphOverview,
   getGraphStats,
@@ -82,11 +83,14 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [expanding, setExpanding] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [building, setBuilding] = useState(false);
+  const [buildNote, setBuildNote] = useState<string | null>(null);
   // 各异步操作独立序号防竞态：慢响应不得覆盖同类新操作；
   // 跨操作不共用序号，避免被否决方的 loading 旗标永久卡死
   const loadSeqRef = useRef(0);
   const searchSeqRef = useRef(0);
   const expandSeqRef = useRef(0);
+  const buildSeqRef = useRef(0);
 
   const loadGraph = useCallback(async () => {
     const seq = ++loadSeqRef.current;
@@ -182,6 +186,41 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
 
   const truncated = model !== null && model.nodes.length < model.totalNodes;
 
+  // 生成走服务端默认幂等缓存路径（等价 `siku graph` 默认行为）：
+  // 未变语料零 LLM 调用；真实抽取可达分钟级，请求期不设前端超时
+  const runBuild = useCallback(async () => {
+    const seq = ++buildSeqRef.current;
+    setBuilding(true);
+    setActionError(null);
+    setBuildNote(null);
+    try {
+      const report = await buildGraph();
+      if (seq !== buildSeqRef.current) {
+        return;
+      }
+      // 空语料同样落空产物（内核 save_graph 无条件执行），必须照常刷新：
+      // 早退会让已建态残留旧画布，与磁盘产物不一致
+      const warningSuffix =
+        report.warnings.length > 0 ? `，${report.warnings.length} 条告警` : "";
+      setBuildNote(
+        report.empty_corpus
+          ? "语料为空：图谱为空、无可展示内容；请先在「资料库」导入笔记。"
+          : `图谱已构建：${report.nodes} 个实体、${report.edges} 条关系、` +
+              `${report.communities} 个社区（LLM 调用 ${report.llm_calls} 次${warningSuffix}）。`,
+      );
+      await loadGraph();
+    } catch (caught: unknown) {
+      if (seq !== buildSeqRef.current) {
+        return;
+      }
+      setActionError(connectionFallback(caught));
+    } finally {
+      if (seq === buildSeqRef.current) {
+        setBuilding(false);
+      }
+    }
+  }, [loadGraph]);
+
   const communityLegend = useMemo(() => {
     if (stats === null || stats.communities === 0) {
       return null;
@@ -195,7 +234,45 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
         <GraphHeader />
         <div className="library-empty" role="note">
           <strong>图谱尚未构建</strong>
-          <p>图谱由笔记投影抽取实体与关系生成；请先在终端执行 <code>siku graph</code>，完成后回到本视图。</p>
+          <p>
+            图谱由笔记投影抽取实体与关系生成，使用「设置」中配置的 LLM 通道；真实抽取
+            可能需要几分钟，完成后画布自动加载。
+          </p>
+          {buildNote !== null && (
+            <p className="hint" role="status">
+              {buildNote}
+            </p>
+          )}
+          {actionError !== null && (
+            <p className="message message-error" role="alert">
+              {actionError}
+            </p>
+          )}
+          {/* 构建成功但数据面刷新失败（loadGraph 内部吞错）不得静默：
+              否则「尚未构建」卡与「已构建」note 同屏矛盾 */}
+          {loadError !== null && (
+            <p className="message message-error" role="alert">
+              {loadError}
+            </p>
+          )}
+          {loadError !== null && (
+            <button
+              type="button"
+              className="button-secondary"
+              disabled={building}
+              onClick={() => void loadGraph()}
+            >
+              重试读取
+            </button>
+          )}
+          <button
+            type="button"
+            className="button-secondary"
+            disabled={building}
+            onClick={() => void runBuild()}
+          >
+            {building ? "构建中…（可能需要几分钟）" : "构建图谱"}
+          </button>
         </div>
       </section>
     );
@@ -229,12 +306,43 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
 
   return (
     <section className="graph-view" aria-labelledby="graph-title">
-      <GraphHeader />
+      <GraphHeader
+        action={
+          <button
+            type="button"
+            className="button-secondary"
+            disabled={building}
+            onClick={() => void runBuild()}
+          >
+            {building ? "更新中…（可能需要几分钟）" : "更新图谱"}
+          </button>
+        }
+      />
       <p className="hint">
         {stats !== null
           ? `全图 ${stats.nodes} 个实体、${stats.edges} 条关系${communityLegend !== null ? `，${communityLegend}` : ""}。`
           : "画布展示度数最高的实体子集；搜索并展开邻域以探索更多。"}
       </p>
+
+      {buildNote !== null && (
+        <p className="hint" role="status">
+          {buildNote}
+        </p>
+      )}
+
+      {/* 已建态数据保留时 loadError 无渲染落点（全屏错误卡仅在 model===null）：
+          生成成功但刷新失败必须显式告警，防统计与画布静默陈旧 */}
+      {loadError !== null && (
+        <div className="status-card status-error" role="alert">
+          <div>
+            <strong>图谱刷新失败</strong>
+            <p>{loadError}</p>
+          </div>
+          <button type="button" className="button-secondary" onClick={() => void loadGraph()}>
+            重试读取
+          </button>
+        </div>
+      )}
 
       <div className="graph-controls">
         <form
@@ -343,13 +451,14 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
   );
 }
 
-function GraphHeader() {
+function GraphHeader({ action }: { action?: ReactNode }) {
   return (
     <div className="graph-header">
       <div>
         <h2 id="graph-title">图谱</h2>
-        <p className="hint">实体关系只读画布；点击节点查看详情，服务端保证查询有界。</p>
+        <p className="hint">点击节点查看详情，服务端保证查询有界。</p>
       </div>
+      {action !== undefined && <div className="graph-header-actions">{action}</div>}
     </div>
   );
 }

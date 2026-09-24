@@ -204,6 +204,34 @@ export type GraphSearchResult = GraphSubgraph & {
   limit: number;
 };
 
+export type GraphExtractorInfo = {
+  id: string;
+  model: string;
+  prompt_version: string;
+};
+
+// 与 POST /api/graph 响应（siku graph --json）同构的构建体检报告
+export type GraphBuildResponse = {
+  chunks: number;
+  nodes: number;
+  edges: number;
+  communities: number;
+  ambiguous_entities: number;
+  cache_hits: number;
+  llm_calls: number;
+  warnings: string[];
+  empty_corpus: boolean;
+  extractor: GraphExtractorInfo;
+};
+
+// 与 POST /api/wiki 响应（siku wiki --json）同构的生成统计
+export type WikiGenerateResponse = {
+  entries: number;
+  cache_hits: number;
+  llm_calls: number;
+  empty_graph: boolean;
+};
+
 export type WikiEntrySummary = {
   community_id: number;
   title: string;
@@ -399,6 +427,17 @@ export async function getGraphStats(): Promise<GraphStats> {
   return parseResponse<GraphStats>(await fetch("/api/graph/stats"));
 }
 
+// 走服务端默认幂等缓存路径（等价 `siku graph` 默认行为），不暴露 rebuild/目录覆写
+export async function buildGraph(): Promise<GraphBuildResponse> {
+  return parseResponse<GraphBuildResponse>(
+    await fetch("/api/graph", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }),
+  );
+}
+
 export async function getGraphOverview(limit: number): Promise<GraphSubgraph> {
   return parseResponse<GraphSubgraph>(await fetch(`/api/graph/overview?limit=${limit}`));
 }
@@ -425,4 +464,15 @@ export async function getWikiEntries(): Promise<WikiEntries> {
 
 export async function getWikiEntry(communityId: number): Promise<WikiEntryDetail> {
   return parseResponse<WikiEntryDetail>(await fetch(`/api/wiki/entries/${communityId}`));
+}
+
+// 全量幂等生成（等价 `siku wiki`），图谱产物缺失时后端返回 graph_artifacts_missing
+export async function generateWiki(): Promise<WikiGenerateResponse> {
+  return parseResponse<WikiGenerateResponse>(
+    await fetch("/api/wiki", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    }),
+  );
 }

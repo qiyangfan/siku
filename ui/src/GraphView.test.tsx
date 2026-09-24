@@ -145,15 +145,231 @@ describe("图谱视图", () => {
     expect(onAskEntity).toHaveBeenCalledWith("Alpha Kernel");
   });
 
-  it("图谱未构建时给出可行动的空态提示", async () => {
+  it("图谱未构建时空态提供构建入口，成功后自动加载画布", async () => {
+    const buildReport = {
+      chunks: 2,
+      nodes: 2,
+      edges: 1,
+      communities: 1,
+      ambiguous_entities: 0,
+      cache_hits: 0,
+      llm_calls: 3,
+      warnings: [],
+      empty_corpus: false,
+      extractor: { id: "llm-graph", model: "qwen-plus", prompt_version: "v1" },
+    };
+    let statsCalls = 0;
+    const user = userEvent.setup();
     mockFetchByRoutes({
-      "/api/graph/stats": () =>
-        jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false),
+      "/api/graph/stats": () => {
+        statsCalls += 1;
+        return statsCalls === 1
+          ? jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false)
+          : jsonResponse(stats);
+      },
       "/api/graph/overview": () => jsonResponse(overview),
+      "/api/graph": () => jsonResponse(buildReport),
     });
 
     render(<GraphView onAskEntity={vi.fn()} />);
     expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
-    expect(screen.getByText(/siku graph/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "构建图谱" }));
+    expect(await screen.findByTestId("graph-canvas-stub")).toBeInTheDocument();
+    expect(
+      screen.getByText(/图谱已构建：2 个实体、1 条关系、1 个社区（LLM 调用 3 次）/),
+    ).toBeInTheDocument();
+  });
+
+  it("语料为空时构建如实反馈并刷新为空图谱", async () => {
+    const buildReport = {
+      chunks: 0,
+      nodes: 0,
+      edges: 0,
+      communities: 0,
+      ambiguous_entities: 0,
+      cache_hits: 0,
+      llm_calls: 0,
+      warnings: [],
+      empty_corpus: true,
+      extractor: { id: "llm-graph", model: "qwen-plus", prompt_version: "v1" },
+    };
+    const emptyStats: GraphStats = { nodes: 0, edges: 0, communities: 0, types: {} };
+    const emptyOverview = {
+      nodes: [],
+      edges: [],
+      truncated: false,
+      total_nodes: 0,
+      total_edges: 0,
+    };
+    let statsCalls = 0;
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/graph/stats": () => {
+        statsCalls += 1;
+        // 构建前产物缺失（404），空语料构建后落了空产物（200 零值）
+        return statsCalls === 1
+          ? jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false)
+          : jsonResponse(emptyStats);
+      },
+      "/api/graph/overview": () => jsonResponse(emptyOverview),
+      "/api/graph": () => jsonResponse(buildReport),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} />);
+    expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "构建图谱" }));
+    // 空语料同样落空产物：视图必须刷新到与磁盘一致（空画布），不得残留空态卡
+    expect(await screen.findByTestId("graph-canvas-stub")).toBeInTheDocument();
+    expect(screen.getByText(/全图 0 个实体、0 条关系/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/语料为空：图谱为空、无可展示内容；请先在「资料库」导入笔记。/),
+    ).toBeInTheDocument();
+  });
+
+  it("空态构建失败时展示后端中文信息并恢复按钮", async () => {
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/graph/stats": () =>
+        jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false),
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/graph": () =>
+        jsonResponse(
+          { code: "llm_not_configured", message: "尚未配置 LLM API key，请在设置中补全。" },
+          false,
+        ),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} />);
+    expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "构建图谱" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("尚未配置 LLM API key");
+    expect(screen.getByRole("button", { name: "构建图谱" })).toBeEnabled();
+  });
+
+  it("已建态可更新图谱：幂等缓存路径并在完成后刷新状态行", async () => {
+    const buildReport = {
+      chunks: 2,
+      nodes: 2,
+      edges: 1,
+      communities: 1,
+      ambiguous_entities: 0,
+      cache_hits: 5,
+      llm_calls: 0,
+      warnings: [],
+      empty_corpus: false,
+      extractor: { id: "llm-graph", model: "qwen-plus", prompt_version: "v1" },
+    };
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/graph/stats": () => jsonResponse(stats),
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/graph": () => jsonResponse(buildReport),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} />);
+    await screen.findByTestId("graph-canvas-stub");
+
+    await user.click(screen.getByRole("button", { name: "更新图谱" }));
+    expect(
+      await screen.findByText(/图谱已构建：2 个实体、1 条关系、1 个社区（LLM 调用 0 次）/),
+    ).toBeInTheDocument();
+  });
+
+  it("已建态更新图谱失败时展示后端中文信息并恢复按钮", async () => {
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/graph/stats": () => jsonResponse(stats),
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/graph": () =>
+        jsonResponse(
+          { code: "llm_not_configured", message: "尚未配置 LLM API key，请在设置中补全。" },
+          false,
+        ),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} />);
+    await screen.findByTestId("graph-canvas-stub");
+
+    await user.click(screen.getByRole("button", { name: "更新图谱" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("尚未配置 LLM API key");
+    expect(screen.getByRole("button", { name: "更新图谱" })).toBeEnabled();
+    expect(screen.getByTestId("graph-canvas-stub")).toBeInTheDocument();
+  });
+
+  it("已建态更新成功但刷新失败时展示告警卡且画布保留", async () => {
+    let statsCalls = 0;
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/graph/stats": () => {
+        statsCalls += 1;
+        return statsCalls === 1
+          ? jsonResponse(stats)
+          : jsonResponse({ code: "internal_error", message: "服务内部错误。" }, false);
+      },
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/graph": () =>
+        jsonResponse({
+          chunks: 2,
+          nodes: 2,
+          edges: 1,
+          communities: 1,
+          ambiguous_entities: 0,
+          cache_hits: 5,
+          llm_calls: 0,
+          warnings: [],
+          empty_corpus: false,
+          extractor: { id: "llm-graph", model: "qwen-plus", prompt_version: "v1" },
+        }),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} />);
+    await screen.findByTestId("graph-canvas-stub");
+
+    await user.click(screen.getByRole("button", { name: "更新图谱" }));
+    expect(await screen.findByText("图谱刷新失败")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试读取" })).toBeInTheDocument();
+    // 画布保留：刷新失败不得清空已建态
+    expect(screen.getByTestId("graph-canvas-stub")).toBeInTheDocument();
+  });
+
+  it("空态构建成功但刷新失败时同时展示构建结果与读取告警", async () => {
+    const buildReport = {
+      chunks: 0,
+      nodes: 0,
+      edges: 0,
+      communities: 0,
+      ambiguous_entities: 0,
+      cache_hits: 0,
+      llm_calls: 0,
+      warnings: [],
+      empty_corpus: true,
+      extractor: { id: "llm-graph", model: "qwen-plus", prompt_version: "v1" },
+    };
+    let statsCalls = 0;
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/graph/stats": () => {
+        statsCalls += 1;
+        return statsCalls === 1
+          ? jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false)
+          : jsonResponse({ code: "internal_error", message: "服务内部错误。" }, false);
+      },
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/graph": () => jsonResponse(buildReport),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} />);
+    expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "构建图谱" }));
+    // 构建成功 note 与刷新失败告警必须同屏可见，不得互相覆盖
+    expect(
+      await screen.findByText(/语料为空：图谱为空、无可展示内容；请先在「资料库」导入笔记。/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("服务内部错误。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试读取" })).toBeInTheDocument();
   });
 });
