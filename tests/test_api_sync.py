@@ -299,9 +299,9 @@ def test_scheduler_restart_does_not_resurrect_old_thread(tmp_path: Path) -> None
     time.sleep(2.0)
     tail = idents[2:]
     assert tail, "重启后的调度线程未执行检测"
-    assert all(
-        ident != old_ident for ident in tail
-    ), f"老线程复活成双循环：tail={tail}, old={old_ident}"
+    assert all(ident != old_ident for ident in tail), (
+        f"老线程复活成双循环：tail={tail}, old={old_ident}"
+    )
     scheduler.stop()
 
 

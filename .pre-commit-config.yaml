@@ -14,7 +14,7 @@ repos:
 
   # ruff：唯一的 lint/format 权威（与 pyproject.toml 配置联动）
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+    rev: v0.16.8
     hooks:
       - id: ruff
         args: [--fix]
