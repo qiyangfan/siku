@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
@@ -58,6 +58,44 @@ function response(payload: unknown, ok = true) {
   return Promise.resolve({ ok, json: () => Promise.resolve(payload) } as Response);
 }
 
+const emptyChannelView = {
+  base_url: null,
+  model: null,
+  api_key_env: null,
+  api_key_set: false,
+  env_overrides: [],
+};
+
+function makeSettings(ready: boolean, missing: string[]) {
+  return {
+    config_path: "/tmp/config.toml",
+    llm: { ...emptyChannelView },
+    embedding: { ...emptyChannelView },
+    rerank: { ...emptyChannelView },
+    ask_readiness: { ready, missing },
+  };
+}
+
+const NOT_READY_SETTINGS = makeSettings(false, [
+  "llm.api_key",
+  "embedding.base_url",
+  "embedding.model",
+]);
+const READY_SETTINGS = makeSettings(true, []);
+
+function urlDispatch(routes: Record<string, Promise<Response> | (() => Promise<Response>)>) {
+  return (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+    const route = routes[path];
+    if (!route) {
+      throw new Error(`unexpected fetch: ${url}`);
+    }
+    // 路由值允许直接给响应或给工厂（如需每次新建的 reject 场景）
+    return typeof route === "function" ? route() : route;
+  };
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -67,6 +105,7 @@ describe("本地问答界面", () => {
   it("提交问题后展示回答并可展开引用", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => response({ status: "ok", version: "0.1.0" }))
+      .mockImplementationOnce(() => response(READY_SETTINGS))
       .mockImplementationOnce(() => response(answer));
     const user = userEvent.setup();
 
@@ -87,6 +126,9 @@ describe("本地问答界面", () => {
       const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
       if (path === "/api/health") {
         return response({ status: "ok", version: "0.1.0" });
+      }
+      if (path === "/api/settings") {
+        return response(READY_SETTINGS);
       }
       if (path === "/api/ask") {
         return response(answer);
@@ -136,6 +178,9 @@ describe("本地问答界面", () => {
       const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
       if (path === "/api/health") {
         return response({ status: "ok", version: "0.1.0" });
+      }
+      if (path === "/api/settings") {
+        return response(READY_SETTINGS);
       }
       if (path === "/api/ask") {
         return new Promise((resolve) => {
@@ -188,6 +233,7 @@ describe("本地问答界面", () => {
   it("展示证据不足，不渲染伪造引用", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => response({ status: "ok", version: "0.1.0" }))
+      .mockImplementationOnce(() => response(READY_SETTINGS))
       .mockImplementationOnce(() =>
         response({ ...answer, insufficient_evidence: true, answer: "没有足够证据。", citations: [] }),
       );
@@ -205,6 +251,7 @@ describe("本地问答界面", () => {
   it("展示稳定错误并支持重试", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => response({ status: "ok", version: "0.1.0" }))
+      .mockImplementationOnce(() => response(READY_SETTINGS))
       .mockImplementationOnce(() => response({ code: "llm_not_configured", message: "请配置 LLM。" }, false))
       .mockImplementationOnce(() => response(answer));
     const user = userEvent.setup();
@@ -221,6 +268,7 @@ describe("本地问答界面", () => {
   it("对格式错误的 API 错误响应使用安全的兜底文案", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockImplementationOnce(() => response({ status: "ok", version: "0.1.0" }))
+      .mockImplementationOnce(() => response(READY_SETTINGS))
       .mockImplementationOnce(() => response(null, false));
     const user = userEvent.setup();
 
@@ -242,6 +290,9 @@ describe("图谱实体联动问答", () => {
       expect(path).not.toBe("/api/ask");
         if (path === "/api/health") {
           return response({ status: "ok", version: "0.1.0" });
+        }
+        if (path === "/api/settings") {
+          return response(READY_SETTINGS);
         }
         if (path === "/api/graph/stats") {
           return response({ nodes: 1, edges: 0, communities: 1, types: { 系统: 1 } });
@@ -281,5 +332,131 @@ describe("图谱实体联动问答", () => {
     expect(textarea.value).toBe("请介绍「Alpha Kernel」。");
     // 预填不自动发送：问答仍处空闲态，未触发 /api/ask（mock 内逐请求断言 path != /api/ask）
     expect(screen.getByRole("button", { name: "提交问题" })).toBeInTheDocument();
+  });
+});
+
+describe("问答就绪门控", () => {
+  it("未就绪时置灰提交、列出缺失项并引导去设置", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      urlDispatch({
+        "/api/health": response({ status: "ok", version: "0.1.0" }),
+        "/api/settings": response(NOT_READY_SETTINGS),
+      }),
+    );
+
+    render(<App />);
+    const submit = await screen.findByRole("button", { name: "提交问题" });
+    await waitFor(() => expect(submit).toBeDisabled());
+    expect(screen.getByText("问答尚未就绪——模型端点未配置")).toBeInTheDocument();
+    expect(
+      screen.getByText(/还差：LLM 通道的 API key、embedding 通道的 base_url、embedding 通道的 model。/),
+    ).toBeInTheDocument();
+
+    // 输入保持可用：用户可先写问题，Enter 也不触发问答
+    await user.type(screen.getByLabelText("你的问题"), "先写好的问题");
+    expect(screen.getByLabelText("你的问题")).toHaveValue("先写好的问题");
+    await user.type(screen.getByLabelText("你的问题"), "{Enter}");
+    expect(screen.queryByRole("button", { name: "检索与回答中…" })).not.toBeInTheDocument();
+
+    // 引导入口直达设置视图
+    await user.click(screen.getByRole("button", { name: "去设置" }));
+    expect(await screen.findByRole("heading", { name: "模型供给设置" })).toBeInTheDocument();
+  });
+
+  it("配置补齐后回到问答视图，提交恢复可用", async () => {
+    const user = userEvent.setup();
+    let settingsCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      if (path === "/api/health") {
+        return response({ status: "ok", version: "0.1.0" });
+      }
+      if (path === "/api/settings") {
+        // 首次（问答视图挂载）未就绪；去设置页再回问答后内核视角已就绪
+        settingsCalls += 1;
+        return response(settingsCalls === 1 ? NOT_READY_SETTINGS : READY_SETTINGS);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    render(<App />);
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "提交问题" })).toBeDisabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "去设置" }));
+    expect(await screen.findByRole("heading", { name: "模型供给设置" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "问答" }));
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "提交问题" })).toBeEnabled(),
+    );
+    expect(screen.queryByText("问答尚未就绪——模型端点未配置")).not.toBeInTheDocument();
+  });
+
+  it("保存设置成功后经 PUT 响应立即刷新就绪状态", async () => {
+    const user = userEvent.setup();
+    let getCalls = 0;
+    const readyWrite = { ...READY_SETTINGS, warnings: [] };
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      ((input: string | URL | Request, init?: RequestInit) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        if (path === "/api/health") {
+          return response({ status: "ok", version: "0.1.0" });
+        }
+        if (path === "/api/settings") {
+          if (init?.method === "PUT") {
+            // 保存响应直接携带最新就绪状态：App 经 onSaved 免二次请求刷新
+            return response(readyWrite);
+          }
+          // GET：App 挂载首查未就绪；保存落盘后（设置页挂载、回问答）均为就绪
+          getCalls += 1;
+          return response(getCalls === 1 ? NOT_READY_SETTINGS : READY_SETTINGS);
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as unknown as typeof fetch,
+    );
+
+    render(<App />);
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "提交问题" })).toBeDisabled(),
+    );
+    await user.click(screen.getByRole("button", { name: "去设置" }));
+    const llmGroup = await screen.findByRole("group", { name: "LLM 通道" });
+    const embedGroup = screen.getByRole("group", { name: "embedding 通道" });
+    await user.type(within(llmGroup).getByLabelText("api_key（只写不回显）"), "sk-key");
+    await user.type(within(embedGroup).getByLabelText("base_url"), "http://127.0.0.1:11434/v1");
+    await user.type(within(embedGroup).getByLabelText("model"), "bge-m3");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(await screen.findByText("设置已保存，无需重启即可生效。")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "问答" }));
+    await waitFor(
+      () => expect(screen.getByRole("button", { name: "提交问题" })).toBeEnabled(),
+    );
+    expect(screen.queryByText("问答尚未就绪——模型端点未配置")).not.toBeInTheDocument();
+  });
+
+  it("就绪状态获取失败时不锁死提交（fail-open）", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      urlDispatch({
+        "/api/health": response({ status: "ok", version: "0.1.0" }),
+        "/api/settings": () => Promise.reject(new Error("settings unavailable")),
+        "/api/ask": response({ code: "model_not_available", message: "端点配置指引。" }, false),
+      }),
+    );
+
+    render(<App />);
+    const submit = await screen.findByRole("button", { name: "提交问题" });
+    await waitFor(() => expect(submit).toBeEnabled());
+    expect(screen.queryByText("问答尚未就绪——模型端点未配置")).not.toBeInTheDocument();
+
+    // 提交照常发出，失败走既有错误路径展示 API 中文 message
+    await user.type(screen.getByLabelText("你的问题"), "照常提交");
+    await user.click(submit);
+    expect(await screen.findByText("端点配置指引。")).toBeInTheDocument();
   });
 });

@@ -1144,6 +1144,28 @@
         "title": "AskCitationResponse",
         "description": "问答回答中的来源引用。"
       },
+      "AskReadinessView": {
+        "properties": {
+          "ready": {
+            "type": "boolean",
+            "title": "Ready"
+          },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Missing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ready",
+          "missing"
+        ],
+        "title": "AskReadinessView",
+        "description": "问答就绪状态：missing 为稳定的 `<channel>.<field>` 机器 token（无凭证明文）。\n\n判定口径与请求期通道解析同源（rerank 可选不阻塞）；中文话术由 UI 依据\ntoken 生成，内核不承载展示文案。"
+      },
       "AskRequest": {
         "properties": {
           "question": {
@@ -2407,6 +2429,9 @@
           },
           "rerank": {
             "$ref": "#/components/schemas/ChannelSettingsView"
+          },
+          "ask_readiness": {
+            "$ref": "#/components/schemas/AskReadinessView"
           }
         },
         "type": "object",
@@ -2414,10 +2439,11 @@
           "config_path",
           "llm",
           "embedding",
-          "rerank"
+          "rerank",
+          "ask_readiness"
         ],
         "title": "SettingsResponse",
-        "description": "三通道文件层掩码视图（GET /api/settings 响应）。"
+        "description": "三通道文件层掩码视图 + 问答就绪状态（GET /api/settings 响应）。"
       },
       "SettingsTestRequest": {
         "properties": {
@@ -2560,6 +2586,9 @@
           "rerank": {
             "$ref": "#/components/schemas/ChannelSettingsView"
           },
+          "ask_readiness": {
+            "$ref": "#/components/schemas/AskReadinessView"
+          },
           "warnings": {
             "items": {
               "type": "string"
@@ -2574,6 +2603,7 @@
           "llm",
           "embedding",
           "rerank",
+          "ask_readiness",
           "warnings"
         ],
         "title": "SettingsWriteResponse",

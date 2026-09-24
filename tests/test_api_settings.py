@@ -103,6 +103,39 @@ class TestGetSettings:
         assert payload["llm"]["env_overrides"] == ["api_key"]
         assert payload["embedding"]["env_overrides"] == ["base_url"]
 
+    def test_ask_readiness_lists_missing_tokens_when_unconfigured(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        assert payload["ask_readiness"]["ready"] is False
+        assert payload["ask_readiness"]["missing"] == [
+            "llm.api_key",
+            "embedding.base_url",
+            "embedding.model",
+        ]
+
+    def test_ask_readiness_ready_when_env_layer_satisfies_channels(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """判定跨层生效：文件层为空、env 层齐备也必须就绪（与请求期解析同源）。"""
+        monkeypatch.setenv("SIKU_LLM_API_KEY", "env-key")
+        monkeypatch.setenv("SIKU_EMBEDDING_BASE_URL", "http://127.0.0.1:11434/v1")
+        monkeypatch.setenv("SIKU_EMBEDDING_MODEL", "bge-m3")
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        assert payload["ask_readiness"] == {"ready": True, "missing": []}
+
+    def test_ask_readiness_ready_after_full_file_config(self, config_path: Path) -> None:
+        save_config(
+            ModelSupplyConfig(
+                llm=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding=ChannelValues(base_url="http://127.0.0.1:11434/v1", model="bge-m3"),
+            )
+        )
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        assert payload["ask_readiness"]["ready"] is True
+        assert payload["ask_readiness"]["missing"] == []
+
 
 class TestPutSettings:
     def test_put_writes_channels_and_response_stays_masked(self, config_path: Path) -> None:
@@ -129,6 +162,22 @@ class TestPutSettings:
         assert stored.llm.api_key is not None
         assert stored.llm.api_key.get_secret_value() == SECRET
         assert stored.embedding.model == "model-b"
+
+    def test_put_response_carries_latest_ask_readiness(self, config_path: Path) -> None:
+        """保存响应直接携带最新就绪状态：UI 免二次请求即可刷新门控。"""
+        client = TestClient(create_app())
+        before = client.get("/api/settings").json()["ask_readiness"]
+        assert before["ready"] is False
+
+        response = client.put(
+            "/api/settings",
+            json={
+                "llm": {"api_key": SECRET},
+                "embedding": EMBED_CHANNEL_B_VALUES,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["ask_readiness"] == {"ready": True, "missing": []}
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX 权限位语义")
     def test_put_keeps_file_mode_0600(self, config_path: Path) -> None:

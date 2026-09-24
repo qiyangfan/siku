@@ -175,13 +175,25 @@ class ChannelSettingsView(BaseModel):
     env_overrides: list[str]
 
 
+class AskReadinessView(BaseModel):
+    """问答就绪状态：missing 为稳定的 `<channel>.<field>` 机器 token（无凭证明文）。
+
+    判定口径与请求期通道解析同源（rerank 可选不阻塞）；中文话术由 UI 依据
+    token 生成，内核不承载展示文案。
+    """
+
+    ready: bool
+    missing: list[str]
+
+
 class SettingsResponse(BaseModel):
-    """三通道文件层掩码视图（GET /api/settings 响应）。"""
+    """三通道文件层掩码视图 + 问答就绪状态（GET /api/settings 响应）。"""
 
     config_path: str
     llm: ChannelSettingsView
     embedding: ChannelSettingsView
     rerank: ChannelSettingsView
+    ask_readiness: AskReadinessView
 
 
 class ChannelSettingsUpdate(BaseModel):

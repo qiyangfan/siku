@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from siku.model_supply import (
     ChannelValues,
     ModelSupplyConfig,
+    ask_readiness,
     base_url_host,
     channel_slug,
     load_config,
@@ -262,3 +263,80 @@ class TestChannelNaming:
             "https://api.siliconflow.cn/v1", "BAAI/bge-reranker-v2-m3", rerank_active=True
         )
         assert SECRET not in slug
+
+
+FULL_LLM = ChannelValues(api_key=SecretStr(SECRET))
+FULL_EMBEDDING = ChannelValues(base_url="http://127.0.0.1:11434/v1", model="bge-m3")
+
+
+class TestAskReadiness:
+    """问答就绪判定：与 resolve_* 同源的口径，缺失项用稳定 token 表达。"""
+
+    def test_empty_config_lists_all_missing_tokens(self, tmp_path: Path) -> None:
+        readiness = ask_readiness(load_config(tmp_path / "absent.toml"))
+        assert readiness.ready is False
+        assert readiness.missing == ("llm.api_key", "embedding.base_url", "embedding.model")
+
+    def test_env_layer_alone_satisfies_readiness(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIKU_LLM_API_KEY", SECRET)
+        monkeypatch.setenv("SIKU_EMBEDDING_BASE_URL", "http://127.0.1:9999/v1")
+        monkeypatch.setenv("SIKU_EMBEDDING_MODEL", "bge-m3")
+        readiness = ask_readiness(load_config(tmp_path / "absent.toml"))
+        assert readiness.ready is True
+        assert readiness.missing == ()
+
+    def test_file_layer_plaintext_key_satisfies_readiness(self, tmp_path: Path) -> None:
+        config = ModelSupplyConfig(llm=FULL_LLM, embedding=FULL_EMBEDDING)
+        readiness = ask_readiness(config)
+        assert readiness.ready is True
+        assert readiness.missing == ()
+
+    def test_llm_credentials_via_api_key_env_reference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config = ModelSupplyConfig(
+            llm=ChannelValues(api_key_env="SIKU_LLM_API_KEY"),
+            embedding=FULL_EMBEDDING,
+        )
+        assert ask_readiness(config).missing == ("llm.api_key",)
+        monkeypatch.setenv("SIKU_LLM_API_KEY", SECRET)
+        assert ask_readiness(config).ready is True
+
+    def test_partial_embedding_lists_only_missing_field(self, tmp_path: Path) -> None:
+        config = ModelSupplyConfig(
+            llm=FULL_LLM,
+            embedding=ChannelValues(base_url="http://127.0.0.1:11434/v1"),
+        )
+        readiness = ask_readiness(config)
+        assert readiness.missing == ("embedding.model",)
+
+    def test_llm_base_url_and_model_have_defaults_so_never_missing(self, tmp_path: Path) -> None:
+        """llm 端点有兼容缺省（DeepSeek），缺 key 才是唯一缺项表达。"""
+        config = ModelSupplyConfig(embedding=FULL_EMBEDDING)
+        readiness = ask_readiness(config)
+        assert readiness.missing == ("llm.api_key",)
+
+    def test_rerank_never_blocks_ask(self, tmp_path: Path) -> None:
+        """rerank 单独齐备不得让 missing 出现 rerank 条目（可选项不阻塞）。"""
+        config = ModelSupplyConfig(
+            rerank=ChannelValues(base_url="https://api.siliconflow.cn/v1", model="rerank")
+        )
+        readiness = ask_readiness(config)
+        assert readiness.ready is False
+        assert all(not token.startswith("rerank.") for token in readiness.missing)
+
+    def test_blank_fields_are_treated_as_unset(self, tmp_path: Path) -> None:
+        config = ModelSupplyConfig(
+            llm=ChannelValues(api_key=SecretStr("  ")),
+            embedding=ChannelValues(base_url="  ", model="bge-m3"),
+        )
+        readiness = ask_readiness(config)
+        assert readiness.missing == ("llm.api_key", "embedding.base_url")
+
+    def test_readiness_never_leaks_key_material(self, tmp_path: Path) -> None:
+        config = ModelSupplyConfig(llm=FULL_LLM, embedding=FULL_EMBEDDING)
+        readiness = ask_readiness(config)
+        assert SECRET not in repr(readiness)
+        assert SECRET not in str(readiness.missing)

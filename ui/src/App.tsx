@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { askQuestion, type ApiError, type AskResponse, checkHealth } from "./api";
+import {
+  askQuestion,
+  type ApiError,
+  type AskReadiness,
+  type AskResponse,
+  checkHealth,
+  getSettings,
+} from "./api";
 import { BrowseView } from "./BrowseView";
 import { GraphView } from "./GraphView";
 import { LibraryView } from "./LibraryView";
@@ -20,6 +27,35 @@ const NAV_ITEMS: Array<{ name: ViewName; label: string }> = [
   { name: "settings", label: "设置" },
 ];
 
+// ask_readiness.missing 的稳定 token → 中文说明（展示层职责，内核只出机器 token）
+const MISSING_LABELS: Record<string, string> = {
+  "llm.api_key": "LLM 通道的 API key",
+  "embedding.base_url": "embedding 通道的 base_url",
+  "embedding.model": "embedding 通道的 model",
+};
+
+function describeMissing(missing: string[]): string {
+  const parts = missing.map((token) => MISSING_LABELS[token] ?? token);
+  return `还差：${parts.join("、")}。`;
+}
+
+// 就绪字段缺失或形状非法（旧内核、代理改写）一律按「不可得」处理：fail-open。
+// ready=false 但 missing 为空属后端不应产生的矛盾形状，同样按不可得对待，
+// 避免置灰后展示「还差：。」的空指引。
+function normalizeReadiness(value: unknown): AskReadiness | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const candidate = value as Partial<AskReadiness>;
+  if (typeof candidate.ready !== "boolean" || !Array.isArray(candidate.missing)) {
+    return null;
+  }
+  if (!candidate.ready && candidate.missing.length === 0) {
+    return null;
+  }
+  return { ready: candidate.ready, missing: candidate.missing };
+}
+
 function isApiError(error: unknown): error is ApiError {
   return (
     typeof error === "object" &&
@@ -35,6 +71,7 @@ function App() {
   const [view, setView] = useState<ViewName>("ask");
   const [question, setQuestion] = useState("");
   const [health, setHealth] = useState<HealthState>("loading");
+  const [readiness, setReadiness] = useState<AskReadiness | null>(null);
   const [askState, setAskState] = useState<AskState>("idle");
   const [answer, setAnswer] = useState<AskResponse | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -58,6 +95,24 @@ function App() {
     void refreshHealth();
   }, [refreshHealth]);
 
+  // 就绪判定在内核（ask_readiness），问答视图可见时拉取：覆盖初次进入与
+  // 从设置页/手工编辑 config.toml 回到问答的场景。获取失败置 null → fail-open
+  // 不置灰，保留提交后错误提示的既有兜底路径。
+  const refreshReadiness = useCallback(async () => {
+    try {
+      const settings = await getSettings();
+      setReadiness(normalizeReadiness(settings.ask_readiness));
+    } catch {
+      setReadiness(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view === "ask") {
+      void refreshReadiness();
+    }
+  }, [view, refreshReadiness]);
+
   useEffect(() => {
     if (focusQuestion && view === "ask") {
       inputRef.current?.focus();
@@ -78,7 +133,14 @@ function App() {
     setFocusQuestion(true);
   }, []);
 
+  // 未就绪门控：置灰提交 + 引导卡片；readiness 为 null（加载中/获取失败）不阻塞
+  const askBlocked = readiness !== null && !readiness.ready;
+
   const submit = async () => {
+    // 置灰之外的第二道校验：拦截 Enter 键等绕过按钮的提交路径
+    if (askBlocked) {
+      return;
+    }
     const normalized = question.trim();
     if (!normalized) {
       setLocalError("请输入问题后再提交。");
@@ -153,7 +215,11 @@ function App() {
           ))}
         </nav>
 
-        {view === "settings" && <SettingsView />}
+        {view === "settings" && (
+          <SettingsView
+            onSaved={(settings) => setReadiness(normalizeReadiness(settings.ask_readiness))}
+          />
+        )}
 
         {view === "library" && <LibraryView />}
 
@@ -186,9 +252,9 @@ function App() {
           />
           <div className="question-footer">
             <p id="question-hint" className="hint">
-              Enter 提交 · Shift + Enter 换行
+              {askBlocked ? "配置模型端点后即可提问" : "Enter 提交 · Shift + Enter 换行"}
             </p>
-            <button type="submit" disabled={askState === "loading"}>
+            <button type="submit" disabled={askState === "loading" || askBlocked}>
               {askState === "loading" ? "检索与回答中…" : "提交问题"}
             </button>
           </div>
@@ -198,6 +264,25 @@ function App() {
             </p>
           )}
         </form>
+
+        {askBlocked && readiness && (
+          <div className="status-card status-warning" role="status">
+            <div>
+              <strong>问答尚未就绪——模型端点未配置</strong>
+              <p>
+                {describeMissing(readiness.missing)}
+                配置保存后免重启生效，回到本页即可提交问题。
+              </p>
+            </div>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={() => setView("settings")}
+            >
+              去设置
+            </button>
+          </div>
+        )}
 
         {health === "offline" && (
           <div className="status-card status-warning" role="status">

@@ -86,6 +86,17 @@ def map_ask_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             "llm_provider_error",
             "LLM 未返回可验证的问答结果：请检查配置后重试。",
         )
+    if isinstance(exc, ModelNotAvailableError):
+        # HTTP 面专属文案：桌面用户没有 CLI 语境，指引「设置」页而非
+        # config.toml 路径与命令行参数；CLI 仍走 map_domain_error 的既有指引。
+        # 措辞保留「或不可用」对冲：该错误类同时承载配置缺失与凭证被拒
+        # （401/403），断言式「未配置」对后者会误导（既有分型缺陷，另行立项）。
+        return ErrorMapping(
+            503,
+            "model_not_available",
+            "问答所需的模型端点未配置或不可用：请到「设置」页检查 embedding 通道的 "
+            "base_url 与 model、LLM 通道的 API key，保存后免重启生效，再回到问答重试。",
+        )
     return map_domain_error(exc, api_key_env=api_key_env)
 
 

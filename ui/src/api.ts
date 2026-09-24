@@ -42,11 +42,18 @@ export type ChannelSettingsView = {
   env_overrides: string[];
 };
 
+export type AskReadiness = {
+  ready: boolean;
+  // 稳定机器 token（如 "llm.api_key"），中文话术由界面生成
+  missing: string[];
+};
+
 export type SettingsResponse = {
   config_path: string;
   llm: ChannelSettingsView;
   embedding: ChannelSettingsView;
   rerank: ChannelSettingsView;
+  ask_readiness: AskReadiness;
 };
 
 export type SettingsWriteResponse = SettingsResponse & {

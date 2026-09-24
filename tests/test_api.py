@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from graph_fakes import FakeGraphExtractor
 from siku.api.app import create_app
 from siku.api.contract import DEFAULT_SNAPSHOT_PATH
-from siku.api.messages import map_domain_error
+from siku.api.messages import map_domain_error, retrieval_error_message
 from siku.graph.errors import (
     GraphArtifactsMissingError,
     GraphArtifactsStaleError,
@@ -309,6 +309,30 @@ def test_ask_validation_and_provider_contract_errors(
     assert "AnswerOutputError" not in provider_error.text
     assert "request_id" not in provider_error.json()
     assert "API ask rejected request: request_id=" in caplog.text
+
+
+def test_ask_model_not_available_maps_to_settings_guidance(tmp_path: Path) -> None:
+    """问答路径的 model_not_available 文案必须 UI 导向：引导设置页，不带 CLI 指引。"""
+    client = build_test_app(
+        tmp_path,
+        search_service=FakeSearchService(error=ModelNotAvailableError("embedding endpoint")),
+        answer_provider=FakeAnswerProvider("unused"),
+    )
+    response = client.post("/api/ask", json={"question": "问题"})
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["code"] == "model_not_available"
+    assert "设置" in payload["message"]
+    assert "config.toml" not in payload["message"]
+    assert "--embedding-base-url" not in payload["message"]
+
+
+def test_cli_model_not_available_guidance_stays_cli_oriented() -> None:
+    """CLI 路径沿用 map_domain_error 的既有指引（config.toml 路径 + 参数示例）。"""
+    message = retrieval_error_message(ModelNotAvailableError("embedding endpoint"))
+    assert "config.toml" in message
+    assert "--embedding-base-url" in message
 
 
 def test_ask_internal_value_error_is_not_mapped_as_invalid_request(tmp_path: Path) -> None:

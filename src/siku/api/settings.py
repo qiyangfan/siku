@@ -23,6 +23,7 @@ from pydantic_settings import BaseSettings
 from siku import model_supply
 from siku.api.messages import ErrorMapping, map_domain_error
 from siku.api.models import (
+    AskReadinessView,
     ChannelSettingsView,
     SettingsResponse,
     SettingsTestRequest,
@@ -40,6 +41,7 @@ from siku.model_supply import (
     LlmEnvSettings,
     ModelSupplyConfig,
     RerankEnvSettings,
+    ask_readiness,
     resolve_embedding_channel,
     resolve_llm_channel,
     resolve_rerank_channel,
@@ -89,7 +91,12 @@ def default_config_path() -> str:
 
 
 def masked_view(config: ModelSupplyConfig, config_path: str) -> SettingsResponse:
-    """把文件层配置渲染为掩码视图：key 不回显，env 覆盖字段逐通道标注。"""
+    """把文件层配置渲染为掩码视图：key 不回显，env 覆盖字段逐通道标注。
+
+    `ask_readiness` 是该响应唯一跨层（文件 + env）的字段：就绪判定必须按
+    请求期同一分层口径执行，掩码视图的文件层静止视角对它不适用。
+    """
+    readiness = ask_readiness(config)
     sections: dict[str, ChannelSettingsView] = {}
     for name in CHANNELS:
         channel = getattr(config, name)
@@ -106,6 +113,7 @@ def masked_view(config: ModelSupplyConfig, config_path: str) -> SettingsResponse
         llm=sections["llm"],
         embedding=sections["embedding"],
         rerank=sections["rerank"],
+        ask_readiness=AskReadinessView(ready=readiness.ready, missing=list(readiness.missing)),
     )
 
 

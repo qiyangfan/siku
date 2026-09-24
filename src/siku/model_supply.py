@@ -271,6 +271,47 @@ def _resolve_channel(
     )
 
 
+# ask_readiness.missing 的稳定 token 全集（<channel>.<field>，跨语言契约）
+MISSING_LLM_API_KEY = "llm.api_key"
+MISSING_EMBEDDING_BASE_URL = "embedding.base_url"
+MISSING_EMBEDDING_MODEL = "embedding.model"
+
+
+@dataclass(frozen=True)
+class AskReadiness:
+    """问答链路的模型供给就绪状态。
+
+    ``missing`` 是稳定的 ``<channel>.<field>`` 机器 token 契约（当前全集：
+    ``llm.api_key``、``embedding.base_url``、``embedding.model``），供 UI 与
+    API 消费方映射为中文指引；判定口径与请求期 ``resolve_*_channel`` 同源。
+    """
+
+    ready: bool
+    missing: tuple[str, ...]
+
+
+def ask_readiness(config: ModelSupplyConfig | None = None) -> AskReadiness:
+    """判定「现在发起问答，模型供给是否齐备」（BYOK，ADR-0009 分层口径）。
+
+    就绪 = llm 通道凭证可解析（base_url/model 有兼容缺省，不构成缺项）且
+    embedding 通道 base_url/model 三层合并非空；rerank 通道是可选项
+    （reranker=none 一等公民），永不进入 ``missing``。判定直接复用与请求期
+    相同的合并与凭证解析路径，保证「判定就绪而请求报未配置」不可能发生。
+    判定不含端点可达性（归连通性探测）与索引存在性（归 409 既有路径）。
+    """
+    supply = config if config is not None else load_config()
+    missing: list[str] = []
+    llm = resolve_llm_channel(config=supply)
+    if llm.resolve_api_key() is None:
+        missing.append(MISSING_LLM_API_KEY)
+    embedding = _resolve_channel(supply.embedding, EmbeddingEnvSettings, None)
+    if not embedding.base_url:
+        missing.append(MISSING_EMBEDDING_BASE_URL)
+    if not embedding.model:
+        missing.append(MISSING_EMBEDDING_MODEL)
+    return AskReadiness(ready=not missing, missing=tuple(missing))
+
+
 def resolve_llm_channel(
     cli: ChannelValues | None = None,
     *,
