@@ -32,7 +32,9 @@
   --radius-md: 0.875rem;
   --radius-lg: 1.25rem;
   --shadow-card: 0 0.75rem 2rem rgb(24 34 48 / 0.06);
-  --control-height: 2.75rem;
+  --control-height: 2.5rem;
+  /* 紧凑档：仅用于标签型按钮（chips），表单与动作控件一律用 --control-height */
+  --control-height-sm: 2rem;
   --content-max: 52rem;
 }
 
@@ -76,8 +78,11 @@ button:active:not(:disabled) {
 }
 
 button:disabled {
-  cursor: wait;
-  opacity: 0.62;
+  cursor: not-allowed;
+  /* 禁用降对比但保持白底与完整边界：与画布同色会让按钮「融进页面」显得矮一截 */
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-ink-faint);
 }
 
 button:focus-visible,
@@ -263,13 +268,13 @@ textarea::placeholder {
 
 .button-secondary {
   flex: 0 0 auto;
-  border: 0.0625rem solid currentColor;
-  background: transparent;
+  border: 0.0625rem solid var(--color-border-strong);
+  background: var(--color-surface);
   color: inherit;
 }
 
 .button-secondary:hover:not(:disabled) {
-  background: var(--color-surface-soft);
+  background: var(--color-canvas);
 }
 
 code {
@@ -465,18 +470,20 @@ code {
 
 .view-nav {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-bottom: var(--space-6);
 }
 
 .nav-tab {
-  min-height: 2.25rem;
+  min-height: var(--control-height);
   padding: 0 var(--space-4);
   border: 0.0625rem solid var(--color-border-strong);
   border-radius: 999px;
   background: var(--color-surface);
   color: var(--color-ink-soft);
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .nav-tab:hover:not(:disabled) {
@@ -581,6 +588,82 @@ code {
 .field-check input {
   width: 1rem;
   height: 1rem;
+}
+
+/* 凭证二选一分组：虚线框与普通字段区分，头部为分段单选 */
+.credential-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  border: 0.0625rem dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.credential-group .field {
+  margin: 0;
+}
+
+.credential-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+
+.credential-title {
+  font-size: var(--font-caption);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+/* 环境变量名等无空格长串在提示文本内也必须折行，不撑破容器 */
+.hint code {
+  overflow-wrap: anywhere;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 0.0625rem solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+
+.segmented-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  margin: 0;
+  padding: 0 var(--space-3);
+  font-size: var(--font-caption);
+  font-weight: 400;
+  letter-spacing: normal;
+  cursor: pointer;
+}
+
+.segmented-option + .segmented-option {
+  border-left: 0.0625rem solid var(--color-border-strong);
+}
+
+.segmented-option input {
+  width: 0.875rem;
+  height: 0.875rem;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.segmented-option:has(input:checked) {
+  background: var(--color-accent-wash);
+  color: var(--color-accent-strong);
+  font-weight: 700;
+}
+
+.segmented-option:has(input:focus-visible) {
+  outline: 0.1875rem solid var(--color-accent);
+  outline-offset: -0.1875rem;
 }
 
 .hint-warning {
@@ -753,8 +836,36 @@ code {
 
 .library-sync-header {
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* disclosure 开关：标题即按钮，chevron 表达开合方向；高度对齐全局控件 token */
+.library-sync-toggle {
+  align-self: flex-start;
+  min-height: var(--control-height);
+  margin-left: calc(-1 * var(--space-2));
+  padding: 0 var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--color-ink);
+  font-weight: 800;
+}
+
+.library-sync-toggle:hover:not(:disabled) {
+  background: var(--color-accent-wash);
+  color: var(--color-accent-strong);
+}
+
+.library-sync-chevron {
+  display: inline-block;
+  color: var(--color-ink-faint);
+  font-size: 1em;
+  transition: transform 160ms ease;
+}
+
+.library-sync-toggle[aria-expanded="false"] .library-sync-chevron {
+  transform: rotate(-90deg);
 }
 
 .library-sync-header .hint {
@@ -764,11 +875,12 @@ code {
 .library-sync-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  gap: var(--space-4);
+  padding: var(--space-4);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
+  box-shadow: var(--shadow-card);
 }
 
 .library-sync-add {
@@ -778,17 +890,63 @@ code {
   gap: var(--space-2);
 }
 
-.library-sync-add input[type="text"] {
+/* 面板输入框（路径、间隔）与按钮同一高度规范，避免行内高矮不一 */
+.library-sync-panel input[type="text"],
+.library-sync-panel input[type="number"] {
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: 0.0625rem solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
+}
+
+.library-sync-panel input[type="text"] {
   min-width: 0;
   flex: 1;
 }
 
-.library-sync-full {
+.library-sync-panel input[type="number"] {
+  width: 6.5rem;
+  flex: 0 0 auto;
+}
+
+.library-sync-panel input:focus-visible {
+  outline: 0.1875rem solid var(--color-accent);
+  outline-offset: 0.125rem;
+}
+
+.library-sync-panel input::placeholder {
+  color: var(--color-ink-faint);
+}
+
+/* 扫描设置区：一行一个语义组，文字只紧邻其所属控件，不在按钮之间穿插 */
+.library-sync-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.library-sync-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.library-sync-check {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
   color: var(--color-ink-soft);
   font-size: var(--font-caption);
+}
+
+.library-sync-check input {
+  width: 1rem;
+  height: 1rem;
 }
 
 .library-sync-list {
@@ -802,6 +960,7 @@ code {
 
 .library-sync-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) 0;
@@ -813,7 +972,8 @@ code {
 
 .library-sync-path {
   min-width: 0;
-  flex: 1;
+  /* 带最小 basis：窄屏放不下时间与操作按钮时，让它们折行而不是溢出 */
+  flex: 1 1 12rem;
   overflow: hidden;
   font-size: var(--font-caption);
   text-overflow: ellipsis;
@@ -892,10 +1052,11 @@ code {
 
   .library-actions {
     width: 100%;
+    flex-wrap: wrap;
   }
 
   .library-actions button {
-    flex: 1;
+    flex: 1 1 9rem;
   }
 
   .library-row {
@@ -1252,7 +1413,7 @@ code {
 }
 
 .graph-chip {
-  min-height: 2rem;
+  min-height: var(--control-height-sm);
   padding: 0 var(--space-3);
   border: 0.0625rem solid var(--color-border-strong);
   border-radius: 999px;

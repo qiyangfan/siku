@@ -80,9 +80,71 @@ describe("设置中心", () => {
     const keyInput = within(groups[0]).getByLabelText("api_key（只写不回显）");
     expect(keyInput).toHaveValue("");
     expect(within(groups[0]).getByPlaceholderText("已设置——留空保持不变")).toBeInTheDocument();
+    // 已存明文 key 的通道默认停在「直接填写」
+    expect(within(groups[0]).getByRole("radio", { name: "直接填写 key" })).toBeChecked();
     expect(
       within(groups[2]).getByText(/以下字段当前由环境变量层覆盖.*base_url/),
     ).toBeInTheDocument();
+  });
+
+  it("凭证方式按已存配置推导：仅存环境变量名的通道选中「引用环境变量」", async () => {
+    mockFetch([], {
+      get: {
+        ...settings,
+        llm: { ...settings.llm, api_key_set: false, api_key_env: "SIKU_LLM_API_KEY" },
+      },
+    });
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = within(groups[0]);
+    expect(llm.getByRole("radio", { name: "引用环境变量" })).toBeChecked();
+    expect(llm.getByLabelText("api_key_env（环境变量名）")).toHaveValue("SIKU_LLM_API_KEY");
+    expect(llm.queryByLabelText("api_key（只写不回显）")).not.toBeInTheDocument();
+    // 未设置任何凭证的通道默认「直接填写」
+    expect(within(groups[1]).getByRole("radio", { name: "直接填写 key" })).toBeChecked();
+  });
+
+  it("切换到「引用环境变量」丢弃未保存明文，按环境变量方式保存", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = within(groups[0]);
+    await user.type(llm.getByLabelText("api_key（只写不回显）"), "sk-tmp");
+    await user.click(llm.getByRole("radio", { name: "引用环境变量" }));
+    await user.type(llm.getByLabelText("api_key_env（环境变量名）"), "SIKU_LLM_API_KEY");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    expect(await screen.findByText("设置已保存，无需重启即可生效。")).toBeInTheDocument();
+    const body = JSON.parse(
+      String(calls.find((call) => call.init?.method === "PUT")?.init?.body),
+    );
+    expect(body.llm.api_key_env).toBe("SIKU_LLM_API_KEY");
+    expect(body.llm).not.toHaveProperty("api_key");
+  });
+
+  it("env 模式下已存明文 key 时提示优先生效，并可直接勾选清除", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = within(groups[0]);
+    await user.click(llm.getByRole("radio", { name: "引用环境变量" }));
+    expect(llm.getByText(/已保存的明文 key 优先生效/)).toBeInTheDocument();
+    await user.click(llm.getByLabelText("清除已保存的 key（保存后生效）"));
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    expect(await screen.findByText("设置已保存，无需重启即可生效。")).toBeInTheDocument();
+    const body = JSON.parse(
+      String(calls.find((call) => call.init?.method === "PUT")?.init?.body),
+    );
+    expect(body.llm.api_key).toBeNull();
+    expect(body.llm.api_key_env).toBe("");
   });
 
   it("保存时未触碰的 key 不上传，输入新 key 才提交", async () => {

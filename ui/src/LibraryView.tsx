@@ -377,11 +377,14 @@ export function LibraryView() {
       <div className="library-sync-header">
         <button
           type="button"
-          className="button-secondary"
+          className="library-sync-toggle"
           aria-expanded={syncSectionOpen}
           onClick={() => setSyncSectionOpen((open) => !open)}
         >
-          {syncSectionOpen ? "收起来源目录" : "来源目录与自动扫描"}
+          <span className="library-sync-chevron" aria-hidden="true">
+            ▾
+          </span>
+          来源目录与自动扫描
         </button>
         <p className="hint">
           登记本地目录后，内核定时扫描并把新增/变更文档单向复制入库；来源目录只读，永不写回。
@@ -413,46 +416,51 @@ export function LibraryView() {
             >
               添加来源
             </button>
-            <label className="library-sync-full">
-              <input
-                type="checkbox"
-                checked={scanFull}
-                onChange={(event) => setScanFull(event.target.checked)}
-              />
-              全量校验
-            </label>
-            <button
-              type="button"
-              className="button-secondary"
-              disabled={running || syncSources === null}
-              onClick={() => void startScan()}
-            >
-              立即扫描
-            </button>
           </div>
-          {intervalText !== null && (
-            <div className="library-sync-add">
-              <label className="library-sync-full" htmlFor="scan-interval-input">
-                自动扫描间隔（秒，0 = 关闭）
-              </label>
-              <input
-                id="scan-interval-input"
-                type="number"
-                min={0}
-                value={intervalText}
-                onChange={(event) => setIntervalText(event.target.value)}
-                aria-label="自动扫描间隔秒数"
-              />
+          <div className="library-sync-controls">
+            <div className="library-sync-group">
               <button
                 type="button"
                 className="button-secondary"
-                disabled={running}
-                onClick={() => void saveInterval()}
+                disabled={running || syncSources === null}
+                onClick={() => void startScan()}
               >
-                保存间隔
+                立即扫描
               </button>
+              <label className="library-sync-check">
+                <input
+                  type="checkbox"
+                  checked={scanFull}
+                  onChange={(event) => setScanFull(event.target.checked)}
+                />
+                全量校验
+              </label>
             </div>
-          )}
+            {intervalText !== null && (
+              <div className="library-sync-group">
+                <label className="library-sync-check" htmlFor="scan-interval-input">
+                  自动扫描间隔（秒，0 = 关闭）
+                </label>
+                <input
+                  id="scan-interval-input"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  value={intervalText}
+                  onChange={(event) => setIntervalText(event.target.value)}
+                  aria-label="自动扫描间隔秒数"
+                />
+                <button
+                  type="button"
+                  className="button-secondary"
+                  disabled={running}
+                  onClick={() => void saveInterval()}
+                >
+                  保存间隔
+                </button>
+              </div>
+            )}
+          </div>
           {syncSources === null ? (
             <p className="hint" role="status">
               正在读取来源目录…
@@ -463,7 +471,7 @@ export function LibraryView() {
             </p>
           ) : syncSources.length === 0 ? (
             <p className="hint" role="note">
-              尚未登记来源目录。添加后内核按下方设定的间隔自动扫描，也可点击「立即扫描」。
+              尚未登记来源目录。添加后内核按设定的间隔自动扫描，也可点击「立即扫描」。
             </p>
           ) : (
             <ul className="library-sync-list" aria-label="来源目录清单">

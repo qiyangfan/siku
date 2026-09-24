@@ -11,9 +11,12 @@ import {
   type SettingsTestPayload,
 } from "./api";
 
+type KeyMode = "direct" | "env";
+
 type ChannelForm = {
   base_url: string;
   model: string;
+  key_mode: KeyMode;
   api_key: string;
   api_key_env: string;
   clearStoredKey: boolean;
@@ -29,6 +32,7 @@ type ChannelTestState =
 const EMPTY_FORM: ChannelForm = {
   base_url: "",
   model: "",
+  key_mode: "direct",
   api_key: "",
   api_key_env: "",
   clearStoredKey: false,
@@ -39,6 +43,21 @@ const CHANNEL_META: { key: ChannelName; title: string; description: string }[] =
   { key: "embedding", title: "embedding 通道", description: "检索的向量化通道；更换模型后需全量重建索引。" },
   { key: "rerank", title: "rerank 通道（可选）", description: "留空即不启用重排，检索按 RRF 融合分数直接排序。" },
 ];
+
+// 与内核 SIKU_LLM_* / SIKU_EMBEDDING_* / SIKU_RERANK_* 前缀一致，用于占位示例
+const CHANNEL_KEY_ENV_PREFIX: Record<ChannelName, string> = {
+  llm: "SIKU_LLM",
+  embedding: "SIKU_EMBEDDING",
+  rerank: "SIKU_RERANK",
+};
+
+// 已存明文 key 优先生效（与内核 resolve_api_key 口径一致），故默认停在「直接填写」
+function keyModeFrom(view: ChannelSettingsView): KeyMode {
+  if (view.api_key_set) {
+    return "direct";
+  }
+  return view.api_key_env ? "env" : "direct";
+}
 
 function isApiError(error: unknown): error is ApiError {
   return (
@@ -55,6 +74,7 @@ function formFrom(view: ChannelSettingsView): ChannelForm {
   return {
     base_url: view.base_url ?? "",
     model: view.model ?? "",
+    key_mode: keyModeFrom(view),
     api_key: "",
     api_key_env: view.api_key_env ?? "",
     clearStoredKey: false,
@@ -86,7 +106,12 @@ function payloadFrom(form: ChannelForm): ChannelSettingsPayload {
   return payload;
 }
 
-export function SettingsView() {
+export function SettingsView({
+  onSaved,
+}: {
+  // 保存成功后回调最新设置（含 ask_readiness）：父级可免二次请求刷新问答门控
+  onSaved?: (settings: SettingsResponse) => void;
+}) {
   const [views, setViews] = useState<SettingsResponse | null>(null);
   const [forms, setForms] = useState<Record<ChannelName, ChannelForm>>({
     llm: EMPTY_FORM,
@@ -133,6 +158,26 @@ export function SettingsView() {
     }));
   };
 
+  const setKeyMode = (channel: ChannelName, mode: KeyMode) => {
+    setForms((prev) => {
+      const form = prev[channel];
+      if (form.key_mode === mode) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [channel]: {
+          ...form,
+          key_mode: mode,
+          // 切走「直接填写」时丢弃尚未保存的明文输入，避免用户已改选
+          // 环境变量、表单却仍把密文框里的临时值提交上去
+          api_key: mode === "env" ? "" : form.api_key,
+          clearStoredKey: mode === "env" ? false : form.clearStoredKey,
+        },
+      };
+    });
+  };
+
   const save = async () => {
     setSaveState("loading");
     setSaveMessage(null);
@@ -147,6 +192,7 @@ export function SettingsView() {
       applySettings(response);
       setSaveMessage("设置已保存，无需重启即可生效。");
       setWarnings(response.warnings);
+      onSaved?.(response);
     } catch (caught: unknown) {
       setSaveError(
         isApiError(caught)
@@ -292,49 +338,111 @@ export function SettingsView() {
                   spellCheck={false}
                 />
               </div>
-              <div className="field">
-                <label htmlFor={`${key}-api-key`}>api_key（只写不回显）</label>
-                <input
-                  id={`${key}-api-key`}
-                  type="password"
-                  value={form.api_key}
-                  onChange={(event) => {
-                    setField(key, "api_key", event.target.value);
-                    if (event.target.value !== "") {
-                      setField(key, "clearStoredKey", false);
-                    }
-                  }}
-                  placeholder={view.api_key_set ? "已设置——留空保持不变" : "未设置"}
-                  autoComplete="new-password"
-                />
-                {view.api_key_set && (
-                  <label className="field-check">
+            </div>
+            <div className="credential-group">
+              <div className="credential-head">
+                <span className="credential-title" id={`${key}-credential-label`}>
+                  凭证（二选一）
+                </span>
+                <div
+                  className="segmented"
+                  role="radiogroup"
+                  aria-labelledby={`${key}-credential-label`}
+                >
+                  <label className="segmented-option">
                     <input
-                      type="checkbox"
-                      checked={form.clearStoredKey}
-                      onChange={(event) => {
-                        setField(key, "clearStoredKey", event.target.checked);
-                        if (event.target.checked) {
-                          setField(key, "api_key", "");
-                        }
-                      }}
+                      type="radio"
+                      name={`${key}-key-mode`}
+                      checked={form.key_mode === "direct"}
+                      onChange={() => setKeyMode(key, "direct")}
                     />
-                    清除已保存的 key（保存后生效）
+                    直接填写 key
                   </label>
-                )}
+                  <label className="segmented-option">
+                    <input
+                      type="radio"
+                      name={`${key}-key-mode`}
+                      checked={form.key_mode === "env"}
+                      onChange={() => setKeyMode(key, "env")}
+                    />
+                    引用环境变量
+                  </label>
+                </div>
               </div>
-              <div className="field">
-                <label htmlFor={`${key}-api-key-env`}>api_key_env（环境变量名，二选一）</label>
-                <input
-                  id={`${key}-api-key-env`}
-                  type="text"
-                  value={form.api_key_env}
-                  onChange={(event) => setField(key, "api_key_env", event.target.value)}
-                  placeholder="例如 SIKU_LLM_API_KEY"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
+              {form.key_mode === "direct" ? (
+                <div className="field">
+                  <label htmlFor={`${key}-api-key`}>api_key（只写不回显）</label>
+                  <input
+                    id={`${key}-api-key`}
+                    type="password"
+                    value={form.api_key}
+                    onChange={(event) => {
+                      setField(key, "api_key", event.target.value);
+                      if (event.target.value !== "") {
+                        setField(key, "clearStoredKey", false);
+                      }
+                    }}
+                    placeholder={view.api_key_set ? "已设置——留空保持不变" : "未设置"}
+                    autoComplete="new-password"
+                  />
+                  <p className="hint">明文保存在本机 config.toml（0600）；与环境变量同时存在时，明文优先。</p>
+                  {view.api_key_set && (
+                    <label className="field-check">
+                      <input
+                        type="checkbox"
+                        checked={form.clearStoredKey}
+                        onChange={(event) => {
+                          setField(key, "clearStoredKey", event.target.checked);
+                          if (event.target.checked) {
+                            setField(key, "api_key", "");
+                          }
+                        }}
+                      />
+                      清除已保存的 key（保存后生效）
+                    </label>
+                  )}
+                  {form.api_key_env.trim() !== "" && (
+                    <p className="hint">
+                      已填写后备 api_key_env：<code>{form.api_key_env}</code>
+                      ，继续生效；切换「引用环境变量」可修改。
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div className="field">
+                  <label htmlFor={`${key}-api-key-env`}>api_key_env（环境变量名）</label>
+                  <input
+                    id={`${key}-api-key-env`}
+                    type="text"
+                    value={form.api_key_env}
+                    onChange={(event) => setField(key, "api_key_env", event.target.value)}
+                    placeholder={`例如 ${CHANNEL_KEY_ENV_PREFIX[key]}_API_KEY`}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <p className="hint">key 从该环境变量读取，需在启动 siku 的环境中已设置。</p>
+                  {view.api_key_set && (
+                    <>
+                      <p className="hint hint-warning" role="note">
+                        已保存的明文 key 优先生效，需清除后环境变量才会启用：
+                      </p>
+                      <label className="field-check">
+                        <input
+                          type="checkbox"
+                          checked={form.clearStoredKey}
+                          onChange={(event) => {
+                            setField(key, "clearStoredKey", event.target.checked);
+                            if (event.target.checked) {
+                              setField(key, "api_key", "");
+                            }
+                          }}
+                        />
+                        清除已保存的 key（保存后生效）
+                      </label>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
             <div className="channel-footer">
               <button
