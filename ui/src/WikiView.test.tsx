@@ -1,4 +1,5 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
+import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WikiEntries, WikiEntryDetail } from "./api";
@@ -54,6 +55,22 @@ describe("wiki 视图", () => {
     expect(screen.getByText("本地优先的知识库。")).toBeInTheDocument();
     expect(screen.getByText(/生成于 .* ·/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重新生成 wiki" })).toBeInTheDocument();
+  });
+
+  it("阅读详情后可返回 wiki 清单", async () => {
+    mockFetchByRoutes({
+      "/api/wiki/entries": () => jsonResponse(entries),
+      "/api/wiki/entries/1": () => jsonResponse(entryDetail),
+    });
+    const user = userEvent.setup();
+
+    render(<WikiView />);
+    await user.click(await screen.findByRole("button", { name: /社区 0001/ }));
+    await screen.findByRole("heading", { level: 3, name: "社区 0001" });
+    await user.click(screen.getByRole("button", { name: "返回 wiki 列表" }));
+
+    expect(screen.getByRole("button", { name: /社区 0001/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "社区 0001" })).not.toBeInTheDocument();
   });
 
   it("空态点击「生成 wiki」成功后自动刷新清单", async () => {

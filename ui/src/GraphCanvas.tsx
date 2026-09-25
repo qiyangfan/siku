@@ -3,6 +3,7 @@ import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
 import type { GraphEdge, GraphNode } from "./api";
+import { GRAPH_COMMUNITY_COLORS, GRAPH_UNASSIGNED_COLOR } from "./theme";
 
 /** 画布数据边界：永远只渲染服务端有界查询的返回集合。 */
 export type GraphCanvasProps = {
@@ -12,29 +13,14 @@ export type GraphCanvasProps = {
   onSelect: (node: GraphNode) => void;
 };
 
-/** 社区着色调色板：community_id 取模映射，无社区回退灰色。 */
-const COMMUNITY_PALETTE = [
-  "#2457d6",
-  "#16724b",
-  "#8a5b08",
-  "#a43d3d",
-  "#6b3fa0",
-  "#0f7f8b",
-  "#b0487f",
-  "#4f6d1f",
-  "#8c5a2b",
-  "#2f4fa3",
-  "#946b1d",
-  "#5a6472",
-];
-
-const NEUTRAL_COLOR = "#7b8798";
-
 function communityColor(communityId: number | null): string {
   if (communityId === null) {
-    return NEUTRAL_COLOR;
+    return GRAPH_UNASSIGNED_COLOR;
   }
-  return COMMUNITY_PALETTE[Math.abs(communityId) % COMMUNITY_PALETTE.length] ?? NEUTRAL_COLOR;
+  return (
+    GRAPH_COMMUNITY_COLORS[Math.abs(communityId) % GRAPH_COMMUNITY_COLORS.length] ??
+    GRAPH_UNASSIGNED_COLOR
+  );
 }
 
 /** 度数 → 节点视觉尺寸：有界放缩，避免超级枢纽吞噬画布。 */

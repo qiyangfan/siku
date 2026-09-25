@@ -1,4 +1,5 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
+import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NoteDetail, NotesPage } from "./api";
@@ -84,6 +85,22 @@ describe("浏览视图", () => {
     expect(screen.getByText("结论")).toBeInTheDocument();
     expect(screen.getByText("加粗")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑" })).not.toBeInTheDocument();
+  });
+
+  it("阅读详情后可返回笔记清单", async () => {
+    mockFetchByRoutes({
+      "/api/notes": () => jsonResponse(page1),
+      "/api/notes/aa000001": () => jsonResponse(noteDetail),
+    });
+    const user = userEvent.setup();
+
+    render(<BrowseView />);
+    await user.click(await screen.findByRole("button", { name: /architecture\.md/ }));
+    await screen.findByRole("heading", { name: "architecture.md" });
+    await user.click(screen.getByRole("button", { name: "返回笔记列表" }));
+
+    expect(screen.getByRole("button", { name: /architecture\.md/ })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "architecture.md" })).not.toBeInTheDocument();
   });
 
   it("渲染用户内容时不执行内嵌脚本（防注入证据）", async () => {

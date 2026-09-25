@@ -271,8 +271,18 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return payload as T;
 }
 
+const HEALTH_REQUEST_TIMEOUT_MS = 3_000;
+
 export async function checkHealth(): Promise<HealthResponse> {
-  return parseResponse<HealthResponse>(await fetch("/api/health"));
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), HEALTH_REQUEST_TIMEOUT_MS);
+  try {
+    return await parseResponse<HealthResponse>(
+      await fetch("/api/health", { signal: controller.signal }),
+    );
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 export async function askQuestion(question: string): Promise<AskResponse> {

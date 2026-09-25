@@ -1,5 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  Alert,
+  Button,
+  Checkbox,
+  Fieldset,
+  Group,
+  Loader,
+  PasswordInput,
+  Radio,
+  Stack,
+  TextInput,
+} from "@mantine/core";
+import {
   getSettings,
   testChannel,
   updateSettings,
@@ -142,7 +154,7 @@ export function SettingsView({
       setLoadError(
         isApiError(caught)
           ? caught.message
-          : "无法连接本地内核，请确认 siku serve 已启动。",
+          : "无法连接本地服务，请确认 siku serve --with-ui 正在运行。",
       );
     }
   }, [applySettings]);
@@ -197,7 +209,7 @@ export function SettingsView({
       setSaveError(
         isApiError(caught)
           ? caught.message
-          : "无法连接本地内核，请确认 siku serve 已启动。",
+          : "无法连接本地服务，请确认 siku serve --with-ui 正在运行。",
       );
     } finally {
       setSaveState("idle");
@@ -238,7 +250,7 @@ export function SettingsView({
           ok: false,
           message: isApiError(caught)
             ? caught.message
-            : "无法连接本地内核，请确认 siku serve 已启动。",
+            : "无法连接本地服务，请确认 siku serve --with-ui 正在运行。",
         },
       }));
     }
@@ -246,29 +258,29 @@ export function SettingsView({
 
   if (loadError !== null) {
     return (
-      <div className="status-card status-error" role="alert">
-        <div>
-          <strong>设置读取失败</strong>
-          <p>{loadError}</p>
-        </div>
-        <button type="button" className="button-secondary" onClick={() => void load()}>
+      <Alert className="status-card" color="red" role="alert" title="设置读取失败">
+        <p>{loadError}</p>
+        <Button type="button" className="button-secondary" variant="default" onClick={() => void load()}>
           重试读取
-        </button>
-      </div>
+        </Button>
+      </Alert>
     );
   }
 
   if (views === null) {
     return (
-      <div className="settings-loading" role="status" aria-live="polite">
+      <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
+        <Loader size="sm" />
         正在读取设置…
-      </div>
+      </Group>
     );
   }
 
   return (
-    <form
+    <Stack
+      component="form"
       className="settings-form"
+      gap="xl"
       aria-labelledby="settings-title"
       onSubmit={(event) => {
         event.preventDefault();
@@ -281,22 +293,13 @@ export function SettingsView({
       </p>
 
       {saveMessage !== null && (
-        <div className="status-card status-saved" role="status">
-          <strong>{saveMessage}</strong>
-        </div>
+        <Alert color="green" role="status">{saveMessage}</Alert>
       )}
       {saveError !== null && (
-        <p className="message message-error" role="alert">
-          {saveError}
-        </p>
+        <Alert color="red" role="alert" title="设置保存失败">{saveError}</Alert>
       )}
       {warnings.map((warning) => (
-        <div key={warning} className="status-card status-warning" role="alert">
-          <div>
-            <strong>需要重建索引</strong>
-            <p>{warning}</p>
-          </div>
-        </div>
+        <Alert key={warning} color="yellow" role="alert" title="需要重建索引">{warning}</Alert>
       ))}
 
       {CHANNEL_META.map(({ key, title, description }) => {
@@ -304,8 +307,7 @@ export function SettingsView({
         const form = forms[key];
         const testState = testStates[key];
         return (
-          <fieldset key={key} className="channel-card">
-            <legend>{title}</legend>
+          <Fieldset key={key} legend={title} className="channel-card">
             <p className="hint">{description}</p>
             {view.env_overrides.length > 0 && (
               <p className="hint hint-warning" role="note">
@@ -315,9 +317,9 @@ export function SettingsView({
             )}
             <div className="field-grid">
               <div className="field">
-                <label htmlFor={`${key}-base-url`}>base_url</label>
-                <input
+                <TextInput
                   id={`${key}-base-url`}
+                  label="base_url"
                   type="text"
                   value={form.base_url}
                   onChange={(event) => setField(key, "base_url", event.target.value)}
@@ -327,9 +329,9 @@ export function SettingsView({
                 />
               </div>
               <div className="field">
-                <label htmlFor={`${key}-model`}>model</label>
-                <input
+                <TextInput
                   id={`${key}-model`}
+                  label="model"
                   type="text"
                   value={form.model}
                   onChange={(event) => setField(key, "model", event.target.value)}
@@ -339,42 +341,23 @@ export function SettingsView({
                 />
               </div>
             </div>
-            <div className="credential-group">
-              <div className="credential-head">
-                <span className="credential-title" id={`${key}-credential-label`}>
-                  凭证（二选一）
-                </span>
-                <div
-                  className="segmented"
-                  role="radiogroup"
-                  aria-labelledby={`${key}-credential-label`}
-                >
-                  <label className="segmented-option">
-                    <input
-                      type="radio"
-                      name={`${key}-key-mode`}
-                      checked={form.key_mode === "direct"}
-                      onChange={() => setKeyMode(key, "direct")}
-                    />
-                    直接填写 key
-                  </label>
-                  <label className="segmented-option">
-                    <input
-                      type="radio"
-                      name={`${key}-key-mode`}
-                      checked={form.key_mode === "env"}
-                      onChange={() => setKeyMode(key, "env")}
-                    />
-                    引用环境变量
-                  </label>
-                </div>
-              </div>
+            <Stack className="credential-group" gap="md">
+              <Radio.Group
+                className="credential-mode"
+                label="凭证来源"
+                value={form.key_mode}
+                onChange={(value) => setKeyMode(key, value as KeyMode)}
+              >
+                <Group className="credential-options" gap="lg" mt="xs" wrap="wrap">
+                  <Radio value="direct" label="直接填写 key" />
+                  <Radio value="env" label="引用环境变量" />
+                </Group>
+              </Radio.Group>
               {form.key_mode === "direct" ? (
                 <div className="field">
-                  <label htmlFor={`${key}-api-key`}>api_key（只写不回显）</label>
-                  <input
+                  <PasswordInput
                     id={`${key}-api-key`}
-                    type="password"
+                    label="api_key（只写不回显）"
                     value={form.api_key}
                     onChange={(event) => {
                       setField(key, "api_key", event.target.value);
@@ -384,22 +367,24 @@ export function SettingsView({
                     }}
                     placeholder={view.api_key_set ? "已设置——留空保持不变" : "未设置"}
                     autoComplete="new-password"
+                    visibilityToggleButtonProps={{
+                      className: "password-visibility-toggle",
+                      "aria-label": "显示或隐藏 API key",
+                    }}
                   />
                   <p className="hint">明文保存在本机 config.toml（0600）；与环境变量同时存在时，明文优先。</p>
                   {view.api_key_set && (
-                    <label className="field-check">
-                      <input
-                        type="checkbox"
-                        checked={form.clearStoredKey}
-                        onChange={(event) => {
-                          setField(key, "clearStoredKey", event.target.checked);
-                          if (event.target.checked) {
+                    <Checkbox
+                      className="field-check"
+                      label="清除已保存的 key（保存后生效）"
+                      checked={form.clearStoredKey}
+                      onChange={(event) => {
+                        setField(key, "clearStoredKey", event.target.checked);
+                        if (event.target.checked) {
                             setField(key, "api_key", "");
-                          }
-                        }}
-                      />
-                      清除已保存的 key（保存后生效）
-                    </label>
+                        }
+                      }}
+                    />
                   )}
                   {form.api_key_env.trim() !== "" && (
                     <p className="hint">
@@ -410,9 +395,9 @@ export function SettingsView({
                 </div>
               ) : (
                 <div className="field">
-                  <label htmlFor={`${key}-api-key-env`}>api_key_env（环境变量名）</label>
-                  <input
+                  <TextInput
                     id={`${key}-api-key-env`}
+                    label="api_key_env（环境变量名）"
                     type="text"
                     value={form.api_key_env}
                     onChange={(event) => setField(key, "api_key_env", event.target.value)}
@@ -426,52 +411,48 @@ export function SettingsView({
                       <p className="hint hint-warning" role="note">
                         已保存的明文 key 优先生效，需清除后环境变量才会启用：
                       </p>
-                      <label className="field-check">
-                        <input
-                          type="checkbox"
-                          checked={form.clearStoredKey}
-                          onChange={(event) => {
-                            setField(key, "clearStoredKey", event.target.checked);
-                            if (event.target.checked) {
+                      <Checkbox
+                        className="field-check"
+                        label="清除已保存的 key（保存后生效）"
+                        checked={form.clearStoredKey}
+                        onChange={(event) => {
+                          setField(key, "clearStoredKey", event.target.checked);
+                          if (event.target.checked) {
                               setField(key, "api_key", "");
-                            }
-                          }}
-                        />
-                        清除已保存的 key（保存后生效）
-                      </label>
+                          }
+                        }}
+                      />
                     </>
                   )}
                 </div>
               )}
-            </div>
+            </Stack>
             <div className="channel-footer">
-              <button
+              <Button
                 type="button"
                 className="button-secondary"
+                variant="default"
                 disabled={testState?.kind === "loading"}
                 onClick={() => void runTest(key)}
               >
                 {testState?.kind === "loading" ? "测试中…" : "测试连接"}
-              </button>
+              </Button>
               {testState?.kind === "done" && (
-                <p
-                  className={`message ${testState.ok ? "message-ok" : "message-error"}`}
-                  role="status"
-                >
+                <Alert color={testState.ok ? "green" : "red"} role={testState.ok ? "status" : "alert"}>
                   {testState.message}
-                </p>
+                </Alert>
               )}
             </div>
-          </fieldset>
+          </Fieldset>
         );
       })}
 
-      <div className="settings-footer">
-        <button type="submit" disabled={saveState === "loading"}>
+      <Group className="settings-footer" justify="flex-end">
+        <Button type="submit" loading={saveState === "loading"}>
           {saveState === "loading" ? "保存中…" : "保存设置"}
-        </button>
-      </div>
-    </form>
+        </Button>
+      </Group>
+      </Stack>
   );
 }
 

@@ -1,4 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  Alert,
+  Button,
+  Checkbox,
+  FileInput,
+  Group,
+  Loader,
+  Modal,
+  NumberInput,
+  Paper,
+  Progress,
+  SimpleGrid,
+  Stack,
+  Switch,
+  TextInput,
+} from "@mantine/core";
 import {
   addLibrarySource,
   cancelLibraryJob,
@@ -64,7 +80,7 @@ function isApiError(error: unknown): error is ApiError {
 function connectionFallback(caught: unknown): string {
   return isApiError(caught)
     ? caught.message
-    : "无法连接本地内核，请确认 siku serve 已启动。";
+    : "无法连接本地服务，请确认 siku serve --with-ui 正在运行。";
 }
 
 function jobOutcome(job: LibraryJob): { tone: "ok" | "error"; text: string } | null {
@@ -102,7 +118,7 @@ export function LibraryView() {
   const [job, setJob] = useState<LibraryJob | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingRebuild, setConfirmingRebuild] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   // 来源目录管理区：默认折叠，首次展开才请求（避免干扰主清单的首屏）
   const [syncSectionOpen, setSyncSectionOpen] = useState(false);
@@ -185,8 +201,8 @@ export function LibraryView() {
     return () => window.clearTimeout(handle);
   }, [job, pollJob]);
 
-  const startImport = async (fileList: FileList | null) => {
-    const files = fileList === null ? [] : Array.from(fileList);
+  const startImport = async (selected: File[] | null) => {
+    const files = selected ?? [];
     if (files.length === 0) {
       return;
     }
@@ -197,9 +213,7 @@ export function LibraryView() {
     } catch (caught: unknown) {
       setActionError(connectionFallback(caught));
     } finally {
-      if (fileInputRef.current !== null) {
-        fileInputRef.current.value = "";
-      }
+      setSelectedFiles([]);
     }
   };
 
@@ -284,15 +298,12 @@ export function LibraryView() {
 
   if (loadError !== null && sources === null) {
     return (
-      <div className="status-card status-error" role="alert">
-        <div>
-          <strong>资料库读取失败</strong>
-          <p>{loadError}</p>
-        </div>
-        <button type="button" className="button-secondary" onClick={() => void refreshListing()}>
+      <Alert className="status-card" color="red" role="alert" title="资料库读取失败">
+        <p>{loadError}</p>
+        <Button variant="default" type="button" className="button-secondary" onClick={() => void refreshListing()}>
           重试读取
-        </button>
-      </div>
+        </Button>
+      </Alert>
     );
   }
 
@@ -313,9 +324,10 @@ export function LibraryView() {
 
   if (sources === null) {
     return (
-      <div className="settings-loading" role="status" aria-live="polite">
+      <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
+        <Loader size="sm" />
         正在读取资料库…
-      </div>
+      </Group>
     );
   }
 
@@ -330,52 +342,55 @@ export function LibraryView() {
     running && (job.kind === "ingest" || job.kind === "scan" || job.kind === "purge");
 
   return (
-    <section className="library-view" aria-labelledby="library-title">
-      <div className="library-toolbar">
+    <Stack component="section" className="library-view" gap="lg" aria-labelledby="library-title">
+      <Group component="header" className="library-toolbar" align="flex-start" justify="space-between" wrap="wrap">
         <div>
           <h2 id="library-title">资料库</h2>
           <p className="hint">导入即摄取为本地事实层，并自动同步检索索引。</p>
         </div>
-        <div className="library-actions">
-          <input
-            ref={fileInputRef}
-            id="library-file-input"
-            className="visually-hidden"
-            type="file"
+        <Stack className="library-actions" gap="sm">
+          <FileInput
+            className="library-file-input"
+            w="100%"
+            label="导入文件"
             multiple
-            aria-label="选择要导入的文件"
+            fileInputProps={{ id: "library-file-input", "aria-label": "选择要导入的文件" }}
+            placeholder="选择本地文档"
+            value={selectedFiles}
             disabled={running}
-            onChange={(event) => void startImport(event.target.files)}
+            onChange={(files) => {
+              setSelectedFiles(files ?? []);
+              void startImport(files);
+            }}
           />
-          <button
-            type="button"
-            disabled={running}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            {running ? "任务进行中…" : "导入文件"}
-          </button>
-          <button
-            type="button"
-            className="button-secondary"
-            disabled={running || markedCount === 0}
-            title={markedCount === 0 ? "没有已标记（缺失/已替代）的文档" : undefined}
-            onClick={() => setConfirmingPurge(true)}
-          >
-            清理已标记文档{markedCount > 0 ? `（${markedCount}）` : ""}
-          </button>
-          <button
-            type="button"
-            className="button-secondary"
-            disabled={running}
-            onClick={() => setConfirmingRebuild(true)}
-          >
-            全量重建索引
-          </button>
-        </div>
-      </div>
+          <SimpleGrid className="library-action-buttons" cols={{ base: 1, sm: 2 }} spacing="sm">
+            <Button
+              variant="default"
+              type="button"
+              className="button-secondary"
+              fullWidth
+              disabled={running || markedCount === 0}
+              title={markedCount === 0 ? "没有已标记（缺失/已替代）的文档" : undefined}
+              onClick={() => setConfirmingPurge(true)}
+            >
+              清理已标记文档{markedCount > 0 ? `（${markedCount}）` : ""}
+            </Button>
+            <Button
+              variant="default"
+              type="button"
+              className="button-secondary"
+              fullWidth
+              disabled={running}
+              onClick={() => setConfirmingRebuild(true)}
+            >
+              全量重建索引
+            </Button>
+          </SimpleGrid>
+        </Stack>
+      </Group>
 
       <div className="library-sync-header">
-        <button
+        <Button variant="subtle"
           type="button"
           className="library-sync-toggle"
           aria-expanded={syncSectionOpen}
@@ -385,18 +400,18 @@ export function LibraryView() {
             ▾
           </span>
           来源目录与自动扫描
-        </button>
+        </Button>
         <p className="hint">
-          登记本地目录后，内核定时扫描并把新增/变更文档单向复制入库；来源目录只读，永不写回。
+          登记本地目录后，本地服务定时扫描并把新增/变更文档单向复制入库；来源目录只读，永不写回。
         </p>
       </div>
 
       {syncSectionOpen && (
         <div className="library-sync-panel">
           <div className="library-sync-add">
-            <input
-              type="text"
+            <TextInput
               value={newSourcePath}
+              aria-label="来源目录路径"
               onChange={(event) => setNewSourcePath(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
@@ -405,74 +420,70 @@ export function LibraryView() {
                 }
               }}
               placeholder="本地目录绝对路径，例如 /Users/you/Documents/notes"
-              aria-label="来源目录路径"
               spellCheck={false}
             />
-            <button
+            <Button variant="default"
               type="button"
               className="button-secondary"
               disabled={!newSourcePath.trim() || running}
               onClick={() => void submitNewSource()}
             >
               添加来源
-            </button>
+            </Button>
           </div>
           <div className="library-sync-controls">
             <div className="library-sync-group">
-              <button
+              <Button variant="default"
                 type="button"
                 className="button-secondary"
                 disabled={running || syncSources === null}
                 onClick={() => void startScan()}
               >
                 立即扫描
-              </button>
-              <label className="library-sync-check">
-                <input
-                  type="checkbox"
-                  checked={scanFull}
-                  onChange={(event) => setScanFull(event.target.checked)}
-                />
-                全量校验
-              </label>
+              </Button>
+              <Checkbox
+                className="library-sync-check"
+                checked={scanFull}
+                onChange={(event) => setScanFull(event.target.checked)}
+                label="全量校验"
+              />
             </div>
             {intervalText !== null && (
               <div className="library-sync-group">
-                <label className="library-sync-check" htmlFor="scan-interval-input">
-                  自动扫描间隔（秒，0 = 关闭）
-                </label>
-                <input
+                <NumberInput
                   id="scan-interval-input"
-                  type="number"
+                  label="自动扫描间隔（秒，0 = 关闭）"
                   inputMode="numeric"
                   min={0}
                   value={intervalText}
-                  onChange={(event) => setIntervalText(event.target.value)}
+                  allowDecimal={false}
+                  allowNegative={false}
+                  onChange={(value) => setIntervalText(String(value))}
                   aria-label="自动扫描间隔秒数"
                 />
-                <button
+                <Button variant="default"
                   type="button"
                   className="button-secondary"
                   disabled={running}
                   onClick={() => void saveInterval()}
                 >
                   保存间隔
-                </button>
+                </Button>
               </div>
             )}
           </div>
           {syncSources === null ? (
-            <p className="hint" role="status">
+            <Alert color="blue" role="status">
               正在读取来源目录…
-            </p>
+            </Alert>
           ) : syncLoadFailed ? (
-            <p className="hint" role="note">
-              来源目录清单读取失败，请确认内核连接后重试。
-            </p>
+            <Alert color="red" role="alert">
+              来源目录清单读取失败，请检查本地服务连接后重试。
+            </Alert>
           ) : syncSources.length === 0 ? (
-            <p className="hint" role="note">
-              尚未登记来源目录。添加后内核按设定的间隔自动扫描，也可点击「立即扫描」。
-            </p>
+            <Alert color="gray" role="note">
+              尚未登记来源目录。添加后本地服务按设定的间隔自动扫描，也可点击「立即扫描」。
+            </Alert>
           ) : (
             <ul className="library-sync-list" aria-label="来源目录清单">
               {syncSources.map((source) => (
@@ -480,30 +491,26 @@ export function LibraryView() {
                   <span className="library-sync-path" title={source.path}>
                     {source.path}
                   </span>
-                  <span className={`library-badge library-badge-sync-${source.enabled ? "on" : "off"}`}>
-                    {source.enabled ? "已启用" : "已停用"}
-                  </span>
+                  <Switch
+                    checked={source.enabled}
+                    onChange={() => void toggleSyncSource(source)}
+                    disabled={running}
+                    label={source.enabled ? "已启用" : "已停用"}
+                    aria-label={`${source.enabled ? "停用" : "启用"}来源目录 ${source.path}`}
+                  />
                   <span className="library-sync-time">
                     {source.last_scan_at === null
                       ? "从未扫描"
                       : `上次扫描 ${new Date(source.last_scan_at).toLocaleString()}`}
                   </span>
-                  <button
-                    type="button"
-                    className="button-secondary"
-                    disabled={running}
-                    onClick={() => void toggleSyncSource(source)}
-                  >
-                    {source.enabled ? "停用" : "启用"}
-                  </button>
-                  <button
+                  <Button variant="default"
                     type="button"
                     className="button-secondary"
                     disabled={running}
                     onClick={() => void deleteSyncSource(source)}
                   >
                     移除
-                  </button>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -511,14 +518,10 @@ export function LibraryView() {
         </div>
       )}
 
-      {actionError !== null && (
-        <p className="message message-error" role="alert">
-          {actionError}
-        </p>
-      )}
+      {actionError !== null && <Alert color="red" role="alert">{actionError}</Alert>}
 
       {job !== null && running && (
-        <div className="status-card status-running" role="status" aria-live="polite">
+        <Paper withBorder shadow="xs" radius="md" p="lg" className="status-running" role="status" aria-live="polite">
           <div className="library-progress">
             <strong>
               {indexing
@@ -535,29 +538,28 @@ export function LibraryView() {
               <p className="library-current-file">{job.current}</p>
             )}
             {itemCountOk && !indexing && (
-              <progress
+              <Progress
                 className="library-progress-bar"
-                value={job.done}
-                max={job.total}
+                value={(job.done / job.total) * 100}
+                size="sm"
                 aria-label={`任务进度 ${job.done}/${job.total}`}
               />
             )}
           </div>
           {cancellable && (
-            <button type="button" className="button-secondary" onClick={() => void cancelCurrentJob()}>
+            <Button variant="default" type="button" className="button-secondary" onClick={() => void cancelCurrentJob()}>
               取消任务
-            </button>
+            </Button>
           )}
-        </div>
+        </Paper>
       )}
 
       {outcome !== null && job !== null && (
-        <div
-          className={`status-card ${outcome.tone === "ok" ? "status-saved" : "status-error"}`}
+        <Alert
+          color={outcome.tone === "ok" ? "green" : "red"}
           role={outcome.tone === "ok" ? "status" : "alert"}
+          title={outcome.text}
         >
-          <div>
-            <strong>{outcome.text}</strong>
             {job.items.some((item) => item.status === "failed" || item.status === "ignored") && (
               <ul className="library-item-results">
                 {job.items
@@ -570,21 +572,19 @@ export function LibraryView() {
                   ))}
               </ul>
             )}
-          </div>
-          <button type="button" className="button-secondary" onClick={() => setJob(null)}>
+          <Button variant="default" type="button" className="button-secondary" onClick={() => setJob(null)}>
             关闭
-          </button>
-        </div>
+          </Button>
+        </Alert>
       )}
 
       {sources.length === 0 ? (
-        <div className="library-empty" role="note">
-          <strong>资料库还是空的</strong>
+        <Alert className="library-empty" color="gray" role="note" title="资料库还是空的">
           <p>点击「导入文件」把本地文档加入知识库；导入的文件会被复制进资料库并抽取为可检索的知识，原文件保持不变。</p>
           <p className="hint">支持格式：{SUPPORTED_FORMATS}。也可以展开「来源目录与自动扫描」登记一个本地目录，之后新文档会自动入库。</p>
-        </div>
+        </Alert>
       ) : (
-        <ul className="library-list" aria-label="资料库来源清单">
+        <Paper component="ul" withBorder radius="md" shadow="xs" p="xs" className="library-list" aria-label="资料库来源清单">
           {sources.map((source) => (
             <li key={source.path} className="library-row">
               <span className="library-name" title={source.path}>
@@ -603,70 +603,40 @@ export function LibraryView() {
               </span>
             </li>
           ))}
-        </ul>
+        </Paper>
       )}
 
-      {confirmingRebuild && (
-        <div className="library-dialog-backdrop">
-          <div
-            className="status-card library-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rebuild-confirm-title"
-          >
-            <div>
-              <strong id="rebuild-confirm-title">确认全量重建索引？</strong>
-              <p>
-                重建会按当前 embedding 配置重算全部向量并替换现有索引；语料原件与投影不受影响。
-                资料库较大时耗时较长。
-              </p>
-            </div>
-            <div className="library-dialog-actions">
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={() => setConfirmingRebuild(false)}
-              >
-                取消
-              </button>
-              <button type="button" onClick={() => void startRebuild()}>
-                确认重建
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Modal
+        opened={confirmingRebuild}
+        onClose={() => setConfirmingRebuild(false)}
+        title="确认全量重建索引？"
+        centered
+      >
+        <p>
+          重建会按当前 embedding 配置重算全部向量并替换现有索引；语料原件与投影不受影响。
+          资料库较大时耗时较长。
+        </p>
+        <Group className="library-dialog-actions" justify="flex-end">
+          <Button type="button" variant="default" onClick={() => setConfirmingRebuild(false)}>取消</Button>
+          <Button type="button" onClick={() => void startRebuild()}>确认重建</Button>
+        </Group>
+      </Modal>
 
-      {confirmingPurge && (
-        <div className="library-dialog-backdrop">
-          <div
-            className="status-card library-dialog"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="purge-confirm-title"
-          >
-            <div>
-              <strong id="purge-confirm-title">确认清理 {markedCount} 项已标记文档？</strong>
-              <p>
-                将物理删除全部「来源缺失」与「已被替代」文档的原件与投影，并从索引中移除；此操作不可撤销。
-              </p>
-            </div>
-            <div className="library-dialog-actions">
-              <button
-                type="button"
-                className="button-secondary"
-                onClick={() => setConfirmingPurge(false)}
-              >
-                取消
-              </button>
-              <button type="button" onClick={() => void startPurge()}>
-                确认清理
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
+      <Modal
+        opened={confirmingPurge}
+        onClose={() => setConfirmingPurge(false)}
+        title={`确认清理 ${markedCount} 项已标记文档？`}
+        centered
+      >
+        <p>
+          将物理删除全部「来源缺失」与「已被替代」文档的原件与投影，并从索引中移除；此操作不可撤销。
+        </p>
+        <Group className="library-dialog-actions" justify="flex-end">
+          <Button type="button" variant="default" onClick={() => setConfirmingPurge(false)}>取消</Button>
+          <Button type="button" color="red" onClick={() => void startPurge()}>确认清理</Button>
+        </Group>
+      </Modal>
+    </Stack>
   );
 }
 

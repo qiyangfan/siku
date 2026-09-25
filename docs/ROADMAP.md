@@ -27,6 +27,14 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 5++⁺ | 来源目录同步（进资料自动化延伸） | 受管喂养 + 定时扫描 + 标记式删除 | ✅ 已完成（2026-09-24，归档 `2026-09-24-add-directory-sync`：`siku.sync` 内核 + `library.sqlite3` 库域状态 + serve 轮询调度 + 来源/扫描/间隔/清理端点 + `siku scan` + 资料库来源目录区；library-sync spec 入主 specs；ADR-0010；取消收尾衔接索引修订 desktop-library 决议 #3；评审循环四轮 + 追加裁决） |
 | 6 | 签名与更新（阶段三） | Apple 公证 + Windows 签名 + 自动更新 | 更新链路灰度可用 |
 
+## 当前排序队列
+
+当前没有待处理的已立项队列项。最近完成并归档：
+
+1. **通用组件与移动端导航**：归档 `2026-09-24-adopt-mantine-ui-components`；新增 ADR-0011，接入 Mantine Core 9.x，移动端使用三项底部导航与更多视图菜单。
+2. **桌面本地服务恢复**：归档 `2026-09-24-recover-sidecar-after-exit`；Tauri 监测 sidecar 运行期故障，并提供重新启动和串行关闭清理。
+3. **基于内容的提问建议**：归档 `2026-09-24-recommend-content-based-questions`；从已导入笔记章节与 wiki 实体生成可编辑建议，空语料不展示固定示例。
+
 阶段依赖：1→2→3→4 严格串行（2 依赖 1 的投影，3 依赖 2 的元数据）；Phase 4 的 UI
 骨架可与 3 后半并行（契约先行）；5、6 按 ADR-0002 触发，不抢先。
 

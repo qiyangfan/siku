@@ -1,4 +1,5 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
+import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LibraryView } from "./LibraryView";
@@ -129,10 +130,10 @@ describe("资料库视图", () => {
     await screen.findByText("资料库还是空的");
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
 
-    const dialog = screen.getByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/全量重建/);
     await user.click(withinDialog(dialog, "取消"));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(
       fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/library/rebuild")),
     ).toHaveLength(0);
@@ -168,7 +169,7 @@ describe("资料库视图", () => {
 
     await screen.findByRole("list", { name: "资料库来源清单" });
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
-    await user.click(withinDialog(screen.getByRole("dialog"), "确认重建"));
+    await user.click(withinDialog(await screen.findByRole("dialog"), "确认重建"));
 
     expect(await screen.findByText("索引全量重建完成。")).toBeInTheDocument();
   });
@@ -196,7 +197,7 @@ describe("资料库视图", () => {
 
     await screen.findByText("资料库还是空的");
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
-    await user.click(withinDialog(screen.getByRole("dialog"), "确认重建"));
+    await user.click(withinDialog(await screen.findByRole("dialog"), "确认重建"));
 
     expect(
       await screen.findByText("已建索引的模型配置与当前不一致：请执行全量重建。"),
@@ -415,16 +416,16 @@ describe("来源目录同步", () => {
     expect(list).toHaveTextContent("来源缺失");
     await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
 
-    const dialog = screen.getByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("确认清理 2 项已标记文档？");
     await user.click(withinDialog(dialog, "取消"));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(
       fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/library/purge"),
     ).toHaveLength(0);
 
     await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
-    await user.click(withinDialog(screen.getByRole("dialog"), "确认清理"));
+    await user.click(withinDialog(await screen.findByRole("dialog"), "确认清理"));
     expect(await screen.findByText("清理完成：已物理移除 2 项标记文档。")).toBeInTheDocument();
   });
 });

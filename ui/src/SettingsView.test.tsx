@@ -1,4 +1,5 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -47,6 +48,21 @@ function mockFetch(calls: Call[], handlers: {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
     calls.push({ url, init });
+    if (url.endsWith("/api/health")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ status: "ok", version: "0.1.0" }),
+      } as Response);
+    }
+    if (url.includes("/api/notes")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ notes: [], total: 0, page: 1, page_size: 5 }),
+      } as Response);
+    }
+    if (url.endsWith("/api/wiki/entries")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ entries: [] }) } as Response);
+    }
     if (url.endsWith("/api/settings/test")) {
       return Promise.resolve({
         ok: handlers.testOk ?? true,
@@ -80,6 +96,7 @@ describe("设置中心", () => {
     const keyInput = within(groups[0]).getByLabelText("api_key（只写不回显）");
     expect(keyInput).toHaveValue("");
     expect(within(groups[0]).getByPlaceholderText("已设置——留空保持不变")).toBeInTheDocument();
+    expect(within(groups[0]).getByRole("radiogroup", { name: "凭证来源" })).toBeInTheDocument();
     // 已存明文 key 的通道默认停在「直接填写」
     expect(within(groups[0]).getByRole("radio", { name: "直接填写 key" })).toBeChecked();
     expect(
@@ -281,7 +298,7 @@ describe("设置中心", () => {
     const user = userEvent.setup();
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "设置" }));
 
     await waitFor(() =>
       expect(calls.some((call) => call.url.endsWith("/api/settings"))).toBe(true),
