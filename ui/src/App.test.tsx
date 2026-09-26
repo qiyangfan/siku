@@ -768,7 +768,7 @@ describe("组件库导航无障碍", () => {
     expect(screen.getByRole("heading", { name: "浏览" })).toBeInTheDocument();
   });
 
-  it("窄屏只渲染三个底部主导航并保留更多视图入口", async () => {
+  it("窄屏底部主导航含五个同级视图并保留更多视图入口", async () => {
     vi.spyOn(window, "matchMedia").mockImplementation((query) => ({
       matches: query === "(max-width: 40rem)",
       media: query,
@@ -789,11 +789,12 @@ describe("组件库导航无障碍", () => {
     });
     render(<App />);
     const nav = screen.getByRole("tablist", { name: "视图切换" });
-    await waitFor(() => expect(within(nav).getAllByRole("tab")).toHaveLength(3));
-    expect(within(nav).getByRole("tab", { name: "问答" })).toBeInTheDocument();
-    expect(within(nav).getByRole("tab", { name: "浏览" })).toBeInTheDocument();
-    expect(within(nav).getByRole("tab", { name: "图谱" })).toBeInTheDocument();
-    expect(within(nav).queryByRole("button", { name: "wiki" })).not.toBeInTheDocument();
+    await waitFor(() => expect(within(nav).getAllByRole("tab")).toHaveLength(5));
+    for (const label of ["问答", "浏览", "图谱", "wiki", "资料库"]) {
+      expect(within(nav).getByRole("tab", { name: label })).toBeInTheDocument();
+    }
+    // 设置是低频配置入口：不占底部栏，经更多视图菜单进入
+    expect(within(nav).queryByRole("tab", { name: "设置" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "更多视图", hidden: true })).toBeInTheDocument();
   });
 });

@@ -3,7 +3,9 @@ import {
   IconAffiliate,
   IconBook,
   IconDotsVertical,
+  IconFolder,
   IconMessageCircle,
+  IconNotebook,
 } from "@tabler/icons-react";
 import { useMediaQuery } from "@mantine/hooks";
 import {
@@ -48,14 +50,13 @@ const NAV_ITEMS: Array<{ name: ViewName; label: string; icon?: ReactNode }> = [
   { name: "ask", label: "问答", icon: <IconMessageCircle size={22} stroke={1.8} aria-hidden="true" /> },
   { name: "browse", label: "浏览", icon: <IconBook size={22} stroke={1.8} aria-hidden="true" /> },
   { name: "graph", label: "图谱", icon: <IconAffiliate size={22} stroke={1.8} aria-hidden="true" /> },
-  { name: "wiki", label: "wiki" },
-  { name: "library", label: "资料库" },
+  { name: "wiki", label: "wiki", icon: <IconNotebook size={22} stroke={1.8} aria-hidden="true" /> },
+  { name: "library", label: "资料库", icon: <IconFolder size={22} stroke={1.8} aria-hidden="true" /> },
   { name: "settings", label: "设置" },
 ];
 
+// 移动端底部栏放前五个同级视图，设置走更多菜单（低频配置入口）
 const MOBILE_MORE_NAV: Array<{ name: ViewName; label: string }> = [
-  { name: "wiki", label: "wiki" },
-  { name: "library", label: "资料库" },
   { name: "settings", label: "设置" },
 ];
 
@@ -260,7 +261,11 @@ function App() {
   // 未就绪门控：置灰提交 + 引导卡片；readiness 为 null（加载中/获取失败）不阻塞
   const askBlocked = readiness !== null && !readiness.ready;
   const moreView = MOBILE_MORE_NAV.some((item) => item.name === view);
-  const visibleNavItems = isMobileViewport ? NAV_ITEMS.slice(0, 3) : NAV_ITEMS;
+  // 移动端可见集 = 全量导航去掉走 ⋮ 菜单的项：增删视图只改两张表，不会静默错位
+  const mobileNavItems = NAV_ITEMS.filter(
+    (item) => !MOBILE_MORE_NAV.some((more) => more.name === item.name),
+  );
+  const visibleNavItems = isMobileViewport ? mobileNavItems : NAV_ITEMS;
   const serviceStatus = health === "ready" ? "服务正常" : health === "offline" ? "服务未连接" : "检查服务中";
   const serviceStatusColor = health === "ready" ? "green" : health === "offline" ? "red" : "gray";
 
@@ -329,7 +334,7 @@ function App() {
                 {serviceStatus}
               </Badge>
               <div className="mobile-more-menu">
-                <Menu position="bottom-end" offset={6} withinPortal>
+                <Menu position="bottom-end" offset={8} withinPortal>
                   <Menu.Target>
                     <Button
                       type="button"
@@ -411,11 +416,13 @@ function App() {
           </Tabs.Panel>
 
           <Tabs.Panel value="graph" className="view-panel">
-            {view === "graph" && <GraphView onAskEntity={askEntity} />}
+            {view === "graph" && (
+              <GraphView onAskEntity={askEntity} onGoToSettings={() => setView("settings")} />
+            )}
           </Tabs.Panel>
 
           <Tabs.Panel value="wiki" className="view-panel">
-            {view === "wiki" && <WikiView />}
+            {view === "wiki" && <WikiView onGoToSettings={() => setView("settings")} />}
           </Tabs.Panel>
 
           <Tabs.Panel value="ask" className="view-panel">
@@ -426,7 +433,7 @@ function App() {
           className="question-card"
           withBorder
           shadow="xs"
-          radius="lg"
+          radius="md"
           p="lg"
           onSubmit={(event) => {
             event.preventDefault();
@@ -517,7 +524,6 @@ function App() {
         {askState === "loading" && (
           <Alert
             className="answer-card loading-card"
-            color="blue"
             role="status"
             aria-live="polite"
             title="正在从本地知识库寻找依据"
@@ -537,7 +543,7 @@ function App() {
         )}
 
         {askState === "success" && answer && (
-          <Paper component="article" withBorder shadow="xs" radius="lg" p="xl" className="answer-card" aria-labelledby="answer-title">
+          <Paper component="article" withBorder shadow="xs" radius="md" p="xl" className="answer-card" aria-labelledby="answer-title">
             <div className="answer-heading">
               <div>
                 <p className="eyebrow">ANSWER</p>

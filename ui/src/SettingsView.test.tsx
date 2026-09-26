@@ -181,7 +181,7 @@ describe("设置中心", () => {
     expect(body.llm.model).toBe("deepseek-chat-new");
     expect(body.llm).not.toHaveProperty("api_key");
     expect(body.llm.base_url).toBe("https://api.deepseek.com");
-    expect(body.embedding).toEqual({ base_url: "", model: "", api_key_env: "" });
+    expect(body.embedding).toEqual({ base_url: "", model: "", api_key_env: "", protocol: "" });
     // 保存后表单以服务端掩码视图为准：key 输入框仍为空
     expect(within(groups[0]).getByLabelText("api_key（只写不回显）")).toHaveValue("");
   });
@@ -304,5 +304,121 @@ describe("设置中心", () => {
       expect(calls.some((call) => call.url.endsWith("/api/settings"))).toBe(true),
     );
     expect(await screen.findByRole("button", { name: "保存设置" })).toBeInTheDocument();
+  });
+
+  it("选择厂商预设自动填充端点与凭证模式，且仍可手改", async () => {
+    mockFetch([], { get: settings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = groups[0];
+    await user.selectOptions(
+      within(llm).getByLabelText("LLM 通道厂商预设"),
+      "通义千问（阿里云百炼）",
+    );
+
+    expect(within(llm).getByLabelText("base_url")).toHaveValue(
+      "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    );
+    expect(within(llm).getByLabelText("model")).toHaveValue("qwen-max");
+    expect(within(llm).getByLabelText("api_key_env（环境变量名）")).toHaveValue("DASHSCOPE_API_KEY");
+    expect(within(llm).getByRole("radio", { name: "引用环境变量" })).toBeChecked();
+
+    // 填充后仍可手改：直接改 model 不被预设霸占
+    await user.clear(within(llm).getByLabelText("model"));
+    await user.type(within(llm).getByLabelText("model"), "qwen-plus");
+    expect(within(llm).getByLabelText("model")).toHaveValue("qwen-plus");
+  });
+
+  it("Ollama 本地预设免凭证：回到直接填写并清空后备 env", async () => {
+    mockFetch([], { get: settings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = groups[0];
+    await user.selectOptions(
+      within(llm).getByLabelText("LLM 通道厂商预设"),
+      "Ollama 本地",
+    );
+
+    expect(within(llm).getByLabelText("base_url")).toHaveValue("http://127.0.0.1:11434/v1");
+    expect(within(llm).getByRole("radio", { name: "直接填写 key" })).toBeChecked();
+    await user.click(within(llm).getByRole("radio", { name: "引用环境变量" }));
+    expect(within(llm).getByLabelText("api_key_env（环境变量名）")).toHaveValue("");
+  });
+
+  it("切换接口协议后保存，PUT 提交携带所选协议", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, { get: settings, put: savedSettings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    await user.selectOptions(within(groups[0]).getByLabelText("LLM 通道接口协议"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => expect(calls.some((call) => call.init?.method === "PUT")).toBe(true));
+    const put = calls.find((call) => call.init?.method === "PUT");
+    expect(JSON.parse(String(put?.init?.body)).llm.protocol).toBe("anthropic");
+  });
+
+  it("保存前点测试连接按表单当前协议探测", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, {
+      get: settings,
+      test: { ok: true, channel: "llm", latency_ms: 12 },
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    await user.selectOptions(within(groups[0]).getByLabelText("LLM 通道接口协议"), "anthropic");
+    await user.click(within(groups[0]).getByRole("button", { name: "测试连接" }));
+
+    await waitFor(() =>
+      expect(calls.some((call) => call.url.endsWith("/api/settings/test"))).toBe(true),
+    );
+    const testCall = calls.find((call) => call.url.endsWith("/api/settings/test"));
+    expect(JSON.parse(String(testCall?.init?.body)).protocol).toBe("anthropic");
+  });
+
+  it("选择 Anthropic 分支预设同时填充端点与协议", async () => {
+    mockFetch([], { get: settings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = groups[0];
+    await user.selectOptions(
+      within(llm).getByLabelText("LLM 通道厂商预设"),
+      "Kimi（Anthropic 分支）",
+    );
+    expect(within(llm).getByLabelText("base_url")).toHaveValue("https://api.moonshot.cn/anthropic");
+    expect(within(llm).getByLabelText("LLM 通道接口协议")).toHaveValue("anthropic");
+    // embedding/rerank 通道不出现协议控件
+    expect(within(groups[1]).queryByLabelText(/接口协议/)).not.toBeInTheDocument();
+  });
+
+  it("LLM 通道回退生效时展示来源说明，不误导为完全未配置", async () => {
+    mockFetch([], {
+      get: {
+        ...settings,
+        llm: { ...settings.llm, base_url: null, model: null, api_key_set: false },
+        llm_env_fallback: {
+          vendor: "dashscope",
+          base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+          model: "qwen-max",
+          api_key_env: "DASHSCOPE_API_KEY",
+        },
+      },
+    });
+    render(<SettingsView />);
+
+    const note = await screen.findByText(/未显式配置 LLM 通道：当前按环境变量/);
+    expect(note).toBeInTheDocument();
+    expect(note).toHaveTextContent("DASHSCOPE_API_KEY");
+    expect(note).toHaveTextContent("qwen-max");
   });
 });

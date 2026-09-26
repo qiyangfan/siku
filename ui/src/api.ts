@@ -38,6 +38,8 @@ export type ChannelSettingsView = {
   base_url: string | null;
   model: string | null;
   api_key_env: string | null;
+  // 仅 LLM 通道有值（openai-chat / anthropic / openai-responses）；其余通道恒 null
+  protocol: string | null;
   api_key_set: boolean;
   env_overrides: string[];
 };
@@ -48,12 +50,21 @@ export type AskReadiness = {
   missing: string[];
 };
 
+// LLM 通道厂商环境变量回退的端点描述（不含凭证明文）；旧内核缺失该字段时按无回退处理
+export type LlmEnvFallback = {
+  vendor: string;
+  base_url: string;
+  model: string;
+  api_key_env: string;
+};
+
 export type SettingsResponse = {
   config_path: string;
   llm: ChannelSettingsView;
   embedding: ChannelSettingsView;
   rerank: ChannelSettingsView;
   ask_readiness: AskReadiness;
+  llm_env_fallback: LlmEnvFallback | null;
 };
 
 export type SettingsWriteResponse = SettingsResponse & {
@@ -65,6 +76,7 @@ export type ChannelSettingsPayload = {
   model?: string | null;
   api_key?: string | null;
   api_key_env?: string | null;
+  protocol?: string | null;
 };
 
 export type SettingsUpdatePayload = {

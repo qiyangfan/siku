@@ -39,6 +39,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const settingsReady = {
+  config_path: "/tmp/config.toml",
+  llm: { base_url: null, model: null, api_key_env: null, api_key_set: false, env_overrides: [] },
+  embedding: { base_url: null, model: null, api_key_env: null, api_key_set: false, env_overrides: [] },
+  rerank: { base_url: null, model: null, api_key_env: null, api_key_set: false, env_overrides: [] },
+  ask_readiness: { ready: true, missing: [] },
+  llm_env_fallback: null,
+};
+
+const settingsLlmKeyMissing = {
+  ...settingsReady,
+  ask_readiness: {
+    ready: false,
+    missing: ["llm.api_key", "embedding.base_url", "embedding.model"],
+  },
+};
+
 describe("wiki 视图", () => {
   it("渲染条目清单并阅读：内容、生成时间与可重建提示", async () => {
     mockFetchByRoutes({
@@ -47,7 +64,7 @@ describe("wiki 视图", () => {
     });
     const user = userEvent.setup();
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("共 2 个社区条目；内容由模型基于语料生成。")).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: /社区 0001/ }));
 
@@ -64,7 +81,7 @@ describe("wiki 视图", () => {
     });
     const user = userEvent.setup();
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     await user.click(await screen.findByRole("button", { name: /社区 0001/ }));
     await screen.findByRole("heading", { level: 3, name: "社区 0001" });
     await user.click(screen.getByRole("button", { name: "返回 wiki 列表" }));
@@ -84,10 +101,11 @@ describe("wiki 视图", () => {
           ? jsonResponse({ code: "wiki_missing", message: "wiki 尚未生成。" }, false)
           : jsonResponse(entries);
       },
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/wiki": () => jsonResponse(generateReport),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("wiki 尚未生成")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "生成 wiki" }));
@@ -121,6 +139,7 @@ describe("wiki 视图", () => {
           ? jsonResponse({ code: "wiki_missing", message: "wiki 尚未生成。" }, false)
           : jsonResponse(entries);
       },
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/wiki": () => {
         wikiCalls += 1;
         return wikiCalls === 1
@@ -130,7 +149,7 @@ describe("wiki 视图", () => {
       "/api/graph": () => jsonResponse(buildReport),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("wiki 尚未生成")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "生成 wiki" }));
@@ -152,7 +171,7 @@ describe("wiki 视图", () => {
       "/api/wiki": () => jsonResponse(generateReport),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     await user.click(await screen.findByRole("button", { name: /社区 0001/ }));
     expect(await screen.findByRole("heading", { level: 3, name: "社区 0001" })).toBeInTheDocument();
 
@@ -177,7 +196,7 @@ describe("wiki 视图", () => {
         ),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(
       await screen.findByText("共 2 个社区条目；内容由模型基于语料生成。"),
     ).toBeInTheDocument();
@@ -208,6 +227,7 @@ describe("wiki 视图", () => {
     mockFetchByRoutes({
       "/api/wiki/entries": () =>
         jsonResponse({ code: "wiki_missing", message: "wiki 尚未生成。" }, false),
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/wiki": () => {
         wikiCalls += 1;
         return wikiCalls === 1
@@ -217,7 +237,7 @@ describe("wiki 视图", () => {
       "/api/graph": () => jsonResponse(buildReport),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("wiki 尚未生成")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "生成 wiki" }));
@@ -249,6 +269,7 @@ describe("wiki 视图", () => {
     mockFetchByRoutes({
       "/api/wiki/entries": () =>
         jsonResponse({ code: "wiki_missing", message: "wiki 尚未生成。" }, false),
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/wiki": () => {
         wikiCalls += 1;
         return jsonResponse(
@@ -259,7 +280,7 @@ describe("wiki 视图", () => {
       "/api/graph": () => jsonResponse(buildReport),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("wiki 尚未生成")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "生成 wiki" }));
@@ -283,7 +304,7 @@ describe("wiki 视图", () => {
         ),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(
       await screen.findByText("共 2 个社区条目；内容由模型基于语料生成。"),
     ).toBeInTheDocument();
@@ -309,7 +330,7 @@ describe("wiki 视图", () => {
       "/api/wiki": () => jsonResponse(generateReport),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(
       await screen.findByText("共 2 个社区条目；内容由模型基于语料生成。"),
     ).toBeInTheDocument();
@@ -327,6 +348,7 @@ describe("wiki 视图", () => {
     mockFetchByRoutes({
       "/api/wiki/entries": () =>
         jsonResponse({ code: "wiki_missing", message: "wiki 尚未生成。" }, false),
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/wiki": () =>
         jsonResponse(
           { code: "llm_not_configured", message: "尚未配置 LLM API key，请在设置中补全。" },
@@ -334,7 +356,7 @@ describe("wiki 视图", () => {
         ),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("wiki 尚未生成")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "生成 wiki" }));
@@ -348,8 +370,42 @@ describe("wiki 视图", () => {
         jsonResponse({ code: "internal_error", message: "服务内部错误。" }, false),
     });
 
-    render(<WikiView />);
+    render(<WikiView onGoToSettings={vi.fn()} />);
     expect(await screen.findByRole("alert")).toHaveTextContent("服务内部错误。");
     expect(screen.getByRole("button", { name: "重试读取" })).toBeInTheDocument();
+  });
+
+  it("空态缺 LLM key 时展示缺项说明与去设置入口，且不拦截生成按钮", async () => {
+    const onGoToSettings = vi.fn();
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/wiki/entries": () =>
+        jsonResponse({ code: "wiki_missing", message: "wiki 尚未生成。" }, false),
+      "/api/settings": () => jsonResponse(settingsLlmKeyMissing),
+    });
+
+    render(<WikiView onGoToSettings={onGoToSettings} />);
+    expect(await screen.findByText("wiki 尚未生成")).toBeInTheDocument();
+
+    expect(
+      await screen.findByText(/构建需要调用 LLM 通道，当前其 API key 未配置/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "去设置" }));
+    expect(onGoToSettings).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "生成 wiki" })).toBeEnabled();
+  });
+
+  it("空态就绪时说明可直接生成且不出现去设置入口", async () => {
+    mockFetchByRoutes({
+      "/api/wiki/entries": () =>
+        jsonResponse({ code: "wiki_missing", message: "wiki 尚未生成。" }, false),
+      "/api/settings": () => jsonResponse(settingsReady),
+    });
+
+    render(<WikiView onGoToSettings={vi.fn()} />);
+    expect(await screen.findByText("wiki 尚未生成")).toBeInTheDocument();
+
+    expect(await screen.findByText(/模型通道已就绪：点击下方按钮即可开始/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "去设置" })).not.toBeInTheDocument();
   });
 });

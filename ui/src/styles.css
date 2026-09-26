@@ -233,6 +233,28 @@ h1 {
   background: var(--color-canvas);
 }
 
+/* 破坏性操作触发键：危险浅底 + 危险色文字，与普通次级键一眼区分 */
+.mantine-Button-root.button-danger {
+  border: var(--border-width) solid var(--color-danger-border);
+  background: var(--color-danger-wash);
+  color: var(--color-danger);
+}
+
+.mantine-Button-root.button-danger:hover:not(:disabled) {
+  background: var(--color-danger-border);
+}
+
+/* 危险确认键：实底危险色，只用于确认对话框内的最终执行键 */
+.mantine-Button-root.button-danger-solid {
+  border: var(--border-width) solid var(--color-danger);
+  background: var(--color-danger);
+  color: var(--color-surface);
+}
+
+.mantine-Button-root.button-danger-solid:hover:not(:disabled) {
+  background: var(--color-danger-strong);
+}
+
 code {
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -586,6 +608,26 @@ code {
   color: var(--color-warning);
 }
 
+.llm-fallback-note {
+  margin-top: var(--space-2);
+}
+
+.llm-readiness-missing {
+  margin-top: var(--space-2);
+}
+
+.field-preset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  min-width: 0;
+}
+
+.field-preset .hint {
+  margin: 0;
+}
+
 .channel-footer {
   display: flex;
   align-items: center;
@@ -609,10 +651,23 @@ code {
   }
 }
 
+/* ---- 视图头部（跨视图共用）：各视图标题与说明行的统一节奏 ---- */
+
+.browse-toolbar h2,
+.graph-header h2,
+.wiki-header h2,
+.library-toolbar h2,
 .settings-form h2 {
   margin: 0;
   font-size: var(--font-heading);
   line-height: var(--line-heading);
+}
+
+.browse-toolbar .hint,
+.graph-header .hint,
+.wiki-header .hint,
+.library-toolbar .hint {
+  margin: var(--space-1) 0 0;
 }
 
 /* ---- 资料库视图 ---- */
@@ -625,30 +680,62 @@ code {
   min-width: 0;
 }
 
-.library-toolbar h2 {
-  margin: 0;
-  font-size: var(--font-heading);
-  line-height: var(--line-heading);
-}
-
 .library-actions {
   width: min(32rem, 100%);
   min-width: 0;
   flex: 0 1 32rem;
 }
 
-.library-file-input {
+/* 导入投放区：文件选择控件形态（虚线边框卡片），点击与拖拽同路 */
+.library-dropzone {
+  display: flex;
   width: 100%;
   min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-5) var(--space-4);
+  border: var(--border-width) dashed var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+  text-align: center;
+}
+
+.library-dropzone:hover,
+.library-dropzone:focus-visible {
+  border-color: var(--color-accent);
+  background: var(--color-accent-wash);
+}
+
+.library-dropzone-active {
+  border-color: var(--color-accent);
+  border-style: solid;
+  background: var(--color-accent-wash);
+}
+
+/* 任务执行期间的禁用态：保留占位但明确不可交互 */
+.library-dropzone[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.library-dropzone-title {
+  font-weight: var(--weight-semibold);
+}
+
+/* 原生 input 只承载系统文件选择器，视觉上隐藏但不可 display:none（部分浏览器禁止聚焦触发） */
+.library-drop-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 .library-action-buttons {
   width: 100%;
   min-width: 0;
-}
-
-.library-toolbar .hint {
-  margin: var(--space-1) 0 0;
 }
 
 .library-list {
@@ -871,7 +958,7 @@ code {
 }
 
 .library-empty .mantine-Alert-body {
-  max-width: 52rem;
+  max-width: var(--content-max);
 }
 
 .library-empty p {
@@ -921,7 +1008,7 @@ code {
     flex-basis: 100%;
   }
 
-  .library-file-input {
+  .library-dropzone {
     width: 100%;
     min-width: 0;
   }
@@ -999,20 +1086,6 @@ code {
   .wiki-header-actions button {
     width: 100%;
   }
-}
-
-.browse-toolbar h2,
-.graph-header h2,
-.wiki-header h2 {
-  margin: 0;
-  font-size: var(--font-heading);
-  line-height: var(--line-heading);
-}
-
-.browse-toolbar .hint,
-.graph-header .hint,
-.wiki-header .hint {
-  margin: var(--space-1) 0 0;
 }
 
 .browse-layout,

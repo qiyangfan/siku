@@ -13,6 +13,7 @@ import {
   type GraphSubgraph,
 } from "./api";
 import { GraphCanvas } from "./GraphCanvas";
+import { LlmReadinessHint } from "./LlmReadinessHint";
 
 const OVERVIEW_LIMIT = 200;
 const NEIGHBOR_LIMIT = 50;
@@ -70,7 +71,13 @@ function mergeSubgraph(model: GraphModel, subgraph: GraphSubgraph): GraphModel {
   };
 }
 
-export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void }) {
+export function GraphView({
+  onAskEntity,
+  onGoToSettings,
+}: {
+  onAskEntity: (name: string) => void;
+  onGoToSettings: () => void;
+}) {
   const [stats, setStats] = useState<GraphStats | null>(null);
   const [model, setModel] = useState<GraphModel | null>(null);
   const [missing, setMissing] = useState(false);
@@ -238,6 +245,7 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
             图谱由笔记投影抽取实体与关系生成，使用「设置」中配置的 LLM 通道；真实抽取
             可能需要几分钟，完成后画布自动加载。
           </p>
+          <LlmReadinessHint onGoToSettings={onGoToSettings} />
           {buildNote !== null && (
             <p className="hint" role="status">
               {buildNote}
@@ -259,12 +267,7 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
               重试读取
             </Button>
           )}
-          <Button variant="default"
-            type="button"
-            className="button-secondary"
-            disabled={building}
-            onClick={() => void runBuild()}
-          >
+          <Button type="button" disabled={building} onClick={() => void runBuild()}>
             {building ? "构建中…（可能需要几分钟）" : "构建图谱"}
           </Button>
         </Alert>

@@ -1,4 +1,9 @@
-import { createTheme, type CSSVariablesResolver } from "@mantine/core";
+import {
+  createTheme,
+  rgba,
+  type CSSVariablesResolver,
+  type MantineColorsTuple,
+} from "@mantine/core";
 
 const SPACING_SCALE = {
   xs: "0.25rem",
@@ -61,12 +66,63 @@ const LINE_HEIGHT = {
   control: "1.25",
 } as const;
 
+// 语义锚点色：成功/警告/危险三族的核心色，与图谱社区色板共用同一组值。
+// ink 与 canvas 同时被 Mantine 的 body/text 覆盖引用，必须单点定义。
+const SEMANTIC_GREEN = "#16724b";
+const SEMANTIC_AMBER = "#8a5b08";
+const SEMANTIC_RED = "#a43d3d";
+const INK = "#182230";
+const CANVAS = "#f6f8fb";
+
+/**
+ * 覆盖 Mantine 默认 green/yellow/red 色阶：Alert/Badge 的 color 属性与下方
+ * CSS 语义 token 从此同源，杜绝「Mantine 默认鲜亮板」与「siku muted 语义色」
+ * 两套体系并存。阶位口径：1=浅底(wash)、2=描边、6=核心、7=加深、9=浅底上的
+ * 文字；1↔9 与 1↔6 的对比度由 design-system.test.ts 守卫（≥4.5:1）。
+ */
+const SUCCESS_RAMP: MantineColorsTuple = [
+  "#eef7f2",
+  "#e3f2ea",
+  "#bfe0cf",
+  "#8fcbaf",
+  "#5cb48d",
+  "#339a70",
+  SEMANTIC_GREEN,
+  "#115e3e",
+  "#0d4a31",
+  "#093825",
+];
+const WARNING_RAMP: MantineColorsTuple = [
+  "#fffaef",
+  "#fff8e8",
+  "#ecd59d",
+  "#e0bc6c",
+  "#cfa344",
+  "#ad8420",
+  SEMANTIC_AMBER,
+  "#6f4807",
+  "#593906",
+  "#482d05",
+];
+const DANGER_RAMP: MantineColorsTuple = [
+  "#fff8f7",
+  "#fff1f1",
+  "#efc2c2",
+  "#e29a99",
+  "#d07c7b",
+  "#bd5d5c",
+  SEMANTIC_RED,
+  "#8f3232",
+  "#78292a",
+  "#632223",
+];
+
 /** Sigma 画布按 community_id 稳定映射的分类色板；未分配节点单独使用中性灰。 */
 export const GRAPH_COMMUNITY_COLORS = [
   "#2457d6",
-  "#16724b",
-  "#8a5b08",
-  "#a43d3d",
+  SEMANTIC_GREEN,
+  SEMANTIC_AMBER,
+  SEMANTIC_RED,
   "#6b3fa0",
   "#0f7f8b",
   "#b0487f",
@@ -78,7 +134,10 @@ export const GRAPH_COMMUNITY_COLORS = [
 ] as const;
 export const GRAPH_UNASSIGNED_COLOR = "#7b8798";
 
-const primary: [string, string, string, string, string, string, string, string, string, string] = [
+/** 画布边线色：ink 的透明派生（canvas 绘制读不到 CSS 变量，只能常量化）。 */
+export const GRAPH_EDGE_COLOR = rgba(INK, 0.18);
+
+const primary: MantineColorsTuple = [
   "#edf2ff",
   "#dbe5ff",
   "#b8cbff",
@@ -93,7 +152,16 @@ const primary: [string, string, string, string, string, string, string, string, 
 
 export const theme = createTheme({
   primaryColor: "siku",
-  colors: { siku: primary },
+  colors: {
+    siku: primary,
+    // 用 siku 语义 ramp 顶替默认色板：组件写 color="green|yellow|red" 即得语义色，
+    // 不存在「顺手写默认色名却拿到 Mantine 原色」的回退路径。
+    // gray 有意豁免：中性系无语义角色，且 Mantine 默认 gray 同时驱动次级按钮、
+    // 输入框描边等组件 chrome，覆盖会波及全部默认件外观
+    green: SUCCESS_RAMP,
+    yellow: WARNING_RAMP,
+    red: DANGER_RAMP,
+  },
   defaultRadius: "sm",
   fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   fontFamilyMonospace: "ui-monospace, SFMono-Regular, Menlo, monospace",
@@ -115,23 +183,27 @@ export const theme = createTheme({
 
 export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
   variables: {
-    "--color-ink": "#182230",
-    "--color-ink-soft": "#536174",
-    "--color-ink-faint": "#626f81",
-    "--color-canvas": "#f6f8fb",
+    "--color-ink": INK,
+    // 辅助字对比度达标口径（≥4.5:1，UI 闸门硬底线）：曾在浅灰画布上仅 3.1–3.9:1
+    "--color-ink-soft": "#47525f",
+    "--color-ink-faint": "#545f6e",
+    "--color-canvas": CANVAS,
     "--color-surface": "#ffffff",
     "--color-border": "#dce3ec",
     "--color-border-strong": "#c5cfdd",
     "--color-accent": currentTheme.colors.siku[6],
     "--color-accent-strong": currentTheme.colors.siku[7],
     "--color-accent-wash": currentTheme.colors.siku[0],
-    "--color-success": "#16724b",
-    "--color-warning": "#8a5b08",
-    "--color-warning-wash": "#fff8e8",
-    "--color-warning-border": "#ecd59d",
-    "--color-danger": "#a43d3d",
-    "--color-danger-wash": "#fff1f1",
-    "--color-danger-border": "#efc2c2",
+    // 语义色一律取自上方被覆盖的 Mantine 色阶（阶位口径见 ramp 注释），
+    // 与组件 color="green|yellow|red" 天然同色；design-system.test.ts 守卫同源性
+    "--color-success": currentTheme.colors.green[6],
+    "--color-warning": currentTheme.colors.yellow[6],
+    "--color-warning-wash": currentTheme.colors.yellow[1],
+    "--color-warning-border": currentTheme.colors.yellow[2],
+    "--color-danger": currentTheme.colors.red[6],
+    "--color-danger-strong": currentTheme.colors.red[7],
+    "--color-danger-wash": currentTheme.colors.red[1],
+    "--color-danger-border": currentTheme.colors.red[2],
     "--font-display": FONT_DISPLAY,
     "--font-caption": FONT_SIZE_SCALE.xs,
     "--font-small": FONT_SIZE_SCALE.sm,
@@ -174,8 +246,8 @@ export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
     "--content-max": COMPONENT_METRICS.contentMax,
   },
   light: {
-    "--mantine-color-body": "#f6f8fb",
-    "--mantine-color-text": "#182230",
+    "--mantine-color-body": CANVAS,
+    "--mantine-color-text": INK,
   },
   dark: {},
 });

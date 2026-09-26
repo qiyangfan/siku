@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -414,18 +414,88 @@ describe("来源目录同步", () => {
 
     const list = await screen.findByRole("list", { name: "资料库来源清单" });
     expect(list).toHaveTextContent("来源缺失");
-    await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
+    await user.click(screen.getByRole("button", { name: "清理失效文档（2）" }));
 
     const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("确认清理 2 项已标记文档？");
+    expect(dialog).toHaveTextContent("确认清理 2 项失效文档？");
     await user.click(withinDialog(dialog, "取消"));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(
       fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/library/purge"),
     ).toHaveLength(0);
 
-    await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
+    await user.click(screen.getByRole("button", { name: "清理失效文档（2）" }));
     await user.click(withinDialog(await screen.findByRole("dialog"), "确认清理"));
-    expect(await screen.findByText("清理完成：已物理移除 2 项标记文档。")).toBeInTheDocument();
+    expect(await screen.findByText("清理完成：已物理移除 2 项失效文档。")).toBeInTheDocument();
+  });
+
+  it("清理失效文档按钮带危险配色，可清零时禁用并有释义 tooltip", async () => {
+    mockRoutes({ "/api/library": () => listingWithMarked });
+    render(<LibraryView />);
+
+    const button = await screen.findByRole("button", { name: "清理失效文档（2）" });
+    expect(button).toHaveClass("button-danger");
+    expect(button).toHaveAccessibleDescription(/来源缺失/);
+
+    mockRoutes({ "/api/library": () => emptyListing });
+    cleanup();
+    render(<LibraryView />);
+    const idleButton = await screen.findByRole("button", { name: "清理失效文档" });
+    expect(idleButton).toBeDisabled();
+  });
+
+  it("拖拽文件到导入区按点击选择同路发起摄取", async () => {
+    const runningJob = {
+      job_id: "job-drop",
+      kind: "ingest",
+      state: "running",
+      phase: "ingesting",
+      total: 1,
+      done: 0,
+      failed: 0,
+      current: "拖入.pdf",
+      items: [],
+      error: null,
+    };
+    mockRouter([
+      () => emptyListing,
+      (url, method, init) => {
+        expect(url).toBe("/api/library/ingest");
+        expect(method).toBe("POST");
+        expect(initBodyHasFile(init)).toBe(true);
+        return runningJob;
+      },
+    ]);
+    render(<LibraryView />);
+
+    await screen.findByText("资料库还是空的");
+    const dropzone = screen.getByRole("button", { name: /导入文件：点击选择或拖入文档/ });
+    const file = new File(["pdf-bytes"], "拖入.pdf", { type: "application/pdf" });
+    fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
+
+    expect(await screen.findByText(/正在摄取/)).toBeInTheDocument();
+  });
+
+  it("导入区拖拽悬停有高亮反馈，拖离后消退", async () => {
+    mockRouter([() => emptyListing]);
+    render(<LibraryView />);
+
+    const dropzone = await screen.findByRole("button", { name: /导入文件：点击选择或拖入文档/ });
+    expect(dropzone).not.toHaveClass("library-dropzone-active");
+    fireEvent.dragOver(dropzone);
+    expect(dropzone).toHaveClass("library-dropzone-active");
+    fireEvent.dragLeave(dropzone);
+    expect(dropzone).not.toHaveClass("library-dropzone-active");
+  });
+
+  it("来源清单状态徽标带可读释义 tooltip", async () => {
+    mockRoutes({ "/api/library": () => listingWithMarked });
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    const missingBadge = within(list).getByText("来源缺失");
+    expect(missingBadge).toHaveAccessibleDescription(/原件文件已不存在/);
+    const supersededBadge = within(list).getByText("已被替代");
+    expect(supersededBadge).toHaveAccessibleDescription(/已被替代/);
   });
 });

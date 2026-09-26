@@ -6,6 +6,7 @@ import {
   Fieldset,
   Group,
   Loader,
+  NativeSelect,
   PasswordInput,
   Radio,
   Stack,
@@ -31,8 +32,16 @@ type ChannelForm = {
   key_mode: KeyMode;
   api_key: string;
   api_key_env: string;
+  protocol: string;
   clearStoredKey: boolean;
 };
+
+// LLM 线协议（ADR-0012）；空串 = 未显式设置（内核按 openai-chat 执行）
+const LLM_PROTOCOL_OPTIONS = [
+  { value: "openai-chat", label: "OpenAI Chat 兼容（/chat/completions）" },
+  { value: "anthropic", label: "Anthropic Messages 兼容（/v1/messages）" },
+  { value: "openai-responses", label: "OpenAI Responses（/responses）" },
+];
 
 type SaveState = "idle" | "loading";
 
@@ -41,12 +50,224 @@ type ChannelTestState =
   | { kind: "done"; ok: boolean; message: string }
   | null;
 
+// 厂商预设（静态填充表，只住 UI 层）：官方几家 + 本地 Ollama，中转站不做。
+// model 为常用默认，以厂商当前列表为准可手改；api_key_env 为 null 表示本地无凭证。
+type VendorPreset = {
+  id: string;
+  label: string;
+  base_url: string;
+  model: string;
+  api_key_env: string | null;
+  // 该预设的线协议；null = 不适用（embedding/rerank 预设）或不改动
+  protocol: string | null;
+};
+
+const LLM_PRESETS: VendorPreset[] = [
+  {
+    id: "dashscope",
+    label: "通义千问（阿里云百炼）",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "qwen-max",
+    api_key_env: "DASHSCOPE_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "dashscope-anthropic",
+    label: "通义千问（Anthropic 分支）",
+    base_url: "https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy",
+    model: "qwen3-max",
+    api_key_env: "DASHSCOPE_API_KEY",
+    protocol: "anthropic",
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    base_url: "https://api.deepseek.com",
+    model: "deepseek-chat",
+    api_key_env: "DEEPSEEK_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "moonshot",
+    label: "Kimi（月之暗面）",
+    base_url: "https://api.moonshot.cn/v1",
+    model: "kimi-k2-0905-preview",
+    api_key_env: "MOONSHOT_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "moonshot-anthropic",
+    label: "Kimi（Anthropic 分支）",
+    base_url: "https://api.moonshot.cn/anthropic",
+    model: "kimi-k2-0905-preview",
+    api_key_env: "MOONSHOT_API_KEY",
+    protocol: "anthropic",
+  },
+  {
+    id: "zhipu",
+    label: "智谱 GLM",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    model: "glm-4-plus",
+    api_key_env: "ZHIPUAI_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "zhipu-anthropic",
+    label: "智谱 GLM（Anthropic 分支）",
+    base_url: "https://open.bigmodel.cn/api/anthropic",
+    model: "glm-4-plus",
+    api_key_env: "ZHIPUAI_API_KEY",
+    protocol: "anthropic",
+  },
+  {
+    id: "siliconflow",
+    label: "硅基流动 SiliconFlow",
+    base_url: "https://api.siliconflow.cn/v1",
+    model: "deepseek-ai/DeepSeek-V3",
+    api_key_env: "SILICONFLOW_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "volcengine-ark",
+    label: "火山方舟（豆包）",
+    base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    model: "doubao-seed-1.6",
+    api_key_env: "ARK_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "qianfan",
+    label: "百度千帆",
+    base_url: "https://qianfan.baidubce.com/v2",
+    model: "ernie-4.5-turbo-128k",
+    api_key_env: "QIANFAN_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    base_url: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+    api_key_env: "OPENAI_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic Claude",
+    base_url: "https://api.anthropic.com/v1",
+    model: "claude-sonnet-4-5",
+    api_key_env: "ANTHROPIC_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "anthropic-native",
+    label: "Anthropic Claude（原生协议）",
+    base_url: "https://api.anthropic.com",
+    model: "claude-sonnet-4-5",
+    api_key_env: "ANTHROPIC_API_KEY",
+    protocol: "anthropic",
+  },
+  {
+    id: "gemini",
+    label: "Google Gemini",
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+    model: "gemini-2.5-flash",
+    api_key_env: "GEMINI_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "xai",
+    label: "xAI Grok",
+    base_url: "https://api.x.ai/v1",
+    model: "grok-4",
+    api_key_env: "XAI_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    base_url: "https://openrouter.ai/api/v1",
+    model: "openai/gpt-4o-mini",
+    api_key_env: "OPENROUTER_API_KEY",
+    protocol: "openai-chat",
+  },
+  {
+    id: "ollama",
+    label: "Ollama 本地",
+    base_url: "http://127.0.0.1:11434/v1",
+    model: "qwen3:8b",
+    api_key_env: null,
+    protocol: "openai-chat",
+  },
+];
+
+const EMBEDDING_PRESETS: VendorPreset[] = [
+  {
+    id: "dashscope-embedding",
+    label: "通义千问（阿里云百炼）",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    model: "text-embedding-v4",
+    api_key_env: "DASHSCOPE_API_KEY",
+    protocol: null,
+  },
+  {
+    id: "siliconflow-embedding",
+    label: "硅基流动 SiliconFlow",
+    base_url: "https://api.siliconflow.cn/v1",
+    model: "BAAI/bge-m3",
+    api_key_env: "SILICONFLOW_API_KEY",
+    protocol: null,
+  },
+  {
+    id: "openai-embedding",
+    label: "OpenAI",
+    base_url: "https://api.openai.com/v1",
+    model: "text-embedding-3-small",
+    api_key_env: "OPENAI_API_KEY",
+    protocol: null,
+  },
+  {
+    id: "zhipu-embedding",
+    label: "智谱 GLM",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    model: "embedding-3",
+    api_key_env: "ZHIPUAI_API_KEY",
+    protocol: null,
+  },
+  {
+    id: "ollama-embedding",
+    label: "Ollama 本地",
+    base_url: "http://127.0.0.1:11434/v1",
+    model: "bge-m3",
+    api_key_env: null,
+    protocol: null,
+  },
+];
+
+const RERANK_PRESETS: VendorPreset[] = [
+  {
+    id: "siliconflow-rerank",
+    label: "硅基流动 SiliconFlow",
+    base_url: "https://api.siliconflow.cn/v1",
+    model: "BAAI/bge-reranker-v2-m3",
+    api_key_env: "SILICONFLOW_API_KEY",
+    protocol: null,
+  },
+];
+
+const CHANNEL_PRESETS: Record<ChannelName, VendorPreset[]> = {
+  llm: LLM_PRESETS,
+  embedding: EMBEDDING_PRESETS,
+  rerank: RERANK_PRESETS,
+};
+
 const EMPTY_FORM: ChannelForm = {
   base_url: "",
   model: "",
   key_mode: "direct",
   api_key: "",
   api_key_env: "",
+  protocol: "",
   clearStoredKey: false,
 };
 
@@ -89,6 +310,7 @@ function formFrom(view: ChannelSettingsView): ChannelForm {
     key_mode: keyModeFrom(view),
     api_key: "",
     api_key_env: view.api_key_env ?? "",
+    protocol: view.protocol ?? "",
     clearStoredKey: false,
   };
 }
@@ -108,6 +330,7 @@ function payloadFrom(form: ChannelForm): ChannelSettingsPayload {
     base_url: form.base_url.trim(),
     model: form.model.trim(),
     api_key_env: form.api_key_env.trim(),
+    protocol: form.protocol.trim(),
   };
   const typedKey = form.api_key.trim();
   if (typedKey) {
@@ -140,10 +363,18 @@ export function SettingsView({
     embedding: null,
     rerank: null,
   });
+  // 预设下拉的选中值（仅记录选择，填充后的字段仍可自由编辑；清除选择不回滚已填字段）
+  const [presetIds, setPresetIds] = useState<Record<ChannelName, string | null>>({
+    llm: null,
+    embedding: null,
+    rerank: null,
+  });
 
   const applySettings = useCallback((settings: SettingsResponse) => {
     setViews(settings);
     setForms(formsFrom(settings));
+    // 表单已被服务端视图覆盖：预设下拉同步回到「自定义」，避免显示陈旧厂商
+    setPresetIds({ llm: null, embedding: null, rerank: null });
   }, []);
 
   const load = useCallback(async () => {
@@ -190,6 +421,37 @@ export function SettingsView({
     });
   };
 
+  // 厂商预设填充：云端预设切换到「引用环境变量」并预填变量名（key 需自备）；
+  // 本地预设（Ollama）无需凭证，回到「直接填写」。两种切换都丢弃尚未保存的
+  // 明文输入，防止切厂商后把 A 家临时 key 连同 B 家端点一起保存
+  const applyPreset = (channel: ChannelName, presetId: string | null) => {
+    setPresetIds((prev) => ({ ...prev, [channel]: presetId }));
+    if (presetId === null) {
+      return;
+    }
+    const preset = CHANNEL_PRESETS[channel].find((item) => item.id === presetId);
+    if (!preset) {
+      return;
+    }
+    setForms((prev) => {
+      const form = prev[channel];
+      return {
+        ...prev,
+        [channel]: {
+          ...form,
+          base_url: preset.base_url,
+          model: preset.model,
+          api_key_env: preset.api_key_env ?? "",
+          // 厂商分支决定线协议：Anthropic 分支预设直接切协议，普通预设回到缺省
+          protocol: preset.protocol ?? "",
+          key_mode: preset.api_key_env ? "env" : "direct",
+          api_key: "",
+          clearStoredKey: false,
+        },
+      };
+    });
+  };
+
   const save = async () => {
     setSaveState("loading");
     setSaveMessage(null);
@@ -231,6 +493,9 @@ export function SettingsView({
     }
     if (form.api_key_env.trim()) {
       request.api_key_env = form.api_key_env.trim();
+    }
+    if (channel === "llm" && form.protocol.trim()) {
+      request.protocol = form.protocol.trim();
     }
     try {
       const result = await testChannel(request);
@@ -280,7 +545,7 @@ export function SettingsView({
     <Stack
       component="form"
       className="settings-form"
-      gap="xl"
+      gap="lg"
       aria-labelledby="settings-title"
       onSubmit={(event) => {
         event.preventDefault();
@@ -315,6 +580,54 @@ export function SettingsView({
                 {view.env_overrides.join("、")}。
               </p>
             )}
+            {key === "llm" && views.llm_env_fallback && (
+              <Alert className="llm-fallback-note" role="note">
+                未显式配置 LLM 通道：当前按环境变量{" "}
+                <code>{views.llm_env_fallback.api_key_env}</code> 回退使用{" "}
+                <code>{views.llm_env_fallback.base_url}</code>（
+                {views.llm_env_fallback.model}）。在下方显式配置并保存后即可覆盖。
+              </Alert>
+            )}
+            {key === "llm" && (
+              <div className="field-preset">
+                <NativeSelect
+                  id={`${key}-protocol`}
+                  label="接口协议"
+                  aria-label="LLM 通道接口协议"
+                  value={form.protocol || "openai-chat"}
+                  onChange={(event) => setField(key, "protocol", event.currentTarget.value)}
+                  data={LLM_PROTOCOL_OPTIONS}
+                />
+                <p className="hint">
+                  协议决定请求路径与凭证头：anthropic 的请求发往
+                  {" "}<code>{"{base_url}/v1/messages"}</code>，base_url 需填分支根地址
+                  （不要带 /v1 结尾的 OpenAI 兼容路径）；自建网关反代与官方端点平级，
+                  按其协议直接手填即可。
+                </p>
+              </div>
+            )}
+            <div className="field-preset">
+              <NativeSelect
+                id={`${key}-preset`}
+                label="厂商预设"
+                aria-label={`${title}厂商预设`}
+                value={presetIds[key] ?? ""}
+                onChange={(event) => applyPreset(key, event.currentTarget.value || null)}
+                data={[
+                  { value: "", label: "自定义（不自动填充）" },
+                  ...CHANNEL_PRESETS[key].map((preset) => ({
+                    value: preset.id,
+                    label: preset.label,
+                  })),
+                ]}
+              />
+              <p className="hint">
+                {key === "llm"
+                  ? "预设含各厂商 OpenAI 兼容端点与 Anthropic 分支（选中即联动接口协议），模型为常用默认、可手改；自建网关反代（muniu / one-api 等）与官方端点平级，选「自定义」手填即可。"
+                  : "预设填入常用端点与模型，可手改。"}
+                {" "}云端 key 需自备，Ollama 本地无需凭证。
+              </p>
+            </div>
             <div className="field-grid">
               <div className="field">
                 <TextInput

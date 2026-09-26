@@ -3,7 +3,7 @@ import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
 import type { GraphEdge, GraphNode } from "./api";
-import { GRAPH_COMMUNITY_COLORS, GRAPH_UNASSIGNED_COLOR } from "./theme";
+import { GRAPH_COMMUNITY_COLORS, GRAPH_EDGE_COLOR, GRAPH_UNASSIGNED_COLOR } from "./theme";
 
 /** 画布数据边界：永远只渲染服务端有界查询的返回集合。 */
 export type GraphCanvasProps = {
@@ -64,7 +64,7 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
       if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
         graph.addEdge(edge.source, edge.target, {
           size: 1,
-          color: "rgba(24, 34, 48, 0.18)",
+          color: GRAPH_EDGE_COLOR,
           type: "line",
         });
       }

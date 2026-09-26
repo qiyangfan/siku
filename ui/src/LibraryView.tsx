@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { IconChevronDown } from "@tabler/icons-react";
 import {
   Alert,
   Button,
   Checkbox,
-  FileInput,
   Group,
   Loader,
   Modal,
@@ -49,10 +49,26 @@ const INGEST_STATUS_LABEL: Record<LibraryIngestStatus, string> = {
   superseded: "已被替代",
 };
 
+// 徽标 title 释义：状态词本身是内部语，悬停给可读解释（清单密集场景的轻量说明）
+const INGEST_STATUS_HINT: Record<LibraryIngestStatus, string> = {
+  ingested: "已摄取为本地事实层",
+  stale: "来源文件已变更，等待重新抽取",
+  pending: "已登记，等待摄取",
+  ignored: "格式不支持或被规则忽略",
+  missing: "原件文件已不存在，可清理或重新导入",
+  superseded: "来源目录扫描发现同名新版本，此件已被替代",
+};
+
 const INDEX_STATUS_LABEL: Record<LibraryIndexStatus, string> = {
   indexed: "已索引",
   stale: "索引待更新",
   missing: "未索引",
+};
+
+const INDEX_STATUS_HINT: Record<LibraryIndexStatus, string> = {
+  indexed: "已同步检索索引",
+  stale: "等待索引更新",
+  missing: "尚未进入检索索引",
 };
 
 const ITEM_STATUS_LABEL: Record<LibraryJobItemStatus, string> = {
@@ -98,7 +114,7 @@ function jobOutcome(job: LibraryJob): { tone: "ok" | "error"; text: string } | n
   }
   if (job.kind === "purge") {
     const removed = job.items.filter((item) => item.status === "removed").length;
-    return { tone: "ok", text: `清理完成：已物理移除 ${removed} 项标记文档。` };
+    return { tone: "ok", text: `清理完成：已物理移除 ${removed} 项失效文档。` };
   }
   if (job.kind === "scan") {
     // 检疫移位等动作与入库动作都以 updated 呈现，按「动作数」诚实计数
@@ -118,7 +134,9 @@ export function LibraryView() {
   const [job, setJob] = useState<LibraryJob | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmingRebuild, setConfirmingRebuild] = useState(false);
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  // 导入投放区：原生 input[type=file] 承载系统文件选择器，拖拽经原生事件接收
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // 来源目录管理区：默认折叠，首次展开才请求（避免干扰主清单的首屏）
   const [syncSectionOpen, setSyncSectionOpen] = useState(false);
@@ -201,8 +219,7 @@ export function LibraryView() {
     return () => window.clearTimeout(handle);
   }, [job, pollJob]);
 
-  const startImport = async (selected: File[] | null) => {
-    const files = selected ?? [];
+  const startImport = async (files: File[]) => {
     if (files.length === 0) {
       return;
     }
@@ -212,8 +229,16 @@ export function LibraryView() {
       setJob(await ingestFiles(files));
     } catch (caught: unknown) {
       setActionError(connectionFallback(caught));
-    } finally {
-      setSelectedFiles([]);
+    }
+  };
+
+  const startFilePickerImport = (files: FileList | null) => {
+    // onChange 路径必须重置 input.value：同名文件再次选择不触发 change 事件
+    if (files !== null && files.length > 0) {
+      void startImport(Array.from(files));
+    }
+    if (fileInputRef.current !== null) {
+      fileInputRef.current.value = "";
     }
   };
 
@@ -349,31 +374,68 @@ export function LibraryView() {
           <p className="hint">导入即摄取为本地事实层，并自动同步检索索引。</p>
         </div>
         <Stack className="library-actions" gap="sm">
-          <FileInput
-            className="library-file-input"
-            w="100%"
-            label="导入文件"
-            multiple
-            fileInputProps={{ id: "library-file-input", "aria-label": "选择要导入的文件" }}
-            placeholder="选择本地文档"
-            value={selectedFiles}
-            disabled={running}
-            onChange={(files) => {
-              setSelectedFiles(files ?? []);
-              void startImport(files);
+          <div
+            className={`library-dropzone${dragActive ? " library-dropzone-active" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-label="导入文件：点击选择或拖入文档"
+            aria-disabled={running}
+            onClick={() => {
+              if (!running) {
+                fileInputRef.current?.click();
+              }
             }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                if (!running) {
+                  fileInputRef.current?.click();
+                }
+              }
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              if (!running) {
+                setDragActive(true);
+              }
+            }}
+            onDragLeave={() => setDragActive(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragActive(false);
+              if (!running) {
+                startFilePickerImport(event.dataTransfer.files);
+              }
+            }}
+          >
+            <strong className="library-dropzone-title">点击选择文件，或把文档拖到这里</strong>
+            <span className="hint">{SUPPORTED_FORMATS}，可多选；导入即摄取，原文件保持不变。</span>
+          </div>
+          <input
+            ref={fileInputRef}
+            className="library-drop-input"
+            type="file"
+            multiple
+            tabIndex={-1}
+            aria-label="选择要导入的文件"
+            disabled={running}
+            onChange={(event) => startFilePickerImport(event.target.files)}
           />
           <SimpleGrid className="library-action-buttons" cols={{ base: 1, sm: 2 }} spacing="sm">
             <Button
               variant="default"
               type="button"
-              className="button-secondary"
+              className="button-danger"
               fullWidth
               disabled={running || markedCount === 0}
-              title={markedCount === 0 ? "没有已标记（缺失/已替代）的文档" : undefined}
+              title={
+                markedCount === 0
+                  ? "没有可清理的失效文档（来源缺失/已被替代）"
+                  : `物理删除 ${markedCount} 项「来源缺失」或「已被替代」文档的原件与索引数据，不可撤销`
+              }
               onClick={() => setConfirmingPurge(true)}
             >
-              清理已标记文档{markedCount > 0 ? `（${markedCount}）` : ""}
+              清理失效文档{markedCount > 0 ? `（${markedCount}）` : ""}
             </Button>
             <Button
               variant="default"
@@ -381,6 +443,7 @@ export function LibraryView() {
               className="button-secondary"
               fullWidth
               disabled={running}
+              title="按当前 embedding 配置重算全部向量并替换现有索引；语料原件不受影响"
               onClick={() => setConfirmingRebuild(true)}
             >
               全量重建索引
@@ -396,8 +459,9 @@ export function LibraryView() {
           aria-expanded={syncSectionOpen}
           onClick={() => setSyncSectionOpen((open) => !open)}
         >
+          {/* 折叠指示用图标组件而非几何字符：▾ 依赖系统字体，裸渲染环境会画成横线伪影 */}
           <span className="library-sync-chevron" aria-hidden="true">
-            ▾
+            <IconChevronDown size={16} stroke={1.8} />
           </span>
           来源目录与自动扫描
         </Button>
@@ -473,7 +537,7 @@ export function LibraryView() {
             )}
           </div>
           {syncSources === null ? (
-            <Alert color="blue" role="status">
+            <Alert role="status">
               正在读取来源目录…
             </Alert>
           ) : syncLoadFailed ? (
@@ -580,7 +644,7 @@ export function LibraryView() {
 
       {sources.length === 0 ? (
         <Alert className="library-empty" color="gray" role="note" title="资料库还是空的">
-          <p>点击「导入文件」把本地文档加入知识库；导入的文件会被复制进资料库并抽取为可检索的知识，原文件保持不变。</p>
+          <p>把文档拖入上方导入区，或点击选择文件；导入的文件会被复制进资料库并抽取为可检索的知识，原文件保持不变。</p>
           <p className="hint">支持格式：{SUPPORTED_FORMATS}。也可以展开「来源目录与自动扫描」登记一个本地目录，之后新文档会自动入库。</p>
         </Alert>
       ) : (
@@ -595,10 +659,16 @@ export function LibraryView() {
                   来自 {source.origin_path}
                 </span>
               )}
-              <span className={`library-badge library-badge-ingest-${source.ingest_status}`}>
+              <span
+                className={`library-badge library-badge-ingest-${source.ingest_status}`}
+                title={INGEST_STATUS_HINT[source.ingest_status]}
+              >
                 {INGEST_STATUS_LABEL[source.ingest_status]}
               </span>
-              <span className={`library-badge library-badge-index-${source.index_status}`}>
+              <span
+                className={`library-badge library-badge-index-${source.index_status}`}
+                title={INDEX_STATUS_HINT[source.index_status]}
+              >
                 {INDEX_STATUS_LABEL[source.index_status]}
               </span>
             </li>
@@ -625,7 +695,7 @@ export function LibraryView() {
       <Modal
         opened={confirmingPurge}
         onClose={() => setConfirmingPurge(false)}
-        title={`确认清理 ${markedCount} 项已标记文档？`}
+        title={`确认清理 ${markedCount} 项失效文档？`}
         centered
       >
         <p>
@@ -633,7 +703,7 @@ export function LibraryView() {
         </p>
         <Group className="library-dialog-actions" justify="flex-end">
           <Button type="button" variant="default" onClick={() => setConfirmingPurge(false)}>取消</Button>
-          <Button type="button" color="red" onClick={() => void startPurge()}>确认清理</Button>
+          <Button type="button" className="button-danger-solid" onClick={() => void startPurge()}>确认清理</Button>
         </Group>
       </Modal>
     </Stack>

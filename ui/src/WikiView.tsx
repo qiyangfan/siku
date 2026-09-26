@@ -10,6 +10,7 @@ import {
   type WikiEntries,
 } from "./api";
 import { handleMarkdownClick, renderMarkdown } from "./markdown";
+import { LlmReadinessHint } from "./LlmReadinessHint";
 
 function isApiError(error: unknown): error is ApiError {
   return (
@@ -44,7 +45,7 @@ function isGraphMissingCode(caught: unknown): boolean {
   );
 }
 
-export function WikiView() {
+export function WikiView({ onGoToSettings }: { onGoToSettings: () => void }) {
   const [listing, setListing] = useState<WikiEntries | null>(null);
   const [missing, setMissing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -219,6 +220,7 @@ export function WikiView() {
               wiki 由图谱社区摘要生成，使用「设置」中配置的 LLM 通道；生成可能需要几分钟。
             </p>
           )}
+          <LlmReadinessHint onGoToSettings={onGoToSettings} />
           {flowNote !== null && (
             <p className="hint" role="status">
               {flowNote}
@@ -240,9 +242,8 @@ export function WikiView() {
             </Button>
           )}
           {graphMissingKnown ? (
-            <Button variant="default"
+            <Button
               type="button"
-              className="button-secondary"
               disabled={buildingGraph || generating}
               onClick={() => void runBuildGraphThenGenerate()}
             >
@@ -253,9 +254,8 @@ export function WikiView() {
                   : "构建图谱"}
             </Button>
           ) : (
-            <Button variant="default"
+            <Button
               type="button"
-              className="button-secondary"
               disabled={generating || buildingGraph}
               onClick={() => void runGenerateAndRefresh()}
             >
