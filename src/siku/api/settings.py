@@ -25,6 +25,7 @@ from siku.api.messages import ErrorMapping, map_domain_error
 from siku.api.models import (
     AskReadinessView,
     ChannelSettingsView,
+    LlmEnvFallbackView,
     SettingsResponse,
     SettingsTestRequest,
     SettingsUpdateRequest,
@@ -35,12 +36,21 @@ from siku.graph.errors import (
     LlmProviderError,
     LlmRateLimitError,
 )
-from siku.graph.providers import DEFAULT_API_KEY_ENV, HttpxLlmProvider
+from siku.graph.providers import (
+    DEFAULT_API_KEY_ENV,
+    LLM_PROTOCOLS,
+    PROTOCOL_ANTHROPIC,
+    PROTOCOL_OPENAI_CHAT,
+    HttpxLlmProvider,
+)
 from siku.model_supply import (
+    LLM_FALLBACK_VENDOR,
     EmbeddingEnvSettings,
     LlmEnvSettings,
     ModelSupplyConfig,
+    ProtocolConfigError,
     RerankEnvSettings,
+    ResolvedChannel,
     ask_readiness,
     resolve_embedding_channel,
     resolve_llm_channel,
@@ -65,8 +75,14 @@ _ENV_SETTINGS: dict[str, type[BaseSettings]] = {
 
 _CHANNEL_LABELS: dict[str, str] = {"llm": "LLM", "embedding": "embedding", "rerank": "rerank"}
 
-# 与 ChannelValues 对齐的四个可配置字段
-_SETTING_FIELDS: tuple[str, str, str, str] = ("base_url", "model", "api_key", "api_key_env")
+# 与 ChannelValues 对齐的五个可配置字段
+_SETTING_FIELDS: tuple[str, str, str, str, str] = (
+    "base_url",
+    "model",
+    "api_key",
+    "api_key_env",
+    "protocol",
+)
 
 _API_KEY_ENV_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -77,6 +93,21 @@ _PROBE_TIMEOUT_SECONDS = 10.0
 
 class SettingsValidationError(ValueError):
     """设置提交值不满足形状约束；message 为面向用户的中文指引。"""
+
+
+def invalid_protocol_message(exc: Exception) -> str | None:
+    """协议越界的领域错误 → 可行动中文指引；非协议类错误返回 None 走既有映射。"""
+    if not isinstance(exc, ProtocolConfigError):
+        return None
+    if exc.kind == "llm_enum":
+        return (
+            "LLM 通道的 protocol 非法：仅支持 openai-chat / anthropic / openai-responses；"
+            "请修正 config.toml 对应段后重试。"
+        )
+    return (
+        "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）；"
+        "请从 config.toml 对应段移除后重试。"
+    )
 
 
 def env_overrides(channel: str) -> list[str]:
@@ -90,11 +121,17 @@ def default_config_path() -> str:
     return str(model_supply.config_file_path())
 
 
-def masked_view(config: ModelSupplyConfig, config_path: str) -> SettingsResponse:
+def masked_view(
+    config: ModelSupplyConfig,
+    config_path: str,
+    llm_fallback: ResolvedChannel | None = None,
+) -> SettingsResponse:
     """把文件层配置渲染为掩码视图：key 不回显，env 覆盖字段逐通道标注。
 
     `ask_readiness` 是该响应唯一跨层（文件 + env）的字段：就绪判定必须按
     请求期同一分层口径执行，掩码视图的文件层静止视角对它不适用。
+    `llm_fallback` 由调用方按请求期同一口径（含 serve 的 CLI 层）预计算：
+    LLM 厂商环境变量回退生效时渲染为端点描述，未生效为 None。
     """
     readiness = ask_readiness(config)
     sections: dict[str, ChannelSettingsView] = {}
@@ -105,15 +142,27 @@ def masked_view(config: ModelSupplyConfig, config_path: str) -> SettingsResponse
             base_url=channel.base_url,
             model=channel.model,
             api_key_env=channel.api_key_env,
+            protocol=channel.protocol,
             api_key_set=bool(api_key and api_key.get_secret_value().strip()),
             env_overrides=env_overrides(name),
         )
+    fallback_view = (
+        LlmEnvFallbackView(
+            vendor=LLM_FALLBACK_VENDOR,
+            base_url=llm_fallback.base_url,
+            model=llm_fallback.model,
+            api_key_env=llm_fallback.api_key_env or "",
+        )
+        if llm_fallback is not None
+        else None
+    )
     return SettingsResponse(
         config_path=config_path,
         llm=sections["llm"],
         embedding=sections["embedding"],
         rerank=sections["rerank"],
         ask_readiness=AskReadinessView(ready=readiness.ready, missing=list(readiness.missing)),
+        llm_env_fallback=fallback_view,
     )
 
 
@@ -138,6 +187,15 @@ def _validate_value(channel: str, field: str, value: str) -> str:
             f"{label} 通道的 api_key_env 非法：请填写合法环境变量名"
             "（字母、数字、下划线，且不以数字开头）。"
         )
+    if field == "protocol":
+        if channel != "llm":
+            raise SettingsValidationError(
+                f"{label} 通道不支持设置接口协议：protocol 仅 LLM 通道可用，请留空。"
+            )
+        if text not in LLM_PROTOCOLS:
+            raise SettingsValidationError(
+                f"{label} 通道的 protocol 非法：仅支持 {' / '.join(LLM_PROTOCOLS)}。"
+            )
     return text
 
 
@@ -196,14 +254,26 @@ def embedding_rebuild_warnings(config: ModelSupplyConfig, data_dir: Path) -> lis
 
 def resolve_probe_target(
     request: SettingsTestRequest,
-) -> tuple[str, str, str, str | None, str | None]:
+) -> tuple[str, str, str, str | None, str | None, str | None]:
     """解析探测目标：非空覆盖字段优先，缺省回落到当前分层解析的有效通道。
 
-    返回 ``(channel, base_url, model, api_key 明文, api_key_env)``。覆盖值先于
+    返回 ``(channel, base_url, model, api_key 明文, api_key_env, protocol)``。
+    覆盖值先于
     通道解析校验——非法提交无论当前配置如何都返回 422 指引；通道未配置且覆盖
     不足以补齐 base_url/model 时，重抛解析阶段的既有配置指引错误。
     """
     channel = request.channel
+    # 表单当前协议优先（决议 #5：按表单协议探测，保存前即可验证分支组合）；
+    # 空白/省略回落到当前生效通道。非 llm 通道不接受协议覆盖。
+    if request.protocol is not None and request.protocol.strip() and channel != "llm":
+        raise SettingsValidationError(
+            f"{_CHANNEL_LABELS[channel]} 通道不支持设置接口协议：protocol 仅 LLM 通道可用，请留空。"
+        )
+    protocol_override = (
+        _validate_value(channel, "protocol", request.protocol)
+        if request.protocol is not None and request.protocol.strip() and channel == "llm"
+        else None
+    )
     base_url_override = (
         _validate_value(channel, "base_url", request.base_url)
         if request.base_url is not None and request.base_url.strip()
@@ -244,7 +314,8 @@ def resolve_probe_target(
     else:
         api_key = resolved.api_key.get_secret_value() if resolved and resolved.api_key else None
     api_key_env = api_key_env_override or (resolved.api_key_env if resolved else None)
-    return channel, base_url, model, api_key, api_key_env
+    protocol = protocol_override or (resolved.protocol if resolved else None)
+    return channel, base_url, model, api_key, api_key_env, protocol
 
 
 def probe_channel(
@@ -255,14 +326,22 @@ def probe_channel(
     api_key: str | None,
     api_key_env: str | None,
     transport: httpx.BaseTransport | None = None,
+    protocol: str | None = None,
 ) -> None:
     """对单通道发起最小探测调用；失败抛既有领域错误，成功无返回值。
 
     ``transport`` 仅供测试注入 MockTransport；探测超时独立于通道默认值收紧为
-    10 秒，避免连通性测试长时间挂起。
+    10 秒，避免连通性测试长时间挂起。llm 通道按当前协议探测（ADR-0012）。
     """
     if channel == "llm":
-        _probe_llm(base_url, model, api_key, api_key_env or DEFAULT_API_KEY_ENV, transport)
+        _probe_llm(
+            base_url,
+            model,
+            api_key,
+            api_key_env or DEFAULT_API_KEY_ENV,
+            transport,
+            protocol or PROTOCOL_OPENAI_CHAT,
+        )
     elif channel == "embedding":
         _probe_embedding(base_url, model, api_key, api_key_env, transport)
     else:
@@ -275,8 +354,9 @@ def _probe_llm(
     api_key: str | None,
     api_key_env: str,
     transport: httpx.BaseTransport | None,
+    protocol: str,
 ) -> None:
-    """llm 通道最小探测：一次固定短语的 chat completions 调用。"""
+    """llm 通道最小探测：按当前协议发起一次固定短语调用。"""
     provider = HttpxLlmProvider(
         base_url=base_url,
         model_id=model,
@@ -284,6 +364,7 @@ def _probe_llm(
         api_key_env=api_key_env,
         timeout_seconds=_PROBE_TIMEOUT_SECONDS,
         transport=transport,
+        protocol=protocol,
     )
     try:
         provider.complete(_PROBE_TEXT, _PROBE_TEXT)
@@ -335,8 +416,8 @@ def _probe_rerank(
         provider.close()
 
 
-def map_probe_error(exc: Exception, channel: str) -> ErrorMapping:
-    """把探测失败映射为既有稳定错误码 + 通道感知中文指引（不含上游错误体）。"""
+def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -> ErrorMapping:
+    """把探测失败映射为既有稳定错误码 + 通道/协议感知中文指引（不含上游错误体）。"""
     label = _CHANNEL_LABELS[channel]
     if isinstance(exc, LlmNotConfiguredError):
         return ErrorMapping(
@@ -361,10 +442,16 @@ def map_probe_error(exc: Exception, channel: str) -> ErrorMapping:
             f"无法连接 {label} 端点：请检查 base_url 与网络可达性（断连或超时）后重试。",
         )
     if isinstance(exc, LlmProviderError):
+        endpoint_hint = (
+            "Anthropic Messages 兼容服务（{base}/v1/messages）"
+            if protocol == PROTOCOL_ANTHROPIC
+            else "openai 兼容服务"
+        )
         return ErrorMapping(
             503,
             "llm_provider_error",
-            f"{label} 端点返回了无法解析的响应：请确认 base_url 指向 openai 兼容服务后重试。",
+            f"{label} 端点返回了无法解析的响应：请确认 base_url 与接口协议匹配"
+            f"（当前协议要求指向{endpoint_hint}）后重试。",
         )
     if isinstance(exc, ProviderError):
         return ErrorMapping(

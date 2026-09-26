@@ -166,11 +166,16 @@ class WikiResponse(BaseModel):
 
 
 class ChannelSettingsView(BaseModel):
-    """单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。"""
+    """单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。
+
+    `protocol` 仅 LLM 通道消费；embedding/rerank 正常配置下为 None，
+    手改文件的越界值在解析/提交校验期报错，不在视图层吞掉。
+    """
 
     base_url: str | None
     model: str | None
     api_key_env: str | None
+    protocol: str | None = None
     api_key_set: bool
     env_overrides: list[str]
 
@@ -186,6 +191,19 @@ class AskReadinessView(BaseModel):
     missing: list[str]
 
 
+class LlmEnvFallbackView(BaseModel):
+    """LLM 通道厂商环境变量回退的端点描述（不含凭证明文）。
+
+    `vendor` 恒为 `dashscope`（当前唯一回退名单）；四元组与请求期解析同源，
+    UI 据此说明「回退生效」的落差，避免空表单被误读为完全未配置。
+    """
+
+    vendor: str
+    base_url: str
+    model: str
+    api_key_env: str
+
+
 class SettingsResponse(BaseModel):
     """三通道文件层掩码视图 + 问答就绪状态（GET /api/settings 响应）。"""
 
@@ -194,6 +212,7 @@ class SettingsResponse(BaseModel):
     embedding: ChannelSettingsView
     rerank: ChannelSettingsView
     ask_readiness: AskReadinessView
+    llm_env_fallback: LlmEnvFallbackView | None = None
 
 
 class ChannelSettingsUpdate(BaseModel):
@@ -206,6 +225,7 @@ class ChannelSettingsUpdate(BaseModel):
     model: str | None = None
     api_key: SecretStr | None = None
     api_key_env: str | None = None
+    protocol: str | None = None
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -230,6 +250,8 @@ class SettingsTestRequest(BaseModel):
     model: str | None = None
     api_key: SecretStr | None = None
     api_key_env: str | None = None
+    # 表单当前协议（仅 llm 通道消费）：保存前即可按所选协议探测（决议 #5）
+    protocol: str | None = None
 
 
 class SettingsTestResponse(BaseModel):

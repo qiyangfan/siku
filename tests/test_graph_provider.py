@@ -216,6 +216,122 @@ class TestHttpxLlmProvider:
         assert captured["auth"] == "Bearer sk-custom"
 
 
+class TestMultiProtocolProvider:
+    """多协议分发（ADR-0012）：端点/凭证头/请求体/文本抽取按协议切换。"""
+
+    def test_anthropic_request_shape_and_parsing(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["headers"] = dict(request.headers)
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "content": [
+                        {"type": "text", "text": "第一段"},
+                        {"type": "text", "text": "第二段"},
+                    ]
+                },
+            )
+
+        transport = httpx.MockTransport(handler)
+        provider = HttpxLlmProvider(
+            api_key="sk-ant",
+            base_url="https://api.moonshot.cn/anthropic",
+            model_id="kimi-k2",
+            transport=transport,
+            protocol="anthropic",
+        )
+        assert provider.complete(SYSTEM_PROMPT, USER_PROMPT) == "第一段第二段"
+        assert captured["url"] == "https://api.moonshot.cn/anthropic/v1/messages"
+        assert captured["headers"].get("x-api-key") == "sk-ant"
+        assert captured["headers"].get("anthropic-version") == "2023-06-01"
+        assert captured["payload"]["system"] == SYSTEM_PROMPT
+        assert captured["payload"]["messages"] == [{"role": "user", "content": USER_PROMPT}]
+        assert captured["payload"]["max_tokens"] == 8192
+        assert captured["payload"]["temperature"] == 0
+        assert captured["payload"]["stream"] is False
+
+    def test_anthropic_prompt_too_long_maps_to_domain_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"error": {"message": "prompt is too long"}})
+
+        provider = HttpxLlmProvider(
+            api_key="sk-ant",
+            transport=httpx.MockTransport(handler),
+            protocol="anthropic",
+        )
+        with pytest.raises(LlmInputTooLongError):
+            provider.complete(SYSTEM_PROMPT, USER_PROMPT)
+
+    def test_openai_responses_request_shape_and_parsing(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["headers"] = dict(request.headers)
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "回答文本"},
+                            ],
+                        }
+                    ]
+                },
+            )
+
+        provider = HttpxLlmProvider(
+            api_key="sk-openai",
+            base_url="https://api.openai.com/v1",
+            model_id="gpt-test",
+            transport=httpx.MockTransport(handler),
+            protocol="openai-responses",
+        )
+        assert provider.complete(SYSTEM_PROMPT, USER_PROMPT) == "回答文本"
+        assert captured["url"] == "https://api.openai.com/v1/responses"
+        assert captured["headers"].get("authorization") == "Bearer sk-openai"
+        assert captured["payload"]["instructions"] == SYSTEM_PROMPT
+        assert captured["payload"]["input"] == USER_PROMPT
+        assert captured["payload"]["temperature"] == 0
+        assert captured["payload"]["stream"] is False
+
+    def test_api_key_never_leaks_into_error_messages(self) -> None:
+        """凭证红线：任何协议下 key 都不得进入错误消息（错误面仅状态码+响应体片段）。"""
+        secret = "sk-ant-secret-value"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": {"message": "upstream boom"}})
+
+        for protocol in ("openai-chat", "anthropic", "openai-responses"):
+            provider = HttpxLlmProvider(
+                api_key=secret,
+                transport=httpx.MockTransport(handler),
+                protocol=protocol,
+            )
+            with pytest.raises(LlmProviderError) as excinfo:
+                provider.complete(SYSTEM_PROMPT, USER_PROMPT)
+            assert secret not in str(excinfo.value)
+
+    def test_unknown_protocol_rejected_eagerly(self) -> None:
+        with pytest.raises(LlmNotConfiguredError):
+            HttpxLlmProvider(api_key="k", protocol="gemini-native")
+
+    def test_default_protocol_stays_openai_chat(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert str(request.url).endswith("/chat/completions")
+            return _chat_response("ok")
+
+        provider = _provider(handler)
+        assert provider.complete(SYSTEM_PROMPT, USER_PROMPT) == "ok"
+
+
 def test_all_provider_errors_share_graph_domain_base() -> None:
     # 领域错误体系约束：五个剧本的异常类型都必须落在 GraphError 体系内
     for error_class in (

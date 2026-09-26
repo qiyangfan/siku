@@ -92,6 +92,7 @@ from siku.api.settings import (
     apply_update,
     default_config_path,
     embedding_rebuild_warnings,
+    invalid_protocol_message,
     map_probe_error,
     masked_view,
     probe_channel,
@@ -111,11 +112,13 @@ from siku.model_supply import (
     ChannelValues,
     build_embedding_provider,
     build_reranker_provider,
+    llm_env_fallback_channel,
     load_config,
     resolve_embedding_channel,
     resolve_llm_channel,
     resolve_rerank_channel,
     save_config,
+    validate_channel_protocols,
 )
 from siku.qa.providers import AnswerProvider
 from siku.qa.service import AnswerService
@@ -221,6 +224,7 @@ def _llm_provider_factory(
             model_id=channel.model,
             api_key=channel.api_key.get_secret_value() if channel.api_key else None,
             api_key_env=channel.api_key_env or DEFAULT_API_KEY_ENV,
+            protocol=channel.protocol,
         )
 
     return factory
@@ -910,11 +914,26 @@ def create_app(
         """返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。"""
         try:
             config = load_config()
+            view = masked_view(
+                config,
+                default_config_path(),
+                # 与请求期 LLM 解析同一口径（含 serve 的 CLI 层），保证
+                # 「响应说回退生效」⇔「生成请求真的走回退」
+                llm_fallback=llm_env_fallback_channel(llm_supply),
+            )
+        except ModelNotAvailableError as exc:
+            # 手改 config.toml 的越界 protocol 不得变成 500：给可行动中文指引
+            logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
+            guidance = invalid_protocol_message(exc)
+            if guidance is not None:
+                return _error_response(503, "invalid_settings", guidance)
+            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
         except Exception as exc:
             logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
             mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return masked_view(config, default_config_path())
+        return view
 
     @application.put("/api/settings", response_model=SettingsWriteResponse)
     def write_settings(update: SettingsUpdateRequest) -> SettingsWriteResponse | JSONResponse:
@@ -925,11 +944,19 @@ def create_app(
         """
         try:
             merged = apply_update(load_config(), update)
+            # 写入前整体校验协议字段：手改文件的越界值不得先落盘再毒化读路径
+            validate_channel_protocols(merged)
             save_config(merged)
         except SettingsValidationError as exc:
             return _error_response(422, "invalid_settings", str(exc))
         except Exception as exc:
             logger.debug("API settings write failed: error_class=%s", type(exc).__name__)
+            # 协议越界（含手改文件存量值）在写入前拦截：给可行动中文指引而非
+            # 落盘后毒化读路径；其余沿用既有领域映射（如损坏 TOML → 503）
+            if isinstance(exc, ModelNotAvailableError):
+                guidance = invalid_protocol_message(exc)
+                if guidance is not None:
+                    return _error_response(422, "invalid_settings", guidance)
             mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         cache = application.state.search_supply_cache
@@ -937,27 +964,35 @@ def create_app(
             cache.invalidate()
         warnings = embedding_rebuild_warnings(merged, application.state.data_dir)
         return SettingsWriteResponse(
-            **masked_view(merged, default_config_path()).model_dump(), warnings=warnings
+            **masked_view(
+                merged,
+                default_config_path(),
+                llm_fallback=llm_env_fallback_channel(llm_supply),
+            ).model_dump(),
+            warnings=warnings,
         )
 
     @application.post("/api/settings/test", response_model=SettingsTestResponse)
     def test_settings(request: SettingsTestRequest) -> SettingsTestResponse | JSONResponse:
         """对单通道发起最小连通性探测：不持久化，不回显上游错误体。"""
         started = time.perf_counter()
+        # 协议在 try 内赋值：解析失败时 except 的协议感知指引按 None 回落
+        protocol: str | None = None
         try:
-            channel, base_url, model, api_key, api_key_env = resolve_probe_target(request)
+            channel, base_url, model, api_key, api_key_env, protocol = resolve_probe_target(request)
             probe_channel(
                 channel=channel,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
                 api_key_env=api_key_env,
+                protocol=protocol,
             )
         except SettingsValidationError as exc:
             return _error_response(422, "invalid_settings", str(exc))
         except Exception as exc:
             logger.debug("API settings test failed: error_class=%s", type(exc).__name__)
-            mapping = map_probe_error(exc, request.channel)
+            mapping = map_probe_error(exc, request.channel, protocol)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         latency_ms = int((time.perf_counter() - started) * 1000)
         return SettingsTestResponse(ok=True, channel=request.channel, latency_ms=latency_ms)

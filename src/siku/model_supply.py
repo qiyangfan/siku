@@ -3,8 +3,10 @@
 三通道（llm/embedding/rerank）同构：``base_url`` + ``model`` + 凭证
 （``api_key`` 明文或 ``api_key_env`` 间接引用）。config.toml 缺失不视为错误
 （视为全空层）；通道必需值在所有层级均缺失时由 ``resolve_*`` 抛出带配置指引的
-领域错误，绝不静默回退内置端点。唯一例外是 llm 通道：为兼容既有 CLI 语义保留
-DeepSeek 缺省（``--llm-base-url`` 等参数行为不变）。
+领域错误，绝不静默回退内置端点。llm 通道有两处文档化缺省例外：一是为兼容既有
+CLI 语义保留 DeepSeek 缺省（``--llm-base-url`` 等参数行为不变）；二是三层全未
+配置且 ``DASHSCOPE_API_KEY`` 非空时整组回退到通义千问兼容端点（key 与端点/模型
+绑定成套，任一字段显式配置即不回退）。
 
 凭证保护：``api_key`` 一律以 ``SecretStr`` 承载，repr/日志展开均为掩码；key
 不写入索引元数据、评测基线、错误消息与 OpenAPI。配置文件创建/重写一律 0600。
@@ -25,7 +27,13 @@ from pathlib import Path
 from pydantic import BaseModel, Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from siku.graph.providers import DEFAULT_API_KEY_ENV, DEFAULT_BASE_URL, DEFAULT_MODEL_ID
+from siku.graph.providers import (
+    DEFAULT_API_KEY_ENV,
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL_ID,
+    LLM_PROTOCOLS,
+    PROTOCOL_OPENAI_CHAT,
+)
 from siku.retrieve.api_providers import ApiEmbeddingProvider, ApiRerankerProvider
 from siku.retrieve.errors import ModelNotAvailableError
 from siku.retrieve.providers import base_url_host
@@ -38,6 +46,13 @@ CONFIG_FILE_MODE = 0o600
 
 # 本地回环主机在通道命名中的统一标签
 _LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# LLM 厂商环境变量回退（唯一名单）：端点为通义千问 OpenAI 兼容模式，模型与
+# owner 实证过的 CLI 组合一致；只加新厂商前先过 change（形状已留 vendor 字段）
+DASHSCOPE_API_KEY_ENV = "DASHSCOPE_API_KEY"
+DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+DASHSCOPE_MODEL_ID = "qwen-max"
+LLM_FALLBACK_VENDOR = "dashscope"
 
 
 def config_file_path() -> Path:
@@ -57,12 +72,17 @@ def config_file_path() -> Path:
 
 
 class ChannelValues(BaseModel):
-    """单通道供给配置的校验形状（config.toml 段 / 环境变量 / CLI 参数同形）。"""
+    """单通道供给配置的校验形状（config.toml 段 / 环境变量 / CLI 参数同形）。
+
+    `protocol` 仅 LLM 通道消费（ADR-0012）；embedding/rerank 通道在解析期对
+    非空值报配置指引错误，防止「配了却没生效」的静默错觉。
+    """
 
     base_url: str | None = None
     model: str | None = None
     api_key: SecretStr | None = None
     api_key_env: str | None = None
+    protocol: str | None = None
 
 
 class LlmEnvSettings(BaseSettings):
@@ -74,6 +94,7 @@ class LlmEnvSettings(BaseSettings):
     model: str | None = None
     api_key: SecretStr | None = None
     api_key_env: str | None = None
+    protocol: str | None = None
 
 
 class EmbeddingEnvSettings(BaseSettings):
@@ -118,6 +139,7 @@ class ResolvedChannel:
     model: str
     api_key: SecretStr | None
     api_key_env: str | None
+    protocol: str = PROTOCOL_OPENAI_CHAT
 
     def resolve_api_key(self) -> str | None:
         """显式明文优先，其次 ``api_key_env`` 指向的环境变量；两者皆缺返回 None。
@@ -218,6 +240,8 @@ def _render_channel(name: str, channel: ChannelValues) -> str:
         lines.append(f"api_key = {json.dumps(channel.api_key.get_secret_value())}")
     if channel.api_key_env is not None:
         lines.append(f"api_key_env = {json.dumps(channel.api_key_env)}")
+    if channel.protocol is not None:
+        lines.append(f"protocol = {json.dumps(channel.protocol)}")
     return "\n".join(lines)
 
 
@@ -305,11 +329,55 @@ def ask_readiness(config: ModelSupplyConfig | None = None) -> AskReadiness:
     if llm.resolve_api_key() is None:
         missing.append(MISSING_LLM_API_KEY)
     embedding = _resolve_channel(supply.embedding, EmbeddingEnvSettings, None)
+    # 与请求期 resolve_embedding_channel 同源：embedding 协议越界时整个判定失败
+    # （抛 ProtocolConfigError，settings GET 面转为 503 中文指引），不得出现
+    # 「判定就绪而请求必炸」的第二套事实源
+    _reject_channel_protocol("embedding", embedding.protocol)
     if not embedding.base_url:
         missing.append(MISSING_EMBEDDING_BASE_URL)
     if not embedding.model:
         missing.append(MISSING_EMBEDDING_MODEL)
     return AskReadiness(ready=not missing, missing=tuple(missing))
+
+
+def _reject_channel_protocol(channel: str, protocol: str | None) -> None:
+    """embedding/rerank 不消费协议字段；非空即报指引，杜绝静默忽略。"""
+    if protocol is not None:
+        raise ProtocolConfigError(
+            f"The {channel} channel does not support the protocol field "
+            f"(only the LLM channel does: {', '.join(LLM_PROTOCOLS)}); remove it",
+            "channel_unsupported",
+        )
+
+
+class ProtocolConfigError(ModelNotAvailableError):
+    """通道 protocol 字段越界（枚举非法或通道不支持）。
+
+    `kind` 供 HTTP/CLI 映射层结构化分型（`llm_enum` / `channel_unsupported`），
+    避免对英文 message 文本做前缀匹配的脆耦合。
+    """
+
+    def __init__(self, message: str, kind: str) -> None:
+        # kind 必须进 args（位置参数），保住基类 __reduce__ 的 copy/deepcopy/pickle 圆厂
+        super().__init__(message, kind)
+        self.kind = kind
+
+
+def _validate_llm_protocol(protocol: str | None) -> str | None:
+    """校验协议枚举；非法值抛带合法名单的配置指引（领域错误，英文）。"""
+    if protocol is None or protocol in LLM_PROTOCOLS:
+        return protocol
+    raise ProtocolConfigError(
+        f"Unknown LLM protocol: {protocol!r}; expected one of {', '.join(LLM_PROTOCOLS)}",
+        "llm_enum",
+    )
+
+
+def validate_channel_protocols(config: ModelSupplyConfig) -> None:
+    """整体校验一份配置的协议字段（写入前调用，防手改文件的非法值落盘后毒化读路径）。"""
+    _validate_llm_protocol(config.llm.protocol)
+    for channel_name in ("embedding", "rerank"):
+        _reject_channel_protocol(channel_name, getattr(config, channel_name).protocol)
 
 
 def resolve_llm_channel(
@@ -318,14 +386,54 @@ def resolve_llm_channel(
     config_path: Path | None = None,
     config: ModelSupplyConfig | None = None,
 ) -> ResolvedChannel:
-    """解析 llm 通道；全层缺省时回退 DeepSeek 缺省（既有 CLI 语义向后兼容）。"""
+    """解析 llm 通道；全层缺省时按序回退：厂商环境变量 > DeepSeek 缺省。"""
     supply = config if config is not None else load_config(config_path)
     merged = _resolve_channel(supply.llm, LlmEnvSettings, cli)
+    _validate_llm_protocol(merged.protocol)
+    fallback = _llm_env_fallback_from_merged(merged)
+    if fallback is not None:
+        return fallback
     return ResolvedChannel(
         base_url=merged.base_url or DEFAULT_BASE_URL,
         model=merged.model or DEFAULT_MODEL_ID,
         api_key=merged.api_key,
         api_key_env=merged.api_key_env or DEFAULT_API_KEY_ENV,
+        protocol=merged.protocol or PROTOCOL_OPENAI_CHAT,
+    )
+
+
+def llm_env_fallback_channel(
+    cli: ChannelValues | None = None,
+    *,
+    config_path: Path | None = None,
+    config: ModelSupplyConfig | None = None,
+) -> ResolvedChannel | None:
+    """返回当前生效的 LLM 厂商环境变量回退通道；未生效返回 None。
+
+    与 :func:`resolve_llm_channel` 同一合并路径与环境变量读取时机，供设置视图
+    如实标注「回退生效」（响应携带端点描述，不含凭证明文）；``config`` 与
+    ``cli`` 语义同解析函数，serve 场景须传入其 CLI 层 ``llm_supply``。
+    """
+    supply = config if config is not None else load_config(config_path)
+    merged = _resolve_channel(supply.llm, LlmEnvSettings, cli)
+    return _llm_env_fallback_from_merged(merged)
+
+
+def _llm_env_fallback_from_merged(merged: ChannelValues) -> ResolvedChannel | None:
+    """LLM 厂商回退的单一判定点：四字段全空且 DASHSCOPE_API_KEY 非空才回退。
+
+    key 必须与端点/模型绑定成套：把 A 家 key 发往 B 家缺省端点正是 401 误报的
+    成因；任一字段被显式配置说明用户有明确意图，不劫持。
+    """
+    if merged != ChannelValues():
+        return None
+    if not os.environ.get(DASHSCOPE_API_KEY_ENV, "").strip():
+        return None
+    return ResolvedChannel(
+        base_url=DASHSCOPE_BASE_URL,
+        model=DASHSCOPE_MODEL_ID,
+        api_key=None,
+        api_key_env=DASHSCOPE_API_KEY_ENV,
     )
 
 
@@ -338,6 +446,7 @@ def resolve_embedding_channel(
     """解析 embedding 通道；必需值全层缺失时报配置指引错误，不回退内置端点。"""
     supply = config if config is not None else load_config(config_path)
     merged = _resolve_channel(supply.embedding, EmbeddingEnvSettings, cli)
+    _reject_channel_protocol("embedding", merged.protocol)
     if not merged.base_url or not merged.model:
         raise ModelNotAvailableError(
             _channel_guidance("embedding", "--embedding-base-url / --embedding-model", config_path)
@@ -359,6 +468,7 @@ def resolve_rerank_channel(
     """解析 rerank 通道；仅在使用 rerank API 模式时调用，缺失同样报配置指引。"""
     supply = config if config is not None else load_config(config_path)
     merged = _resolve_channel(supply.rerank, RerankEnvSettings, cli)
+    _reject_channel_protocol("rerank", merged.protocol)
     if not merged.base_url or not merged.model:
         raise ModelNotAvailableError(
             _channel_guidance("rerank", "--rerank-base-url / --rerank-model", config_path)

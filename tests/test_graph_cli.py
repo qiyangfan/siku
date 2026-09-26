@@ -134,6 +134,8 @@ class TestGraphCommand:
     ) -> None:
         write_corpus(tmp_path / VAULT)
         monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("SIKU_LLM_PROTOCOL", raising=False)
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
         result = runner.invoke(app, graph_args(tmp_path))
         assert result.exit_code == 1
         assert "未配置 LLM API key" in result.output
@@ -149,6 +151,8 @@ class TestGraphCommand:
             first = runner.invoke(app, graph_args(tmp_path))
             assert first.exit_code == 0
         monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("SIKU_LLM_PROTOCOL", raising=False)
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
         second = runner.invoke(app, graph_args(tmp_path, "--json"))
         assert second.exit_code == 0
         payload = json.loads(second.output)
@@ -164,6 +168,8 @@ class TestGraphCommand:
             scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
             assert runner.invoke(app, graph_args(tmp_path)).exit_code == 0
         monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("SIKU_LLM_PROTOCOL", raising=False)
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
         result = runner.invoke(app, graph_args(tmp_path, "--rebuild"))
         assert result.exit_code == 1
         assert "未配置 LLM API key" in result.output
@@ -209,6 +215,8 @@ class TestWikiCommand:
             scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
             assert runner.invoke(app, graph_args(tmp_path)).exit_code == 0
         monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
+        monkeypatch.delenv("SIKU_LLM_PROTOCOL", raising=False)
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
         result = runner.invoke(app, ["wiki", "--data-dir", str(tmp_path / "data")])
         assert result.exit_code == 1
         assert "未配置 LLM API key" in result.output

@@ -10,11 +10,15 @@ import pytest
 from pydantic import SecretStr
 
 from siku.model_supply import (
+    DASHSCOPE_BASE_URL,
+    DASHSCOPE_MODEL_ID,
+    LLM_PROTOCOLS,
     ChannelValues,
     ModelSupplyConfig,
     ask_readiness,
     base_url_host,
     channel_slug,
+    llm_env_fallback_channel,
     load_config,
     resolve_embedding_channel,
     resolve_llm_channel,
@@ -28,10 +32,11 @@ SECRET = "super-secret-key"
 
 @pytest.fixture(autouse=True)
 def _clean_siku_supply_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """隔离宿主机上可能存在的 SIKU_* 供给环境变量，保证优先级用例确定性。"""
+    """隔离宿主机上可能存在的 SIKU_* 供给环境变量与 DASHSCOPE 回退源，保证优先级用例确定性。"""
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
 
 
 def write_toml(path: Path, content: str) -> Path:
@@ -139,6 +144,169 @@ class TestLayeredResolution:
         assert resolved.base_url == "https://api.deepseek.com"
         assert resolved.model == "deepseek-chat"
         assert resolved.api_key_env == "SIKU_LLM_API_KEY"
+
+
+class TestLlmEnvFallback:
+    """LLM 厂商环境变量回退：四字段全空且 DASHSCOPE_API_KEY 非空才整组生效。"""
+
+    def test_fallback_activates_when_all_layers_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == DASHSCOPE_BASE_URL
+        assert resolved.model == DASHSCOPE_MODEL_ID
+        assert resolved.api_key is None
+        assert resolved.api_key_env == "DASHSCOPE_API_KEY"
+
+    def test_fallback_key_resolves_from_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """回退通道的凭证走 api_key_env 惰性解析，与显式配置同一解封路径。"""
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "  sk-dashscope  ")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.resolve_api_key() == "sk-dashscope"
+
+    def test_blank_dashscope_env_treated_as_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "   ")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.model == "deepseek-chat"
+
+    def test_missing_dashscope_env_keeps_legacy_defaults(self, tmp_path: Path) -> None:
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.api_key_env == "SIKU_LLM_API_KEY"
+
+    def test_explicit_toml_field_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        file = write_toml(tmp_path / "config.toml", '[llm]\napi_key_env = "MY_KEY_ENV"\n')
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        resolved = resolve_llm_channel(config_path=file)
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.model == "deepseek-chat"
+        assert resolved.api_key_env == "MY_KEY_ENV"
+
+    def test_cli_layer_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        cli = ChannelValues(base_url="http://127.0.0.1:4000/v1")
+        resolved = resolve_llm_channel(cli, config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "http://127.0.0.1:4000/v1"
+        assert resolved.model == "deepseek-chat"
+
+    def test_siku_env_layer_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        monkeypatch.setenv("SIKU_LLM_API_KEY", "siku-key")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.resolve_api_key() == "siku-key"
+
+    def test_ask_readiness_ready_for_llm_via_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        readiness = ask_readiness(load_config(tmp_path / "absent.toml"))
+        assert "llm.api_key" not in readiness.missing
+        assert "embedding.base_url" in readiness.missing
+        assert "embedding.model" in readiness.missing
+
+    def test_embedding_channel_never_falls_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        with pytest.raises(ModelNotAvailableError):
+            resolve_embedding_channel(config_path=tmp_path / "absent.toml")
+
+    def test_fallback_channel_helper_mirrors_resolution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        fallback = llm_env_fallback_channel(config_path=tmp_path / "absent.toml")
+        assert fallback is not None
+        assert fallback.api_key_env == "DASHSCOPE_API_KEY"
+        # 任一 CLI 字段显式配置即未生效
+        assert (
+            llm_env_fallback_channel(ChannelValues(model="m"), config_path=tmp_path / "absent.toml")
+            is None
+        )
+
+
+class TestLlmProtocolField:
+    """协议是 LLM 通道第 5 个字段（ADR-0012）：三层合并、缺省零漂移、越界拒绝。"""
+
+    def test_default_protocol_is_openai_chat(self, tmp_path: Path) -> None:
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.protocol == "openai-chat"
+
+    def test_protocol_from_toml_layer(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "anthropic"\n')
+        assert resolve_llm_channel(config_path=file).protocol == "anthropic"
+
+    def test_protocol_cli_overrides_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "anthropic")
+        cli = ChannelValues(protocol="openai-responses")
+        resolved = resolve_llm_channel(cli, config_path=tmp_path / "absent.toml")
+        assert resolved.protocol == "openai-responses"
+
+    def test_blank_protocol_treated_as_unset(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "  "\n')
+        resolved = resolve_llm_channel(config_path=file)
+        assert resolved.protocol == "openai-chat"
+
+    def test_protocol_error_survives_copy_and_pickle(self, tmp_path: Path) -> None:
+        """kind 进 args：copy/deepcopy/pickle 圆厂不因自定义 __init__ 缺参而炸。"""
+        import copy
+        import pickle
+
+        file = write_toml(tmp_path / "config.toml", '[embedding]\nprotocol = "anthropic"\n')
+        with pytest.raises(ModelNotAvailableError) as excinfo:
+            resolve_embedding_channel(config_path=file)
+        error = excinfo.value
+        assert error.kind == "channel_unsupported"
+        for round_trip in (
+            copy.copy(error),
+            copy.deepcopy(error),
+            pickle.loads(pickle.dumps(error)),
+        ):
+            assert str(round_trip) == str(error)
+            assert round_trip.kind == "channel_unsupported"
+
+    def test_invalid_protocol_value_raises_guidance(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "gemini-native"\n')
+        with pytest.raises(ModelNotAvailableError) as excinfo:
+            resolve_llm_channel(config_path=file)
+        for name in LLM_PROTOCOLS:
+            assert name in str(excinfo.value)
+
+    def test_embedding_channel_rejects_protocol(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[embedding]\nprotocol = "anthropic"\n')
+        with pytest.raises(ModelNotAvailableError) as excinfo:
+            resolve_embedding_channel(config_path=file)
+        assert "protocol" in str(excinfo.value)
+
+    def test_rerank_channel_rejects_protocol(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[rerank]\nprotocol = "anthropic"\n')
+        with pytest.raises(ModelNotAvailableError):
+            resolve_rerank_channel(config_path=file)
+
+    def test_lone_protocol_suppresses_dashscope_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """任一字段显式配置（含 protocol）即不回退，口径与其它字段一致。"""
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "anthropic"\n')
+        resolved = resolve_llm_channel(config_path=file)
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.protocol == "anthropic"
 
 
 class TestCredentialProtection:

@@ -1330,6 +1330,17 @@
               }
             ],
             "title": "Api Key Env"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
           }
         },
         "type": "object",
@@ -1371,6 +1382,17 @@
             ],
             "title": "Api Key Env"
           },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
+          },
           "api_key_set": {
             "type": "boolean",
             "title": "Api Key Set"
@@ -1392,7 +1414,7 @@
           "env_overrides"
         ],
         "title": "ChannelSettingsView",
-        "description": "单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。"
+        "description": "单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。\n\n`protocol` 仅 LLM 通道消费；embedding/rerank 正常配置下为 None，\n手改文件的越界值在解析/提交校验期报错，不在视图层吞掉。"
       },
       "GraphEdgeResponse": {
         "properties": {
@@ -2171,6 +2193,35 @@
         "title": "LibrarySourcesResponse",
         "description": "来源目录登记清单，按路径排序。"
       },
+      "LlmEnvFallbackView": {
+        "properties": {
+          "vendor": {
+            "type": "string",
+            "title": "Vendor"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "api_key_env": {
+            "type": "string",
+            "title": "Api Key Env"
+          }
+        },
+        "type": "object",
+        "required": [
+          "vendor",
+          "base_url",
+          "model",
+          "api_key_env"
+        ],
+        "title": "LlmEnvFallbackView",
+        "description": "LLM 通道厂商环境变量回退的端点描述（不含凭证明文）。\n\n`vendor` 恒为 `dashscope`（当前唯一回退名单）；四元组与请求期解析同源，\nUI 据此说明「回退生效」的落差，避免空表单被误读为完全未配置。"
+      },
       "NoteDetailResponse": {
         "properties": {
           "source_id": {
@@ -2432,6 +2483,16 @@
           },
           "ask_readiness": {
             "$ref": "#/components/schemas/AskReadinessView"
+          },
+          "llm_env_fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LlmEnvFallbackView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -2501,6 +2562,17 @@
               }
             ],
             "title": "Api Key Env"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
           }
         },
         "type": "object",
@@ -2588,6 +2660,16 @@
           },
           "ask_readiness": {
             "$ref": "#/components/schemas/AskReadinessView"
+          },
+          "llm_env_fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LlmEnvFallbackView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "warnings": {
             "items": {

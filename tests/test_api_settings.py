@@ -41,6 +41,7 @@ def config_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     return path
 
 
@@ -135,6 +136,134 @@ class TestGetSettings:
         payload = client.get("/api/settings").json()
         assert payload["ask_readiness"]["ready"] is True
         assert payload["ask_readiness"]["missing"] == []
+
+    def test_llm_env_fallback_exposed_when_active(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        fallback = payload["llm_env_fallback"]
+        assert fallback is not None
+        assert fallback["vendor"] == "dashscope"
+        assert fallback["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert fallback["model"] == "qwen-max"
+        assert fallback["api_key_env"] == "DASHSCOPE_API_KEY"
+        assert "sk-dashscope" not in client.get("/api/settings").text
+        # 回退生效时 llm 凭证不再进入就绪缺项
+        assert "llm.api_key" not in payload["ask_readiness"]["missing"]
+
+    def test_protocol_roundtrip_and_view(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.put(
+            "/api/settings",
+            json={
+                "llm": {"protocol": "anthropic", "base_url": "https://api.moonshot.cn/anthropic"}
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["llm"]["protocol"] == "anthropic"
+        # 落盘可回读
+        assert load_config().llm.protocol == "anthropic"
+        assert client.get("/api/settings").json()["llm"]["protocol"] == "anthropic"
+
+    def test_protocol_default_view_is_null(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        assert client.get("/api/settings").json()["llm"]["protocol"] is None
+
+    def test_invalid_protocol_returns_422(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"llm": {"protocol": "gemini-native"}})
+        assert response.status_code == 422
+        assert "openai-chat" in response.json()["message"]
+        assert load_config().llm.protocol is None
+
+    def test_embedding_protocol_rejected_with_422(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"embedding": {"protocol": "anthropic"}})
+        assert response.status_code == 422
+        assert "仅 LLM 通道" in response.json()["message"]
+
+    def test_hand_edited_invalid_protocol_get_gives_guidance_not_500(
+        self, config_path: Path
+    ) -> None:
+        """手改 config.toml 的越界 protocol：读取面给可行动中文指引而非 500。"""
+        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
+        client = TestClient(create_app())
+        response = client.get("/api/settings")
+        assert response.status_code == 503
+        assert response.json()["code"] == "invalid_settings"
+        assert "openai-chat" in response.json()["message"]
+
+    def test_hand_edited_invalid_protocol_put_rejected_before_write(
+        self, config_path: Path
+    ) -> None:
+        """存量非法 protocol 时提交设置：写入前拦截（422），文件不被部分改写。"""
+        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
+        before = config_path.read_text(encoding="utf-8")
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"llm": {"model": "m"}})
+        assert response.status_code == 422
+        assert response.json()["code"] == "invalid_settings"
+        assert config_path.read_text(encoding="utf-8") == before
+
+    def test_hand_edited_embedding_protocol_blocks_settings_read(self, config_path: Path) -> None:
+        """手改 [embedding] protocol：就绪判定与读取面必须与请求期同源失败（非 500/非误就绪）。"""
+        save_config(
+            ModelSupplyConfig(
+                embedding=ChannelValues(
+                    base_url="http://127.0.0.1:11434/v1", model="bge-m3", protocol="anthropic"
+                )
+            )
+        )
+        client = TestClient(create_app())
+        response = client.get("/api/settings")
+        assert response.status_code == 503
+        assert response.json()["code"] == "invalid_settings"
+        assert "仅 LLM 通道" in response.json()["message"]
+
+    def test_probe_rejects_protocol_override_for_non_llm_channel(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """探测面对非 llm 通道的 protocol 覆盖显式拒绝（fail loud，不静默忽略）。"""
+        inject_transport(monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200)))
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/settings/test",
+            json={"channel": "embedding", "protocol": "anthropic"},
+        )
+        assert response.status_code == 422
+        assert "仅 LLM 通道" in response.json()["message"]
+
+    def test_llm_env_fallback_null_when_inactive(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        assert payload["llm_env_fallback"] is None
+
+    def test_llm_env_fallback_suppressed_by_cli_supply(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLI 层显式配置优先：即便环境变量存在也不得谎报回退生效。"""
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        client = TestClient(
+            create_app(llm_supply=ChannelValues(base_url="http://127.0.0.1:4000/v1"))
+        )
+        payload = client.get("/api/settings").json()
+        assert payload["llm_env_fallback"] is None
+
+    def test_put_explicit_llm_clears_fallback(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        client = TestClient(create_app())
+        before = client.get("/api/settings").json()
+        assert before["llm_env_fallback"] is not None
+        response = client.put(
+            "/api/settings",
+            json={"llm": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"}},
+        )
+        assert response.status_code == 200
+        assert response.json()["llm_env_fallback"] is None
 
 
 class TestPutSettings:
@@ -449,6 +578,45 @@ class TestSettingsTestEndpoint:
         response = client.post("/api/settings/test", json={"channel": "embedding"})
         assert response.status_code == 503
         assert response.json()["code"] == "model_not_available"
+
+    def test_probe_uses_form_protocol_for_llm_before_save(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """决议 #5：保存前点测试，按表单协议探测（Anthropic 分支场景）。"""
+
+        seen: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((str(request.url), request.headers.get("anthropic-version", "")))
+            return httpx.Response(
+                200,
+                json={"content": [{"type": "text", "text": "ok"}]},
+            )
+
+        inject_transport(monkeypatch, httpx.MockTransport(handler))
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/settings/test",
+            json={
+                "channel": "llm",
+                "base_url": "https://api.moonshot.cn/anthropic",
+                "model": "kimi-k2",
+                "api_key": "sk-ant-test",
+                "protocol": "anthropic",
+            },
+        )
+        assert response.status_code == 200
+        assert seen[0][0].endswith("/v1/messages")
+        assert seen[0][1] == "2023-06-01"
+
+    def test_probe_rejects_invalid_form_protocol(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/settings/test",
+            json={"channel": "llm", "protocol": "gemini-native"},
+        )
+        assert response.status_code == 422
+        assert "openai-chat" in response.json()["message"]
 
     def test_probe_uses_effective_config_when_no_override(
         self, config_path: Path, monkeypatch: pytest.MonkeyPatch

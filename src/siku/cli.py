@@ -241,6 +241,22 @@ def version() -> None:
     typer.echo(f"siku {__version__}")
 
 
+def _llm_config_error_message(exc: ModelNotAvailableError) -> str:
+    """LLM 通道解析失败的 CLI 用户面中文文案（协议是当前唯一可触发解析失败的入口）。"""
+    kind = getattr(exc, "kind", None)
+    if kind == "llm_enum":
+        return (
+            "LLM 线协议非法：仅支持 openai-chat / anthropic / openai-responses；"
+            "请修正 --llm-protocol、SIKU_LLM_PROTOCOL 或 config.toml 的 [llm] protocol。"
+        )
+    if kind == "channel_unsupported":
+        return (
+            "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）；"
+            "请从 config.toml 对应段移除后重试。"
+        )
+    return f"LLM 通道配置无效：{exc}"
+
+
 def _fail(message: str, exc: Exception) -> NoReturn:
     # stderr 即 CLI 的用户面：技术细节降为 DEBUG 日志（SIKU_LOG_LEVEL=DEBUG 可见），
     # 用户面只呈现归一化的中文文案
@@ -692,7 +708,8 @@ def graph(
         typer.Option(
             "--api-key-env",
             help="存放 LLM API key 的环境变量名（BYO key）；"
-            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}。",
+            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}；"
+            "若 LLM 通道完全未配置且 DASHSCOPE_API_KEY 已设置，则回退读该变量。",
         ),
     ] = None,
     llm_base_url: Annotated[
@@ -703,15 +720,30 @@ def graph(
         str | None,
         typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
     ] = None,
+    llm_protocol: Annotated[
+        str | None,
+        typer.Option(
+            "--llm-protocol",
+            help="LLM 线协议：openai-chat（缺省）/ anthropic / openai-responses；缺省读分层配置。",
+        ),
+    ] = None,
     rebuild: Annotated[
         bool, typer.Option("--rebuild", help="忽略抽取缓存，强制全部重抽。")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
     """构建知识图谱并输出体检报告（LLM 抽取，BYO key）。"""
-    llm = resolve_llm_channel(
-        ChannelValues(base_url=llm_base_url, model=llm_model, api_key_env=api_key_env)
-    )
+    try:
+        llm = resolve_llm_channel(
+            ChannelValues(
+                base_url=llm_base_url,
+                model=llm_model,
+                api_key_env=api_key_env,
+                protocol=llm_protocol,
+            )
+        )
+    except ModelNotAvailableError as exc:
+        _fail(_llm_config_error_message(exc), exc)
     resolved_key_env = llm.api_key_env or DEFAULT_API_KEY_ENV
     extractor = LlmGraphExtractor(
         provider=HttpxLlmProvider(
@@ -719,6 +751,7 @@ def graph(
             model_id=llm.model,
             api_key_env=resolved_key_env,
             api_key=llm.api_key.get_secret_value() if llm.api_key else None,
+            protocol=llm.protocol,
         )
     )
     summarizer: CommunitySummarizer | None = None
@@ -739,6 +772,7 @@ def graph(
                     model_id=llm.model,
                     api_key_env=resolved_key_env,
                     api_key=llm.api_key.get_secret_value() if llm.api_key else None,
+                    protocol=llm.protocol,
                 )
             )
             generate_wiki(data_dir, summarizer)
@@ -798,7 +832,8 @@ def wiki(
         typer.Option(
             "--api-key-env",
             help="存放 LLM API key 的环境变量名（BYO key）；"
-            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}。",
+            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}；"
+            "若 LLM 通道完全未配置且 DASHSCOPE_API_KEY 已设置，则回退读该变量。",
         ),
     ] = None,
     llm_base_url: Annotated[
@@ -809,18 +844,34 @@ def wiki(
         str | None,
         typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
     ] = None,
+    llm_protocol: Annotated[
+        str | None,
+        typer.Option(
+            "--llm-protocol",
+            help="LLM 线协议：openai-chat（缺省）/ anthropic / openai-responses；缺省读分层配置。",
+        ),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
     """生成 wiki 总目条目（每社区一篇，LLM 摘要，BYO key）。"""
-    llm = resolve_llm_channel(
-        ChannelValues(base_url=llm_base_url, model=llm_model, api_key_env=api_key_env)
-    )
+    try:
+        llm = resolve_llm_channel(
+            ChannelValues(
+                base_url=llm_base_url,
+                model=llm_model,
+                api_key_env=api_key_env,
+                protocol=llm_protocol,
+            )
+        )
+    except ModelNotAvailableError as exc:
+        _fail(_llm_config_error_message(exc), exc)
     summarizer = CommunitySummarizer(
         provider=HttpxLlmProvider(
             base_url=llm.base_url,
             model_id=llm.model,
             api_key_env=llm.api_key_env or DEFAULT_API_KEY_ENV,
             api_key=llm.api_key.get_secret_value() if llm.api_key else None,
+            protocol=llm.protocol,
         )
     )
     try:
@@ -864,7 +915,8 @@ def serve(
         typer.Option(
             "--api-key-env",
             help="存放 LLM API key 的环境变量名（BYO key）；"
-            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}。",
+            f"缺省读分层配置，最终缺省 {DEFAULT_API_KEY_ENV}；"
+            "若 LLM 通道完全未配置且 DASHSCOPE_API_KEY 已设置，则回退读该变量。",
         ),
     ] = None,
     llm_base_url: Annotated[
@@ -874,6 +926,13 @@ def serve(
     llm_model: Annotated[
         str | None,
         typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
+    ] = None,
+    llm_protocol: Annotated[
+        str | None,
+        typer.Option(
+            "--llm-protocol",
+            help="LLM 线协议：openai-chat（缺省）/ anthropic / openai-responses；缺省读分层配置。",
+        ),
     ] = None,
     embedding_base_url: EmbeddingBaseUrlOpt = None,
     embedding_model: EmbeddingModelOpt = None,
@@ -920,8 +979,13 @@ def serve(
         resolved_ui_dir = None
     if host == "0.0.0.0":
         typer.echo("警告：服务将监听所有网卡，请确认这是你的明确选择。", err=True)
-    llm_cli = ChannelValues(base_url=llm_base_url, model=llm_model, api_key_env=api_key_env)
-    llm = resolve_llm_channel(llm_cli)
+    llm_cli = ChannelValues(
+        base_url=llm_base_url, model=llm_model, api_key_env=api_key_env, protocol=llm_protocol
+    )
+    try:
+        llm = resolve_llm_channel(llm_cli)
+    except ModelNotAvailableError as exc:
+        _fail(_llm_config_error_message(exc), exc)
     embedding_supply = _embedding_cli_values(
         embedding_base_url, embedding_model, embedding_api_key_env
     )
