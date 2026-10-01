@@ -83,7 +83,12 @@ def supply_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _RecordingFak
 def test_unconfigured_embedding_returns_actionable_guidance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未配置 embedding：默认工厂给出可行动指引，不静默降级。"""
+    """未配置 embedding：默认工厂给出可行动指引，不静默降级。
+
+    HTTP 面文案按调用面成文（change fix-model-supply-error-surfacing 决议 #2）：
+    localhost API 的消费者是桌面/WebUI，没有命令行语境，指引必须指向「设置」页，
+    而不是 config.toml 路径与 CLI 参数教程。
+    """
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
@@ -95,8 +100,9 @@ def test_unconfigured_embedding_returns_actionable_guidance(
     assert response.status_code == 503
     payload = response.json()
     assert payload["code"] == "model_not_available"
-    assert "config.toml" in payload["message"]
-    assert "--embedding-base-url" in payload["message"]
+    assert "设置" in payload["message"]
+    assert "config.toml" not in payload["message"]
+    assert "--embedding-base-url" not in payload["message"]
 
 
 def test_default_factory_builds_service_from_supply(

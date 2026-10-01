@@ -19,6 +19,7 @@ from typing import Protocol
 import httpx
 
 from siku.graph.errors import (
+    LlmAuthError,
     LlmConnectionError,
     LlmEmptyResponseError,
     LlmInputTooLongError,
@@ -185,6 +186,20 @@ class HttpxLlmProvider:
             raise LlmRateLimitError("LLM service rate limited the request (HTTP 429)")
         body = response.text
         if response.status_code >= 400:
+            # 401/403 先分型：凭证被拒的出路是「核对 key 与端点是否成套」，
+            # 与响应体不可解析/服务端错误不同；不回显上游错误体（可能含凭证片段）
+            if response.status_code in (401, 403):
+                logger.debug(
+                    "llm endpoint rejected credentials: status=%d base_url_host=%s model=%s",
+                    response.status_code,
+                    httpx.URL(self._base_url).host,
+                    self.model_id,
+                )
+                raise LlmAuthError(
+                    f"LLM endpoint rejected the credentials (HTTP {response.status_code}). "
+                    "Check that the api_key / api_key_env belongs to the same vendor "
+                    "and account as the configured base_url."
+                )
             lowered = body.lower()
             overflow = response.status_code == 400 and any(
                 hint in lowered for hint in _CONTEXT_OVERFLOW_HINTS

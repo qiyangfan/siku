@@ -110,6 +110,8 @@ from siku.graph.service import GraphBuildResult, build_graph
 from siku.ingest import IngestReport, ingest_path
 from siku.model_supply import (
     ChannelValues,
+    ModelConfigFileError,
+    ModelSupplyConfig,
     build_embedding_provider,
     build_reranker_provider,
     llm_env_fallback_channel,
@@ -307,6 +309,14 @@ def create_app(
         search_cache = _SearchSupplyCache(embedding_supply, rerank_supply, embedding_dimensions)
         resolved_search_factory = search_cache.get
     llm_providers = _llm_provider_factory(llm_supply)
+    # serve 的 CLI 层（--llm-*/--embedding-*/--rerank-*）：设置视图的 ask_readiness
+    # 与 llm_env_fallback 必须按请求期同一口径判定，否则「CLI 配齐、请求真能跑」
+    # 的部署会被判为未配置（change fix-model-supply-error-surfacing 决议 #4）
+    cli_supply_layer = ModelSupplyConfig(
+        llm=llm_supply or ChannelValues(),
+        embedding=embedding_supply or ChannelValues(),
+        rerank=rerank_supply or ChannelValues(),
+    )
 
     # 来源目录同步（ADR-0010）：库域状态库 + 扫描执行体 + 单任务槽 + 轮询调度。
     # 注册表随应用生命周期持有（状态非派生物）；调度线程经 lifespan 启停。
@@ -421,7 +431,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return IngestResponse(
             created=report.created,
@@ -690,7 +702,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return SearchResponse(
             query=request.query,
@@ -763,7 +777,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         finally:
             if extractor is not None:
@@ -865,7 +881,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         finally:
             if summarizer is not None:
@@ -920,6 +938,7 @@ def create_app(
                 # 与请求期 LLM 解析同一口径（含 serve 的 CLI 层），保证
                 # 「响应说回退生效」⇔「生成请求真的走回退」
                 llm_fallback=llm_env_fallback_channel(llm_supply),
+                cli=cli_supply_layer,
             )
         except ModelNotAvailableError as exc:
             # 手改 config.toml 的越界 protocol 不得变成 500：给可行动中文指引
@@ -927,11 +946,15 @@ def create_app(
             guidance = invalid_protocol_message(exc)
             if guidance is not None:
                 return _error_response(503, "invalid_settings", guidance)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         except Exception as exc:
             logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return view
 
@@ -941,9 +964,26 @@ def create_app(
 
         写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的
         默认工厂每请求现解析。请求体（含 key）不进日志。
+
+        坏文件自救（change fix-model-supply-error-surfacing 决议 #3）：现有配置
+        **确证不可解析**（坏 TOML / 非法段）时以空的文件层为基底继续合并本次提交
+        并原子替换，响应显式告知覆盖事实——否则「读就抛」会把「重新保存覆盖坏文件」
+        这条唯一可由桌面用户操作的出路彻底堵死。仅因权限/IO 读不到文件时不覆盖
+        （内容未知，覆盖即丢用户配置）。
         """
+        recovered = False
         try:
-            merged = apply_update(load_config(), update)
+            try:
+                current = load_config()
+            except ModelConfigFileError as exc:
+                logger.warning(
+                    "settings write overwriting unparseable config file: path=%s detail=%s",
+                    default_config_path(),
+                    exc,
+                )
+                current = ModelSupplyConfig()
+                recovered = True
+            merged = apply_update(current, update)
             # 写入前整体校验协议字段：手改文件的越界值不得先落盘再毒化读路径
             validate_channel_protocols(merged)
             save_config(merged)
@@ -952,12 +992,14 @@ def create_app(
         except Exception as exc:
             logger.debug("API settings write failed: error_class=%s", type(exc).__name__)
             # 协议越界（含手改文件存量值）在写入前拦截：给可行动中文指引而非
-            # 落盘后毒化读路径；其余沿用既有领域映射（如损坏 TOML → 503）
+            # 落盘后毒化读路径；其余沿用既有领域映射（如不可读文件 → 503）
             if isinstance(exc, ModelNotAvailableError):
                 guidance = invalid_protocol_message(exc)
                 if guidance is not None:
                     return _error_response(422, "invalid_settings", guidance)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         cache = application.state.search_supply_cache
         if cache is not None:
@@ -968,8 +1010,10 @@ def create_app(
                 merged,
                 default_config_path(),
                 llm_fallback=llm_env_fallback_channel(llm_supply),
+                cli=cli_supply_layer,
             ).model_dump(),
             warnings=warnings,
+            invalid_config_file_overwritten=recovered,
         )
 
     @application.post("/api/settings/test", response_model=SettingsTestResponse)

@@ -438,3 +438,33 @@ def test_serve_watch_stdin_wiring_marks_uvicorn_server_on_eof(
         _run_with_stdin_watchdog(FastAPI(), host="127.0.0.1", port=8000)
 
     assert captured["should_exit_after_run"] is True
+
+
+def test_serve_starts_and_warns_when_config_file_is_unparseable(
+    monkeypatch: object, tmp_path: Path
+) -> None:
+    """坏配置文件不得堵死启动面（change fix-model-supply-error-surfacing 决议 #3）：
+
+    桌面 sidecar 就是 `siku serve --with-ui`，启动即退出会让「设置页重新保存覆盖」
+    这条自救路径无从可达。明示告警（非静默）+ 以空文件层继续启动。
+    """
+    broken = tmp_path / "config.toml"
+    broken.write_text("not [valid toml", encoding="utf-8")
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "siku.model_supply.config_file_path", lambda: broken
+    )
+    created: list[dict[str, object]] = []
+
+    def fake_create_app(**kwargs: object) -> object:
+        created.append(kwargs)
+        return object()
+
+    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "siku.cli.uvicorn.run", lambda *_args, **_kwargs: None
+    )
+
+    result = runner.invoke(app, ["serve", "--port", "8123"])
+    assert result.exit_code == 0, result.output
+    assert "不可解析" in result.output
+    assert len(created) == 1

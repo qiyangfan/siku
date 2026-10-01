@@ -19,6 +19,7 @@ from graph_fakes import (
 )
 from siku.graph.errors import (
     GraphError,
+    LlmAuthError,
     LlmConnectionError,
     LlmEmptyResponseError,
     LlmInputTooLongError,
@@ -337,9 +338,46 @@ def test_all_provider_errors_share_graph_domain_base() -> None:
     for error_class in (
         LlmNotConfiguredError,
         LlmProviderError,
+        LlmAuthError,
         LlmInputTooLongError,
         LlmRateLimitError,
         LlmConnectionError,
         LlmEmptyResponseError,
     ):
         assert issubclass(error_class, GraphError)
+
+
+class TestLlmAuthFailureTyping:
+    """LLM 端点 401/403 与通用服务失败分型（change fix-model-supply-error-surfacing
+    决议 #1）：凭证被拒不得落进「未返回可验证结果」的通用文案。"""
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_rejection_maps_to_auth_error(self, status: int) -> None:
+        provider = _provider(lambda request: httpx.Response(status, json={"error": {}}))
+        with pytest.raises(LlmAuthError) as excinfo:
+            provider.complete(SYSTEM_PROMPT, USER_PROMPT)
+        # 基类照样接住：五剧本既有处理器零回退
+        assert isinstance(excinfo.value, LlmProviderError)
+        assert isinstance(excinfo.value, GraphError)
+
+    @pytest.mark.parametrize("protocol", ["openai-chat", "anthropic", "openai-responses"])
+    def test_rejection_typing_is_protocol_independent(self, protocol: str) -> None:
+        provider = HttpxLlmProvider(
+            base_url="https://api.example.com/v1",
+            model_id="m",
+            api_key="k",
+            protocol=protocol,
+            transport=httpx.MockTransport(lambda _request: httpx.Response(403, text="denied")),
+        )
+        with pytest.raises(LlmAuthError):
+            provider.complete(SYSTEM_PROMPT, USER_PROMPT)
+        provider.close()
+
+    def test_auth_error_carries_no_key(self) -> None:
+        provider = _provider(
+            lambda request: httpx.Response(401, text="bad key"), api_key="sk-auth-secret"
+        )
+        with pytest.raises(LlmAuthError) as excinfo:
+            provider.complete(SYSTEM_PROMPT, USER_PROMPT)
+        assert "sk-auth-secret" not in str(excinfo.value)
+        assert "bad key" not in str(excinfo.value)

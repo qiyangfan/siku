@@ -21,6 +21,7 @@ from siku.graph.errors import (
     GraphError,
     GraphExtractionError,
     GraphStoreCorruptError,
+    LlmAuthError,
     LlmConnectionError,
     LlmEmptyResponseError,
     LlmInputTooLongError,
@@ -42,7 +43,9 @@ from siku.retrieve.errors import (
     IndexCorruptError,
     IndexUnavailableError,
     InvalidQueryError,
+    ModelConfigFileError,
     ModelConfigMismatchError,
+    ModelCredentialError,
     ModelNotAvailableError,
     NoteParseError,
     NotesDirMissingError,
@@ -470,3 +473,102 @@ def test_every_domain_error_has_stable_http_mapping(
 def test_openapi_snapshot_has_no_drift() -> None:
     expected = json.dumps(create_app().openapi(), ensure_ascii=False, indent=2) + "\n"
     assert DEFAULT_SNAPSHOT_PATH.read_text(encoding="utf-8") == expected
+
+
+def _http_message(error: Exception) -> str:
+    return map_domain_error(error, api_key_env="CUSTOM_KEY", surface="http").message
+
+
+def _cli_message(error: Exception) -> str:
+    return map_domain_error(error, api_key_env="CUSTOM_KEY").message
+
+
+class TestDualSurfaceErrorCopy:
+    """双面文案（change fix-model-supply-error-surfacing 决议 #2）：同一映射来源，
+    按调用面分别成文——HTTP 面禁现配置文件路径与命令行参数教程，CLI 面零漂移。"""
+
+    _CLI_ONLY_MARKERS = ("config.toml", "--embedding-base-url", "--rerank-base-url")
+
+    def test_http_surface_never_teaches_cli_configuration(self) -> None:
+        for error in (
+            ModelNotAvailableError("embedding endpoint"),
+            ModelCredentialError("embedding endpoint rejected the credentials", "embedding"),
+            ModelConfigFileError("Model supply config file is not valid TOML: /x: boom"),
+            LlmAuthError("LLM endpoint rejected the credentials (HTTP 401)"),
+            LlmProviderError("LLM service returned HTTP 500"),
+        ):
+            mapping = map_domain_error(error, api_key_env="CUSTOM_KEY", surface="http")
+            assert mapping.status_code == 503
+            for marker in self._CLI_ONLY_MARKERS:
+                assert marker not in mapping.message
+            assert "设置" in mapping.message
+
+    def test_cli_surface_keeps_config_file_and_flag_guidance(self) -> None:
+        message = _cli_message(ModelNotAvailableError("embedding endpoint"))
+        assert "config.toml" in message
+        assert "--embedding-base-url" in message
+
+    def test_credential_rejection_copy_is_not_unconfigured_copy(self) -> None:
+        """凭证被拒不得说成「补全 base_url 与 model」——那是另一条出路。"""
+        error = ModelCredentialError("embedding endpoint rejected the credentials", "embedding")
+        for message in (_http_message(error), _cli_message(error)):
+            assert "凭证" in message
+            assert "补全" not in message
+            assert "embedding" in message
+
+    def test_credential_rejection_copy_teaches_key_endpoint_pairing(self) -> None:
+        """CLI 面：核对 key 与端点是否成套（不同厂商 key 不可跨端点用）。"""
+        message = _cli_message(
+            ModelCredentialError("rerank endpoint rejected the credentials", "rerank")
+        )
+        assert "rerank" in message
+        assert "api_key" in message
+        assert "成套" in message
+
+    def test_config_file_error_copy_names_the_broken_file(self) -> None:
+        message = _cli_message(ModelConfigFileError("Model supply config file is not valid TOML"))
+        assert "不可解析" in message
+        assert "config.toml" in message
+
+    def test_llm_auth_error_copy_differs_from_generic_provider_failure(self) -> None:
+        auth = LlmAuthError("LLM endpoint rejected the credentials (HTTP 403)")
+        for message in (_http_message(auth), _cli_message(auth)):
+            assert "凭证" in message
+            assert "无法解析" not in message
+        # 通用服务失败仍是原口径，不被凭证分型污染
+        for message in (
+            _cli_message(LlmProviderError("LLM service returned HTTP 500")),
+            _http_message(LlmProviderError("LLM service returned HTTP 500")),
+        ):
+            assert "LLM 服务调用失败" in message or "「设置」页检查 LLM 通道" in message
+            assert "拒绝了当前凭证" not in message
+
+    def test_ask_surface_credential_rejection_copy(self, tmp_path: Path) -> None:
+        client = build_test_app(
+            tmp_path,
+            search_service=FakeSearchService(
+                error=ModelCredentialError("embedding endpoint rejected", "embedding")
+            ),
+            answer_provider=FakeAnswerProvider("unused"),
+        )
+        response = client.post("/api/ask", json={"question": "问题"})
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "model_not_available"
+        assert "凭证" in payload["message"]
+        assert "config.toml" not in payload["message"]
+
+    def test_search_surface_config_file_error_copy(self, tmp_path: Path) -> None:
+        client = build_test_app(
+            tmp_path,
+            search_service=FakeSearchService(
+                error=ModelConfigFileError("Model supply config file is not valid TOML")
+            ),
+        )
+        response = client.post("/api/search", json={"query": "检索"})
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "model_not_available"
+        assert "不可解析" in payload["message"]
+        assert "config.toml" not in payload["message"]
+        assert "--embedding-base-url" not in payload["message"]

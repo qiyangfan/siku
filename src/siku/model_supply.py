@@ -35,7 +35,11 @@ from siku.graph.providers import (
     PROTOCOL_OPENAI_CHAT,
 )
 from siku.retrieve.api_providers import ApiEmbeddingProvider, ApiRerankerProvider
-from siku.retrieve.errors import ModelNotAvailableError
+from siku.retrieve.errors import (
+    ModelConfigFileError,
+    ModelConfigFileUnreadableError,
+    ModelNotAvailableError,
+)
 from siku.retrieve.providers import base_url_host
 
 logger = logging.getLogger(__name__)
@@ -159,18 +163,28 @@ class ResolvedChannel:
 
 
 def load_config(path: Path | None = None) -> ModelSupplyConfig:
-    """读取模型供给配置文件；文件缺失视为全空层，格式错误给可定位报错。
+    """读取模型供给配置文件；文件缺失视为全空层，内容不可解析单独分型。
 
     空串字段（如本地端点的 ``api_key = ""``）一律归一为未设置，与"空串与
     未设置等价"的全局口径一致。
+
+    分型边界（change `fix-model-supply-error-surfacing` 决议 #3）：
+    「内容不可解析」（坏 TOML / 非法段 / 非 UTF-8）抛 :class:`ModelConfigFileError`，
+    用户可以重新保存覆盖自救；``OSError``（无权限、IO 故障）抛
+    :class:`ModelConfigFileUnreadableError`——内容未知，覆盖会丢掉可能完好的用户配置，
+    且它与「通道未配置」也不是一回事（文案不得让用户去补 base_url/model）。
     """
     file = path if path is not None else config_file_path()
     if not file.is_file():
         return ModelSupplyConfig()
     try:
         raw = tomllib.loads(file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise ModelNotAvailableError(
+    except OSError as exc:
+        raise ModelConfigFileUnreadableError(
+            f"Model supply config file could not be read: {file}: {exc}"
+        ) from exc
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ModelConfigFileError(
             f"Model supply config file is not valid TOML: {file}: {exc}"
         ) from exc
     try:
@@ -182,7 +196,7 @@ def load_config(path: Path | None = None) -> ModelSupplyConfig:
             ".".join(str(part) for part in error["loc"]) + f": {error['type']}"
             for error in exc.errors()
         )
-        raise ModelNotAvailableError(
+        raise ModelConfigFileError(
             f"Model supply config file has invalid sections: {file}: {fields}"
         ) from exc
     return ModelSupplyConfig(
@@ -307,28 +321,40 @@ class AskReadiness:
 
     ``missing`` 是稳定的 ``<channel>.<field>`` 机器 token 契约（当前全集：
     ``llm.api_key``、``embedding.base_url``、``embedding.model``），供 UI 与
-    API 消费方映射为中文指引；判定口径与请求期 ``resolve_*_channel`` 同源。
+    API 消费方映射为中文指引；判定口径与请求期 ``resolve_*_channel`` 同源，
+    计入 CLI 参数、环境变量与配置文件三层。
     """
 
     ready: bool
     missing: tuple[str, ...]
 
 
-def ask_readiness(config: ModelSupplyConfig | None = None) -> AskReadiness:
+def ask_readiness(
+    config: ModelSupplyConfig | None = None,
+    *,
+    cli: ModelSupplyConfig | None = None,
+) -> AskReadiness:
     """判定「现在发起问答，模型供给是否齐备」（BYOK，ADR-0009 分层口径）。
 
     就绪 = llm 通道凭证可解析（base_url/model 有兼容缺省，不构成缺项）且
     embedding 通道 base_url/model 三层合并非空；rerank 通道是可选项
-    （reranker=none 一等公民），永不进入 ``missing``。判定直接复用与请求期
-    相同的合并与凭证解析路径，保证「判定就绪而请求报未配置」不可能发生。
+    （reranker=none 一等公民），永不进入 ``missing``。
+
+    `cli` 是服务入口（``siku serve --embedding-base-url`` 等）传入的命令行层，
+    形状与文件层同构（三通道各一个 :class:`ChannelValues`）：判定 MUST 计入它，
+    否则「CLI 层配齐、请求期真实可用」的部署会被 UI 判为未配置——那正是本函数
+    承诺杜绝的第二套事实源。判定直接复用与请求期相同的合并与凭证解析路径
+    （:func:`_resolve_channel` / :func:`resolve_llm_channel`），不另写一套逻辑。
     判定不含端点可达性（归连通性探测）与索引存在性（归 409 既有路径）。
     """
     supply = config if config is not None else load_config()
+    llm_cli = cli.llm if cli is not None else None
+    embedding_cli = cli.embedding if cli is not None else None
     missing: list[str] = []
-    llm = resolve_llm_channel(config=supply)
+    llm = resolve_llm_channel(llm_cli, config=supply)
     if llm.resolve_api_key() is None:
         missing.append(MISSING_LLM_API_KEY)
-    embedding = _resolve_channel(supply.embedding, EmbeddingEnvSettings, None)
+    embedding = _resolve_channel(supply.embedding, EmbeddingEnvSettings, embedding_cli)
     # 与请求期 resolve_embedding_channel 同源：embedding 协议越界时整个判定失败
     # （抛 ProtocolConfigError，settings GET 面转为 503 中文指引），不得出现
     # 「判定就绪而请求必炸」的第二套事实源

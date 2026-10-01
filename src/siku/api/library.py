@@ -547,7 +547,9 @@ class LibraryJobManager:
                 exc,
                 exc_info=True,
             )
-            message = map_domain_error(exc, api_key_env=self._api_key_env).message
+            # 任务错误面向桌面（HTTP 消费），按 http 面文案成文：指向「设置」页
+            # 而非配置文件路径与命令行参数教程
+            message = map_domain_error(exc, api_key_env=self._api_key_env, surface="http").message
             with self._lock:
                 job.state = "failed"
                 job.error = message

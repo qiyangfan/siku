@@ -19,7 +19,11 @@ from siku.retrieve.api_providers import (
     ApiRerankerProvider,
     reset_dimension_cache,
 )
-from siku.retrieve.errors import ModelNotAvailableError, ProviderError
+from siku.retrieve.errors import (
+    ModelCredentialError,
+    ModelNotAvailableError,
+    ProviderError,
+)
 
 
 def _embedding_handler(
@@ -463,3 +467,65 @@ class TestApiRerankerProvider:
         with pytest.raises(ModelNotAvailableError) as excinfo:
             provider.rerank("q", ["a"])
         assert "super-secret-key" not in str(excinfo.value)
+
+
+class TestCredentialRejectionTyping:
+    """401/403 与「未配置」分型（ADR-0009「报错必须可行动」，change
+    fix-model-supply-error-surfacing 决议 #1）。
+
+    子类化保证既有 `except ModelNotAvailableError` 捕获零回退，同时给文案层
+    可区分的结构化通道标识——凭证被拒不得再被渲染成「补全 base_url 与 model」。
+    """
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_embedding_rejection_carries_channel(self, status: int) -> None:
+        provider = ApiEmbeddingProvider(
+            base_url="https://api.example.com/v1",
+            model_id="m",
+            api_key="k",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status, text="nope")),
+        )
+        with pytest.raises(ModelCredentialError) as excinfo:
+            provider.embed(["文本"])
+        assert excinfo.value.channel == "embedding"
+        # 基类照样接住：既有捕获点（reranker=none 判定、settings 读写）不回退
+        assert isinstance(excinfo.value, ModelNotAvailableError)
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_rerank_rejection_carries_channel(self, status: int) -> None:
+        provider = ApiRerankerProvider(
+            base_url="https://api.example.com/v1",
+            model_id="m",
+            api_key="k",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status, text="nope")),
+        )
+        with pytest.raises(ModelCredentialError) as excinfo:
+            provider.rerank("q", ["a"])
+        assert excinfo.value.channel == "rerank"
+
+    def test_rejection_error_survives_copy_and_pickle(self) -> None:
+        """channel 走 args 位置参：copy/deepcopy/pickle 圆厂不因自定义 __init__ 缺参而炸。"""
+        import copy
+        import pickle
+
+        error = ModelCredentialError("embedding endpoint rejected the credentials", "embedding")
+        round_trips = (
+            copy.copy(error),
+            copy.deepcopy(error),
+            pickle.loads(pickle.dumps(error)),
+        )
+        for round_trip in round_trips:
+            assert str(round_trip) == str(error)
+            assert round_trip.channel == "embedding"
+
+    def test_server_side_failure_stays_untyped_as_rejection(self) -> None:
+        """5xx/429 不是凭证问题：不得被塞进凭证分型。"""
+        provider = ApiEmbeddingProvider(
+            base_url="https://api.example.com/v1",
+            model_id="m",
+            api_key="k",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(500, text="oops")),
+        )
+        with pytest.raises(ProviderError) as excinfo:
+            provider.embed(["文本"])
+        assert not isinstance(excinfo.value, ModelCredentialError)

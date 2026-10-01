@@ -15,6 +15,7 @@ from siku.model_supply import (
     LLM_PROTOCOLS,
     ChannelValues,
     ModelSupplyConfig,
+    ProtocolConfigError,
     ask_readiness,
     base_url_host,
     channel_slug,
@@ -25,7 +26,11 @@ from siku.model_supply import (
     resolve_rerank_channel,
     save_config,
 )
-from siku.retrieve.errors import ModelNotAvailableError
+from siku.retrieve.errors import (
+    ModelConfigFileError,
+    ModelConfigFileUnreadableError,
+    ModelNotAvailableError,
+)
 
 SECRET = "super-secret-key"
 
@@ -508,3 +513,119 @@ class TestAskReadiness:
         readiness = ask_readiness(config)
         assert SECRET not in repr(readiness)
         assert SECRET not in str(readiness.missing)
+
+
+class TestConfigFileErrorTyping:
+    """坏配置文件的分型（change fix-model-supply-error-surfacing 决议 #3）：
+    「内容不可解析」与「文件读不到」必须可区分——前者允许用户保存覆盖自救，
+    后者内容未知，覆盖即丢用户配置。"""
+
+    def test_unparseable_toml_raises_config_file_error(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", "not [valid toml")
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        assert "not valid TOML" in str(excinfo.value)
+        # 基类照样接住：settings GET/PUT 与 serve 启动面的既有捕获零回退
+        assert isinstance(excinfo.value, ModelNotAvailableError)
+
+    def test_invalid_sections_raise_config_file_error(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", "[llm]\nbase_url = 12345\n")
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        assert "invalid sections" in str(excinfo.value)
+
+    def test_non_utf8_file_raises_config_file_error(self, tmp_path: Path) -> None:
+        file = tmp_path / "config.toml"
+        file.write_bytes(b"\xff\xfe\x00broken")
+        with pytest.raises(ModelConfigFileError):
+            load_config(file)
+
+    def test_unreadable_file_is_its_own_class_not_unconfigured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError（权限/IO 故障）内容未知：独立分型，既不是「可覆盖」的不可解析，
+        也不是「通道未配置」——文件可能配得好好的，只是读不出来。"""
+        file = write_toml(tmp_path / "config.toml", '[llm]\nmodel = "m"\n')
+
+        def refuse(*_args: object, **_kwargs: object) -> str:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "read_text", refuse)
+        with pytest.raises(ModelConfigFileUnreadableError) as excinfo:
+            load_config(file)
+        # 基类捕获必须仍然成立（serve 启动面与各 except ModelNotAvailableError 处理器零回退）
+        assert isinstance(excinfo.value, ModelNotAvailableError)
+        assert not isinstance(excinfo.value, ModelConfigFileError)
+
+
+class TestAskReadinessCliLayer:
+    """就绪判定计入 serve 的 CLI 层（决议 #4）：请求期真实可用而判定报未配置，
+    是同一函数 docstring 明令禁止的第二套事实源。"""
+
+    _CLI_EMBEDDING = ChannelValues(base_url="http://127.0.0.1:11434/v1", model="bge-m3")
+
+    def test_cli_layer_embedding_satisfies_readiness(self, tmp_path: Path) -> None:
+        config = load_config(tmp_path / "absent.toml")
+        without_cli = ask_readiness(config)
+        assert "embedding.base_url" in without_cli.missing
+
+        readiness = ask_readiness(
+            config,
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding=self._CLI_EMBEDDING,
+            ),
+        )
+        assert readiness.ready is True
+        assert readiness.missing == ()
+
+    def test_cli_layer_llm_key_satisfies_readiness(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """serve 的 --api-key-env 指向的变量参与判定：凭证只在 CLI 层给出也算就绪。"""
+        monkeypatch.setenv("SIKU_TEST_LLM_KEY", "sk-from-cli-layer")
+        config = load_config(tmp_path / "absent.toml")
+        readiness = ask_readiness(
+            config,
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key_env="SIKU_TEST_LLM_KEY"), embedding=self._CLI_EMBEDDING
+            ),
+        )
+        assert "llm.api_key" not in readiness.missing
+        assert readiness.ready is True
+
+    def test_cli_layer_partial_embedding_still_reports_missing(self, tmp_path: Path) -> None:
+        """CLI 只给 base_url 时仍报 model 缺项——计入 CLI 层不等于放宽判据。"""
+        config = load_config(tmp_path / "absent.toml")
+        readiness = ask_readiness(
+            config,
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding=ChannelValues(base_url="http://127.0.0.1:11434/v1"),
+            ),
+        )
+        assert readiness.ready is False
+        assert readiness.missing == ("embedding.model",)
+
+    def test_blank_cli_values_fall_back_to_file_layer(self, tmp_path: Path) -> None:
+        """CLI 层空白串与未设置等价：文件层有效值继续生效，判定不因空白串退化。"""
+        file = write_toml(
+            tmp_path / "config.toml",
+            '[embedding]\nbase_url = "http://127.0.0.1:11434/v1"\nmodel = "file-model"\n',
+        )
+        readiness = ask_readiness(
+            load_config(file),
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding=ChannelValues(base_url="   ", model="   "),
+            ),
+        )
+        assert readiness.ready is True
+
+    def test_readiness_still_rejects_embedding_protocol_from_cli_layer(self) -> None:
+        """与请求期同源：CLI 层给 embedding 塞 protocol 时判定同样抛协议错误。"""
+        with pytest.raises(ProtocolConfigError):
+            ask_readiness(
+                ModelSupplyConfig(),
+                cli=ModelSupplyConfig(embedding=ChannelValues(protocol="anthropic")),
+            )

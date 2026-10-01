@@ -5,7 +5,8 @@ openai SDK，HTTP 层异常一律翻译为检索领域错误，禁止裸 httpx �
 
 凭证解析：显式 ``api_key`` 优先，其次 ``api_key_env`` 环境变量；本地自部署端点
 （Ollama 等）允许无凭证——此时不发送 Authorization 头，凭证错误由端点 401/403
-经错误映射回流为配置指引。key 只进请求头，不进日志与异常消息。
+经错误映射回流为 :class:`~siku.retrieve.errors.ModelCredentialError`（与「未配置」
+分型，ADR-0009 报错可行动）。key 只进请求头，不进日志与异常消息。
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from typing import Any
 
 import httpx
 
-from siku.retrieve.errors import ModelNotAvailableError, ProviderError
+from siku.retrieve.errors import ModelCredentialError, ProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +48,25 @@ def _auth_headers(api_key: str | None) -> dict[str, str]:
 
 
 def _endpoint_error(channel: str, response: httpx.Response) -> Exception:
-    """按 HTTP 状态映射领域错误：401/403 是配置问题，其余是端点调用失败。"""
+    """按 HTTP 状态映射领域错误：401/403 是凭证被拒，其余是端点调用失败。
+
+    `channel` 传稳定 token（`embedding`/`rerank`），既进结构化字段也用于英文
+    message 的首词。401/403 单独分型为 :class:`ModelCredentialError`：把「凭证
+    被拒」和「未配置」混在同一类里，文案层只会给出错误的指引（ADR-0009 要求
+    报错可行动）。响应体不回显，避免上游把 key 片段写进错误面。
+    """
+    label = channel.capitalize()
     if response.status_code in (401, 403):
-        return ModelNotAvailableError(
-            f"{channel} endpoint rejected the credentials (HTTP {response.status_code}). "
-            "Check the api_key / api_key_env configuration for this channel."
+        return ModelCredentialError(
+            f"{label} endpoint rejected the credentials (HTTP {response.status_code}). "
+            "Check that the api_key / api_key_env for this channel belongs to the same "
+            "vendor and account as the configured base_url.",
+            channel,
         )
     if response.status_code == 429:
-        return ProviderError(f"{channel} endpoint rate limited the request (HTTP 429)")
+        return ProviderError(f"{label} endpoint rate limited the request (HTTP 429)")
     return ProviderError(
-        f"{channel} endpoint returned HTTP {response.status_code}: {response.text[:200]}"
+        f"{label} endpoint returned HTTP {response.status_code}: {response.text[:200]}"
     )
 
 
@@ -125,7 +135,7 @@ class ApiEmbeddingProvider:
         return dimensions
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
-        """返回与输入等长的向量批次；失败抛 ProviderError/ModelNotAvailableError。"""
+        """返回与输入等长的向量批次；失败抛 ProviderError 或 ModelCredentialError。"""
         if not texts:
             return []
         vectors: list[list[float]] = []
@@ -160,7 +170,7 @@ class ApiEmbeddingProvider:
             # 不在 HTTPError 体系内，需显式纳入
             raise ProviderError(f"Embedding endpoint request failed: {exc}") from exc
         if response.status_code >= 400:
-            raise _endpoint_error("Embedding", response)
+            raise _endpoint_error("embedding", response)
         return self._extract_vectors(_parse_json(response, "Embedding"), len(batch))
 
     @staticmethod
@@ -254,7 +264,7 @@ class ApiRerankerProvider:
             # 与 embedding 通道同口径：InvalidURL / 已关闭连接池一并翻译
             raise ProviderError(f"Rerank endpoint request failed: {exc}") from exc
         if response.status_code >= 400:
-            raise _endpoint_error("Rerank", response)
+            raise _endpoint_error("rerank", response)
         return self._extract_scores(_parse_json(response, "Rerank"), len(texts))
 
     def close(self) -> None:

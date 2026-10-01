@@ -237,9 +237,16 @@ class SettingsUpdateRequest(BaseModel):
 
 
 class SettingsWriteResponse(SettingsResponse):
-    """PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。"""
+    """PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。
+
+    `invalid_config_file_overwritten=True` 表示本次保存前配置文件不可解析
+    （内容损坏），系统以空的文件层为基底合并本次提交并原子替换了该文件——
+    这是「坏文件自救」的显式告知，不静默丢内容（原文件既然不可解析，其可读
+    配置量本就为零）。正常写入恒为 False。
+    """
 
     warnings: list[str]
+    invalid_config_file_overwritten: bool = False
 
 
 class SettingsTestRequest(BaseModel):

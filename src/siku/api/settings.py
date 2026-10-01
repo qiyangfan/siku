@@ -31,6 +31,7 @@ from siku.api.models import (
     SettingsUpdateRequest,
 )
 from siku.graph.errors import (
+    LlmAuthError,
     LlmConnectionError,
     LlmNotConfiguredError,
     LlmProviderError,
@@ -57,7 +58,13 @@ from siku.model_supply import (
     resolve_rerank_channel,
 )
 from siku.retrieve.api_providers import ApiEmbeddingProvider, ApiRerankerProvider
-from siku.retrieve.errors import ModelNotAvailableError, ProviderError
+from siku.retrieve.errors import (
+    ModelConfigFileError,
+    ModelConfigFileUnreadableError,
+    ModelCredentialError,
+    ModelNotAvailableError,
+    ProviderError,
+)
 from siku.retrieve.indexer import database_path
 from siku.retrieve.providers import IndexModelMetadata
 from siku.retrieve.store import SqliteIndex
@@ -96,17 +103,22 @@ class SettingsValidationError(ValueError):
 
 
 def invalid_protocol_message(exc: Exception) -> str | None:
-    """协议越界的领域错误 → 可行动中文指引；非协议类错误返回 None 走既有映射。"""
+    """协议越界的领域错误 → 可行动中文指引；非协议类错误返回 None 走既有映射。
+
+    指引只出现在 HTTP 面（调用点是 settings GET/PUT），故按 HTTP 文案口径成文：
+    指向「设置」页与保存覆盖，不给配置文件路径与命令行参数教程。
+    """
     if not isinstance(exc, ProtocolConfigError):
         return None
     if exc.kind == "llm_enum":
         return (
-            "LLM 通道的 protocol 非法：仅支持 openai-chat / anthropic / openai-responses；"
-            "请修正 config.toml 对应段后重试。"
+            "LLM 通道的接口协议（protocol）取值非法：仅支持 openai-chat / anthropic / "
+            "openai-responses。该值来自本机配置的越界填写，请在「设置」页重新选择协议并保存"
+            "即可覆盖，保存后免重启生效。"
         )
     return (
-        "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）；"
-        "请从 config.toml 对应段移除后重试。"
+        "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）：本机配置中存在"
+        "越界字段，请在「设置」页保持该通道协议留空并保存覆盖，保存后免重启生效。"
     )
 
 
@@ -125,15 +137,18 @@ def masked_view(
     config: ModelSupplyConfig,
     config_path: str,
     llm_fallback: ResolvedChannel | None = None,
+    cli: ModelSupplyConfig | None = None,
 ) -> SettingsResponse:
     """把文件层配置渲染为掩码视图：key 不回显，env 覆盖字段逐通道标注。
 
-    `ask_readiness` 是该响应唯一跨层（文件 + env）的字段：就绪判定必须按
-    请求期同一分层口径执行，掩码视图的文件层静止视角对它不适用。
-    `llm_fallback` 由调用方按请求期同一口径（含 serve 的 CLI 层）预计算：
-    LLM 厂商环境变量回退生效时渲染为端点描述，未生效为 None。
+    `ask_readiness` 是该响应唯一跨层（CLI + 文件 + env）的字段：就绪判定必须按
+    请求期同一分层口径执行，掩码视图的文件层静止视角对它不适用——因此 `cli` 必须
+    由调用方传入 serve 的 CLI 层，否则 `siku serve --embedding-base-url …` 这种
+    请求期确实可用的部署会被判为未配置（change fix-model-supply-error-surfacing
+    决议 #4）。`cli` 与 `llm_fallback` 同口径（都含 serve 的 CLI 层），两者不得
+    再各说一套。
     """
-    readiness = ask_readiness(config)
+    readiness = ask_readiness(config, cli=cli)
     sections: dict[str, ChannelSettingsView] = {}
     for name in CHANNELS:
         channel = getattr(config, name)
@@ -417,7 +432,11 @@ def _probe_rerank(
 
 
 def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -> ErrorMapping:
-    """把探测失败映射为既有稳定错误码 + 通道/协议感知中文指引（不含上游错误体）。"""
+    """把探测失败映射为既有稳定错误码 + 通道/协议感知中文指引（不含上游错误体）。
+
+    探测只有 HTTP（设置页）消费者，文案一律走 HTTP 面口径：分型分支（凭证被拒 /
+    配置文件不可解析）MUST 排在通用类之前，否则被通用文案吞掉。
+    """
     label = _CHANNEL_LABELS[channel]
     if isinstance(exc, LlmNotConfiguredError):
         return ErrorMapping(
@@ -426,12 +445,40 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
             f"未配置 API key：请在表单填写 {label} 通道的 api_key，或设置对应"
             " api_key_env 环境变量后再测试。",
         )
+    if isinstance(exc, ModelCredentialError):
+        return ErrorMapping(
+            503,
+            "model_not_available",
+            f"{label} 端点拒绝了当前凭证：请在表单核对该通道的 api_key 与 base_url 是否成套"
+            "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
+        )
+    if isinstance(exc, ModelConfigFileError):
+        return ErrorMapping(
+            503,
+            "model_not_available",
+            "模型配置文件不可解析（内容已损坏）：请先在「设置」页重新填写并保存以覆盖该文件，"
+            "保存后免重启生效；表单提交到的字段不依赖原文件内容。",
+        )
+    if isinstance(exc, ModelConfigFileUnreadableError):
+        return ErrorMapping(
+            503,
+            "model_not_available",
+            "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）：请修复该文件的可读性后"
+            "重试；此情况不会由保存覆盖，以免毁掉可能完好的配置。",
+        )
     if isinstance(exc, ModelNotAvailableError):
         return ErrorMapping(
             503,
             "model_not_available",
-            f"{label} 端点拒绝了当前凭证或配置不完整：请检查该通道的 base_url、"
+            f"{label} 端点配置不完整：请检查该通道的 base_url、"
             "model 与 api_key / api_key_env 后重试。",
+        )
+    if isinstance(exc, LlmAuthError):
+        return ErrorMapping(
+            503,
+            "llm_provider_error",
+            f"{label} 端点拒绝了当前凭证：请在表单核对 api_key 与 base_url 是否成套"
+            "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
         )
     if isinstance(exc, LlmRateLimitError):
         return ErrorMapping(503, "llm_rate_limited", f"{label} 端点限流（HTTP 429）：请稍后重试。")
@@ -460,4 +507,4 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
             f"{label} 端点调用失败：请检查端点可达性、凭证与模型名称后重试；"
             "若为限流（HTTP 429）请稍后再试。",
         )
-    return map_domain_error(exc, api_key_env="SIKU_LLM_API_KEY")
+    return map_domain_error(exc, api_key_env="SIKU_LLM_API_KEY", surface="http")

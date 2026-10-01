@@ -24,6 +24,7 @@ from siku.api.messages import (
 )
 from siku.api.messages import (
     ingest_error_message,
+    map_domain_error,
 )
 from siku.api.messages import (
     retrieval_error_message as _retrieval_error_message,
@@ -43,6 +44,7 @@ from siku.graph.service import build_graph
 from siku.ingest import IngestError, ingest_path
 from siku.model_supply import (
     ChannelValues,
+    ModelSupplyConfig,
     ResolvedChannel,
     base_url_host,
     build_embedding_provider,
@@ -52,7 +54,13 @@ from siku.model_supply import (
     resolve_llm_channel,
     resolve_rerank_channel,
 )
-from siku.retrieve.errors import EvaluationError, ModelNotAvailableError, RetrievalError
+from siku.retrieve.errors import (
+    EvaluationError,
+    ModelConfigFileError,
+    ModelConfigFileUnreadableError,
+    ModelNotAvailableError,
+    RetrievalError,
+)
 from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import SearchOptions
 from siku.retrieve.providers import EmbeddingProvider, RerankerProvider
@@ -178,6 +186,17 @@ def _rerank_mode_text(reranker: RerankerProvider | None) -> str:
     return str(reranker.model_id)
 
 
+def _config_file_gap_text() -> str:
+    """通道被「不可解析」的配置文件挡住时的播报口径（不得说「未配置」）。
+
+    serve 遇不可解析文件会告警后继续启动，随后 embedding/rerank 解析再读同一个
+    坏文件——若这里仍按「未配置」播报，就与上一行的告警自相矛盾，且把用户推向
+    一个其实不缺配置的通道。「读不到」（权限/IO）不走这条路径：那时 serve 在 LLM
+    解析处就已快速失败退出，活不到打印横幅这一步（实测确认）。
+    """
+    return "配置文件不可解析（非未配置，可在设置页重新保存覆盖）"
+
+
 def _announce_supply_channels(
     embedding_supply: ChannelValues,
     rerank_supply: ChannelValues,
@@ -191,11 +210,15 @@ def _announce_supply_channels(
     try:
         embedding_channel = resolve_embedding_channel(embedding_supply)
         embedding_text = f"{embedding_channel.model}@{base_url_host(embedding_channel.base_url)}"
+    except ModelConfigFileError:
+        embedding_text = _config_file_gap_text()
     except ModelNotAvailableError:
         embedding_text = "未配置（检索/问答将返回配置指引错误）"
     try:
         rerank_channel = resolve_rerank_channel(rerank_supply)
         rerank_text = f"{rerank_channel.model}@{base_url_host(rerank_channel.base_url)}"
+    except ModelConfigFileError:
+        rerank_text = _config_file_gap_text()
     except ModelNotAvailableError:
         rerank_text = "none（RRF-only）"
     typer.echo(
@@ -242,7 +265,7 @@ def version() -> None:
 
 
 def _llm_config_error_message(exc: ModelNotAvailableError) -> str:
-    """LLM 通道解析失败的 CLI 用户面中文文案（协议是当前唯一可触发解析失败的入口）。"""
+    """LLM 通道解析失败的 CLI 用户面中文文案（协议与坏配置文件是两个入口）。"""
     kind = getattr(exc, "kind", None)
     if kind == "llm_enum":
         return (
@@ -254,7 +277,20 @@ def _llm_config_error_message(exc: ModelNotAvailableError) -> str:
             "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）；"
             "请从 config.toml 对应段移除后重试。"
         )
+    if isinstance(exc, (ModelConfigFileError, ModelConfigFileUnreadableError)):
+        # 两类配置文件故障都只走映射层文案（内部英文串不进用户面）；
+        # 「不可解析」与「读不到」的指引不同：前者可覆盖自救，后者覆盖即丢配置
+        return map_domain_error(exc, api_key_env=DEFAULT_API_KEY_ENV).message
     return f"LLM 通道配置无效：{exc}"
+
+
+def _config_file_error_message() -> str:
+    """配置文件不可解析的 CLI 用户面文案（删除只影响配置，不影响已摄取语料）。"""
+    mapping = map_domain_error(
+        ModelConfigFileError("Model supply config file is not valid TOML"),
+        api_key_env=DEFAULT_API_KEY_ENV,
+    )
+    return mapping.message
 
 
 def _fail(message: str, exc: Exception) -> NoReturn:
@@ -984,6 +1020,17 @@ def serve(
     )
     try:
         llm = resolve_llm_channel(llm_cli)
+    except ModelConfigFileError as exc:
+        # 坏配置文件不得堵死启动面：桌面 sidecar 就是 `siku serve --with-ui`，
+        # 启动即退出会让「设置页重新保存覆盖」这条唯一自救路径无从可达
+        # （change fix-model-supply-error-surfacing 决议 #3）。明示告警（非静默）
+        # 后以空文件层继续启动；请求期各面仍现读配置，按各自指引报错或接受覆盖保存。
+        typer.echo(_config_file_error_message(), err=True)
+        logger.warning(
+            "model supply config file is unparseable; serve startup ignores the file layer: %s",
+            exc,
+        )
+        llm = resolve_llm_channel(llm_cli, config=ModelSupplyConfig())
     except ModelNotAvailableError as exc:
         _fail(_llm_config_error_message(exc), exc)
     embedding_supply = _embedding_cli_values(
