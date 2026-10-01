@@ -4,9 +4,53 @@
 > `docs/architecture.md`、`docs/adr/`、`openspec/project.md` 和 `docs/ROADMAP.md`。
 
 - **更新时间**：2026-10-01
-- **仓库/分支**：`~/siku` / `feature/adopt-mantine-ui-components`（本批全部改动**未提交**，工作区即交付面）
+- **仓库/分支**：`~/siku` / `feature/adopt-mantine-ui-components`（错误分型三批已提交并推送；
+  成因码本批（`settings-error-cause-codes`）随本文件同批入库）
 
-## 本批完成：模型供给错误分型与双面文案
+## 本批完成：配置故障成因码分道与「落盘事实」保真
+
+openspec change `settings-error-cause-codes`（已归档 `2026-10-01-settings-error-cause-codes`：
+任务全勾 + `review.md` 两轮独立复核 + 门禁全绿，delta 已 sync 进 `http-api` / `model-supply` 主规格）。
+收掉上一批 review.md 文末那条「不改契约就无法收口」的限制：
+
+1. **成因码分道**：`map_domain_error` 与 `map_probe_error` 两个映射点给配置文件两型各自稳定的
+   `code`——内容确证不可解析 `invalid_config_file`（保存可修）、内容未知（权限/IO 读不到）
+   `config_file_unreadable`（保存不可修）；其余供给错误仍 `model_not_available`。状态码 503、
+   `{code, message}` 结构、文案均不变——是把已有的异常分型推到机器可读面，不是新增行为。
+2. **设置页自救入口由码驱动**：`loadErrorCode === "invalid_config_file"` 才给
+   「确认以空配置覆盖本机配置文件并重新填写」，删掉「拿到错误响应 = 服务可达 = 可覆盖」的启发式
+   （它对读不到型也会给入口，点下去必被服务端拒）。**中途试过并否掉的方案**：`GET` 对坏文件返
+   200 + `config_file_invalid` 标记——请求期每请求现读该文件，读面一旦容忍就会出现
+   「设置页说就绪、真实请求 503」的误就绪，比死路更难排查；已回退，别再走。
+3. **同一请求只读一次配置文件**：`PUT` 响应的 `llm_env_fallback` 改传 `config=merged`
+   （此前通道视图用 merged、回退判定再 `load_config()` 一次，是两套事实源）。
+4. **落盘后不得谎报保存失败**（评审 R1 抓出）：就绪判定含 env/cli 层而写入前校验只管文件层，
+   env 层协议越界会让 `PUT` 在文件已写好之后从 `try` 外抛穿、由全局兜底返 500 `internal_error`。
+   现按 `GET` 面同一口径给码（503 `invalid_settings`）并在文案声明「本次提交的配置已写入本机
+   配置文件」。**可达性口径**：`siku serve` 对 env/cli 层协议越界是启动即 fail-fast，故这条只在
+   直接使用 `create_app()` 的形态可达，由进程内用例覆盖，未声称端到端验过。
+5. **启动面不再漏 traceback**（评审 R2 真机冒烟抓出的既有缺陷，非本批引入）：`cli.py` 坏文件分支里
+   「以空文件层再解析一次」抛出的 `ProtocolConfigError` 出自 `except` 块内部，不会被同一 `try` 的
+   后续 `except` 接住，实测漏出完整 traceback 后退出。改为内层 `try` 嵌套归 `_fail`，
+   用户面现为三行归一化文案（不可解析明示 → warning 记类名 → 协议取值指引），exit=1。
+
+**验证**：`pytest` **731 passed**（本批新增 6 条用例，全部做过「撤掉修复即红」的反向验证：
+把两个成因码改回 `model_not_available` → 三条同时红；把 `config=merged` 改回不传 → 单读用例红
+`assert 2 == 1`；拆掉 `cli.py` 内层 `try` → 启动面用例红）；`ruff check`/`format --check` 绿；
+`ui` `tsc`/`eslint`/`vitest` **109 passed**/`vite build` 绿；`--specs --strict` **8/8**、
+`--changes --strict` 归档前 **1/1**。真机冒烟（临时 `HOME=/tmp/siku-r5` + 临时 vault/data，跑完即删，
+本机真实 `config.toml` 全程未读写）：坏 TOML → serve 起服、`GET` 503 `code=invalid_config_file`、
+`PUT` 200 `invalid_config_file_overwritten=true`、再 `GET` 200；坏 TOML 叠加
+`SIKU_LLM_PROTOCOL=totally-bogus-protocol` → 归一化三行退出、`grep -c Traceback` = 0。
+`chmod 000` 一型**只能进程内验**：该情形 serve 依约快速失败、根本不监听，故其「GET/PUT 均 503 +
+不覆盖 + 原文件逐字节未动」由 `tests/test_api_settings.py` 断言（含 `cmp`）。
+
+**排除的臆断（评审提出、经查不成立，记此免重复排查）**：① `ModelConfigFileUnreadableError` 被
+`ModelConfigFileError` 分支提前吞掉——两型是兄弟（`errors.py:70/:79` 同直接继承基类），`issubclass`
+双向 False，四条映射链实测各归其码；② UI 里 `loadErrorCode` 二次失败残留、`blankFormConfirmed`
+在无错误时仍出黄色告警——`load()` 开头成对清零 + `App.tsx` 条件挂载切页即重挂，两路不可达。
+
+## 上一批完成：模型供给错误分型与双面文案
 
 openspec change `fix-model-supply-error-surfacing`（已归档 `2026-10-01-fix-model-supply-error-surfacing`：
 任务全勾 + `review.md` 两轮独立复核收口 + 门禁全绿）。
@@ -32,9 +76,10 @@ openspec change `fix-model-supply-error-surfacing`（已归档 `2026-10-01-fix-m
 `role="status"` 告警呈现覆盖自救告知——**不复用 `warnings` 区块**，其标题固定「需要重建索引」，
 把覆盖写塞进去会误导成索引问题；用例同时断言告知出现与下次正常保存后撤下。
 
-## 验证
+## 验证（上一批）
 
 - `uv run pytest` **724 passed**（基线 681 + 本批 43）；`ruff check` / `ruff format --check` 绿。
+  该计数是上一批的终态，成因码本批之后为 **731**。
 - `ui`：`vitest` **109 passed**；`tsc -b --noEmit`、`eslint .`、`vite build` 绿。
 - `openspec validate --specs --strict` **8/8**、`--changes --strict` **1/1**；`contracts/openapi.json` 已随契约再生成。
 - 真机验收第 3 条（临时 vault/data-dir，跑完即删）：`siku serve --embedding-base-url … --embedding-model …`
@@ -90,21 +135,36 @@ openspec change `fix-model-supply-error-surfacing`（已归档 `2026-10-01-fix-m
   分叉——已另立变更 `2026-10-01-control-pull-count-point` 收口（与本仓无关，记此以免两处口径失联）。
 - **[低] `docs`/`spec` 与本仓行为的同步**：model-supply delta 补一条「serve 在该情形快速失败退出」的
   判据，避免规格只描述横幅侧行为而实现其实止于启动面。
-- **限制（不改契约就无法收口）**：三型供给故障共用 `code=model_not_available`，客户端无从区分
-  「内容不可解析」与「权限读不到」，故设置页的覆盖入口对后者也会出现、点下去必被服务端拒绝
-  （空配置告警块已写明「只在内容损坏时可覆盖」）。要精确显示需给响应加判别字段——属对外契约扩张，未擅动。
+- **当时登记的限制已在下一批收口**（归档 `2026-10-01-settings-error-cause-codes`）：三型故障
+  曾共用 `code=model_not_available`，UI 只能靠启发式猜「保存能否修好」；现已按成因分道为
+  `invalid_config_file` / `config_file_unreadable` / `model_not_available`。
 
 ## 待办与边界
 
 - **已归档**：本仓流程要求的 `review.md`（独立评审两轮）已随批入库，delta 已 sync 进
   `model-supply` / `http-api` 主规格（strict 8/8）。归档件
-  `openspec/changes/archive/2026-10-01-fix-model-supply-error-surfacing/`。
-- **待 owner 决定的一条契约扩张**：三型供给故障共用 `code=model_not_available`，设置页无法区分
-  「内容不可解析」（可覆盖自救）与「权限读不到」（不可覆盖），故覆盖入口对后者也会出现、点下去必被拒
-  （已有准确拒绝文案兜住，属误导入口不损坏数据）。要精确收口需在 GET/PUT 响应加判别字段——未擅动。
-- **相邻存量（不在本批 diff 内，一句话记此）**：`mypy src/siku` 在 `graph/providers.py:229-255`
+  `openspec/changes/archive/2026-10-01-fix-model-supply-error-surfacing/` 与
+  `openspec/changes/archive/2026-10-01-settings-error-cause-codes/`（后者含 R1 三项 + R2 一项
+  的修复与红灯实证、以及被推翻的两条臆测）。活动变更清零。
+- **配置故障成因码已分道并落地**：`invalid_config_file`（内容确证不可解析，保存可覆盖自救）/
+  `config_file_unreadable`（内容未知，禁止覆盖）/ 其余仍 `model_not_available`。设置页的覆盖
+  自救入口只由第一个码驱动——上一轮「拿到错误响应即给入口」的启发式、以及它对读不到型误给
+  入口的问题，同时消除。**中途试过并否掉的方案**：让 `GET /api/settings` 对坏文件返回 200 +
+  `config_file_invalid` 标记——因请求期每请求现读该文件，容忍会造成「设置页说就绪、真实请求
+  503」的误就绪，比死路更难排查；此路已回退，别再走。
+- **相邻存量（不在本批 diff 内，一句话记此）**：① `mypy src/siku` 在 `graph/providers.py:229-255`
   报 3 条错（`parts` 重定义、`join` 收 `list[Any | None]`），属 2026-09-26 已提交的
   `add-llm-protocol-adapters`；siku 未把 mypy 列入门禁（CI/AGENTS 均无），故非门禁破口。
+  ② `api/settings.py::invalid_protocol_message` 的 `llm_enum` 文案说「来自本机配置的越界填写，
+  在设置页重新选择协议并保存即可覆盖」，但当值来自 **env 层**（`SIKU_LLM_PROTOCOL`）时页面覆盖不了
+  （env 优先于文件层）——要修准需让 `ProtocolConfigError` 携带层信息，属另立变更。
+  ③ 除本批统一的两处外，`cli.py` 其余 `except` 分支仍会把异常文本 `%s` 打进日志；实测泄露面为零
+  （消息含配置文件路径、不含 key），属口径不齐而非破口。
+- **工具坑（本机门禁执行口径）**：`pytest` 直跑只输出进度点不输出汇总行（`addopts` 已含 `-q`，
+  再加 `-q` 即 `-qq`），要计数用 `-o addopts=""`；`ui/` 下别用 `pnpm exec`/`pnpm test`——pnpm 11
+  会先跑 install、在 `ERR_PNPM_IGNORED_BUILDS: esbuild` 处退出，并写出 `ui/pnpm-lock.yaml` 与
+  `ui/pnpm-workspace.yaml` 两个孤儿文件（本仓真正锁文件是 `package-lock.json`），直接调
+  `./node_modules/.bin/{tsc,eslint,vitest,vite}` 绕开。
 - 桌面 GUI 进程读不到 shell 环境变量：回退只在终端 `serve` 场景生效；sidecar 环境注入仍是 Non-goal。
 - 「siku 走查发现 2026-09」清单：ink-faint 对比度已销，余项待修。
 - Phase 6（Apple 公证 / Windows 签名 / 自动更新）未启动：需开发者账号与付费证书，属外部条件不是代码缺口；
