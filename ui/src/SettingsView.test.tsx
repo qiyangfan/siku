@@ -34,6 +34,7 @@ const savedSettings = {
   ...settings,
   llm: { ...settings.llm, model: "deepseek-chat-new" },
   warnings: [] as string[],
+  invalid_config_file_overwritten: false,
 };
 
 type Call = { url: string; init?: RequestInit };
@@ -124,7 +125,7 @@ describe("设置中心", () => {
 
   it("切换到「引用环境变量」丢弃未保存明文，按环境变量方式保存", async () => {
     const calls: Call[] = [];
-    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [], invalid_config_file_overwritten: false } });
     const user = userEvent.setup();
     render(<SettingsView />);
 
@@ -143,9 +144,91 @@ describe("设置中心", () => {
     expect(body.llm).not.toHaveProperty("api_key");
   });
 
+  it("保存覆盖了不可解析的配置文件时显式告知,不做静默替换", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, {
+      get: settings,
+      put: { ...settings, warnings: [], invalid_config_file_overwritten: true },
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    await screen.findAllByRole("group");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    expect(await screen.findByText("原配置文件不可解析")).toBeInTheDocument();
+    expect(screen.getByText(/以空配置为基底写入了新内容并覆盖该文件/)).toBeInTheDocument();
+    // 告知是一次性的:再次正常保存必须撤下,不得滞留成常驻文案
+    mockFetch(calls, {
+      get: settings,
+      put: { ...settings, warnings: [], invalid_config_file_overwritten: false },
+    });
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() =>
+      expect(screen.queryByText("原配置文件不可解析")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("配置文件不可解析导致读取失败时,给出可执行的覆盖自救入口", async () => {
+    // 回归钉子:GET 失败曾让整张表单连同保存按钮一起消失(只剩「重试读取」),
+    // 于是服务端「重新保存即可覆盖」的指引在桌面上无从执行
+    const calls: Call[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
+      calls.push({ url, init });
+      if (url.endsWith("/api/settings") && (init?.method ?? "GET") === "GET") {
+        return {
+          ok: false,
+          status: 503,
+          json: () =>
+            Promise.resolve({
+              code: "model_not_available",
+              message: "模型配置文件不可解析（内容已损坏）：可在「设置」页重新填写并保存。",
+            }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: () => Promise.resolve({ ...settings, warnings: [], invalid_config_file_overwritten: true }),
+      } as Response;
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    expect(await screen.findByText("设置读取失败")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "确认以空配置覆盖本机配置文件并重新填写" }),
+    );
+
+    // 表单出图且按空配置显示:不得沿用服务端读数,也不得伪造 config_path
+    await screen.findByText("模型供给设置");
+    expect(screen.getByText("按空配置显示")).toBeInTheDocument();
+    expect(screen.queryByText(/配置写入/)).not.toBeInTheDocument();
+    const llm = within(await screen.findByRole("group", { name: "LLM 通道" }));
+    expect(llm.getByLabelText("base_url")).toHaveValue("");
+
+    await user.type(llm.getByLabelText("base_url"), "https://api.deepseek.com");
+    await user.type(llm.getByLabelText("model"), "deepseek-chat");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    const put = calls.find((call) => call.init?.method === "PUT");
+    expect(put).toBeDefined();
+    expect(await screen.findByText("原配置文件不可解析")).toBeInTheDocument();
+  });
+
+  it("服务不可达时不提供覆盖入口(保存同样无处可去)", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.reject(new TypeError("offline")));
+    render(<SettingsView />);
+
+    expect(await screen.findByText("设置读取失败")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "确认以空配置覆盖本机配置文件并重新填写" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("env 模式下已存明文 key 时提示优先生效，并可直接勾选清除", async () => {
     const calls: Call[] = [];
-    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [], invalid_config_file_overwritten: false } });
     const user = userEvent.setup();
     render(<SettingsView />);
 
@@ -208,7 +291,7 @@ describe("设置中心", () => {
 
   it("显式勾选清除已保存的 key 时提交 null", async () => {
     const calls: Call[] = [];
-    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [], invalid_config_file_overwritten: false } });
     const user = userEvent.setup();
     render(<SettingsView />);
 

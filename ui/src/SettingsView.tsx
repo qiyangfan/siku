@@ -261,6 +261,16 @@ const CHANNEL_PRESETS: Record<ChannelName, VendorPreset[]> = {
   rerank: RERANK_PRESETS,
 };
 
+// 通道视图不可得（配置文件未能读取）时的显示基底：按「未设置」渲染，不伪造服务端读数
+const BLANK_CHANNEL_VIEW: ChannelSettingsView = {
+  base_url: null,
+  model: null,
+  api_key_env: null,
+  protocol: null,
+  api_key_set: false,
+  env_overrides: [],
+};
+
 const EMPTY_FORM: ChannelForm = {
   base_url: "",
   model: "",
@@ -354,10 +364,18 @@ export function SettingsView({
     rerank: EMPTY_FORM,
   });
   const [loadError, setLoadError] = useState<string | null>(null);
+  // GET 失败但服务可达(拿到了 {code,message})：PUT 同样可达，坏配置文件的覆盖自救
+  // 必须由这里进去——读取失败页只留「重试读取」会让服务端文案里「重新保存即可覆盖」
+  // 的承诺落空。连接失败(没拿到响应)不适用：那时保存也无处可去。
+  const [loadFailedButReachable, setLoadFailedButReachable] = useState(false);
+  // 用户显式确认后，以空的文件层渲染表单（views 为 null 时的唯一出图路径）
+  const [blankFormConfirmed, setBlankFormConfirmed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
+  // 本次保存是否覆盖了「内容不可解析」的配置文件(坏文件自救的显式告知,不做静默替换)
+  const [overwrittenInvalidConfig, setOverwrittenInvalidConfig] = useState(false);
   const [testStates, setTestStates] = useState<Record<ChannelName, ChannelTestState>>({
     llm: null,
     embedding: null,
@@ -373,15 +391,20 @@ export function SettingsView({
   const applySettings = useCallback((settings: SettingsResponse) => {
     setViews(settings);
     setForms(formsFrom(settings));
+    setLoadError(null);
+    setLoadFailedButReachable(false);
+    setBlankFormConfirmed(false);
     // 表单已被服务端视图覆盖：预设下拉同步回到「自定义」，避免显示陈旧厂商
     setPresetIds({ llm: null, embedding: null, rerank: null });
   }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
+    setLoadFailedButReachable(false);
     try {
       applySettings(await getSettings());
     } catch (caught: unknown) {
+      setLoadFailedButReachable(isApiError(caught));
       setLoadError(
         isApiError(caught)
           ? caught.message
@@ -457,6 +480,7 @@ export function SettingsView({
     setSaveMessage(null);
     setSaveError(null);
     setWarnings([]);
+    setOverwrittenInvalidConfig(false);
     try {
       const response = await updateSettings({
         llm: payloadFrom(forms.llm),
@@ -466,6 +490,7 @@ export function SettingsView({
       applySettings(response);
       setSaveMessage("设置已保存，无需重启即可生效。");
       setWarnings(response.warnings);
+      setOverwrittenInvalidConfig(response.invalid_config_file_overwritten ?? false);
       onSaved?.(response);
     } catch (caught: unknown) {
       setSaveError(
@@ -521,18 +546,37 @@ export function SettingsView({
     }
   };
 
-  if (loadError !== null) {
+  if (loadError !== null && !blankFormConfirmed) {
     return (
       <Alert className="status-card" color="red" role="alert" title="设置读取失败">
         <p>{loadError}</p>
-        <Button type="button" className="button-secondary" variant="default" onClick={() => void load()}>
-          重试读取
-        </Button>
+        <Group gap="sm">
+          <Button
+            type="button"
+            className="button-secondary"
+            variant="default"
+            onClick={() => void load()}
+          >
+            重试读取
+          </Button>
+          {loadFailedButReachable && (
+            // 破坏性动作要显式同意：这条按钮唯一的作用是放弃文件层、以空配置重填，
+            // 服务端只在「内容确证不可解析」时接受覆盖（权限/IO 读不到会被拒绝并说明原因）
+            <Button
+              type="button"
+              color="red"
+              variant="filled"
+              onClick={() => setBlankFormConfirmed(true)}
+            >
+              确认以空配置覆盖本机配置文件并重新填写
+            </Button>
+          )}
+        </Group>
       </Alert>
     );
   }
 
-  if (views === null) {
+  if (views === null && !blankFormConfirmed) {
     return (
       <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
         <Loader size="sm" />
@@ -553,9 +597,19 @@ export function SettingsView({
       }}
     >
       <h2 id="settings-title">模型供给设置</h2>
-      <p className="hint settings-path">
-        配置写入 <code>{views.config_path}</code>，保存后免重启生效；环境变量层仍优先于文件层。
-      </p>
+      {views === null ? (
+        <Alert className="status-card" color="yellow" role="status" title="按空配置显示">
+          <p>{loadError}</p>
+          <p>
+            下方表单不含任何已存值。保存只会覆盖「内容确证不可解析」的文件；若因权限或磁盘故障读不到，
+            保存会被拒绝并说明原因，不会动原文件。
+          </p>
+        </Alert>
+      ) : (
+        <p className="hint settings-path">
+          配置写入 <code>{views.config_path}</code>，保存后免重启生效；环境变量层仍优先于文件层。
+        </p>
+      )}
 
       {saveMessage !== null && (
         <Alert color="green" role="status">{saveMessage}</Alert>
@@ -563,12 +617,19 @@ export function SettingsView({
       {saveError !== null && (
         <Alert color="red" role="alert" title="设置保存失败">{saveError}</Alert>
       )}
+      {overwrittenInvalidConfig && (
+        <Alert color="yellow" role="status" title="原配置文件不可解析">
+          本机配置文件内容已损坏、无法读取，本次保存以空配置为基底写入了新内容并覆盖该文件。
+          若此前还配置过其他通道，请在下方重新填写后再次保存。
+        </Alert>
+      )}
       {warnings.map((warning) => (
         <Alert key={warning} color="yellow" role="alert" title="需要重建索引">{warning}</Alert>
       ))}
 
       {CHANNEL_META.map(({ key, title, description }) => {
-        const view = views[key];
+        const view = views?.[key] ?? BLANK_CHANNEL_VIEW;
+        const llmFallback = views?.llm_env_fallback ?? null;
         const form = forms[key];
         const testState = testStates[key];
         return (
@@ -580,12 +641,12 @@ export function SettingsView({
                 {view.env_overrides.join("、")}。
               </p>
             )}
-            {key === "llm" && views.llm_env_fallback && (
+            {key === "llm" && llmFallback && (
               <Alert className="llm-fallback-note" role="note">
                 未显式配置 LLM 通道：当前按环境变量{" "}
-                <code>{views.llm_env_fallback.api_key_env}</code> 回退使用{" "}
-                <code>{views.llm_env_fallback.base_url}</code>（
-                {views.llm_env_fallback.model}）。在下方显式配置并保存后即可覆盖。
+                <code>{llmFallback.api_key_env}</code> 回退使用{" "}
+                <code>{llmFallback.base_url}</code>（{llmFallback.model}）。
+                在下方显式配置并保存后即可覆盖。
               </Alert>
             )}
             {key === "llm" && (

@@ -669,7 +669,7 @@ describe("问答就绪门控", () => {
   it("保存设置成功后经 PUT 响应立即刷新就绪状态", async () => {
     const user = userEvent.setup();
     let getCalls = 0;
-    const readyWrite = { ...READY_SETTINGS, warnings: [] };
+    const readyWrite = { ...READY_SETTINGS, warnings: [], invalid_config_file_overwritten: false };
     vi.spyOn(globalThis, "fetch").mockImplementation(
       ((input: string | URL | Request, init?: RequestInit) => {
         const url =

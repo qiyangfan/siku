@@ -69,6 +69,9 @@ export type SettingsResponse = {
 
 export type SettingsWriteResponse = SettingsResponse & {
   warnings: string[];
+  /** 本次保存前本机配置文件不可解析，已以空配置为基底原子覆盖（坏文件自救告知）。
+   *  契约里该字段带 `default: false` 且不入 `required`，故按可选建模。 */
+  invalid_config_file_overwritten?: boolean;
 };
 
 export type ChannelSettingsPayload = {
