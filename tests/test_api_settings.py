@@ -546,6 +546,46 @@ class TestPutSettings:
         assert again.status_code == 503
         assert again.json()["code"] == "invalid_settings"
 
+    def test_degraded_put_over_corrupt_file_discloses_overwrite(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """坏文件叠加 env 层协议越界：响应虽是 503，覆盖自救确实发生了——两个事实都得进文案，
+        否则用户以为自救没生效而反复重试。"""
+        config_path.write_text("not [valid toml", encoding="utf-8")
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"embedding": {"model": "m"}})
+        assert response.status_code == 503
+        message = response.json()["message"]
+        assert "已写入" in message
+        assert "已被本次保存覆盖" in message
+        assert 'model = "m"' in config_path.read_text(encoding="utf-8")
+
+    def test_degraded_put_keeps_rebuild_warning(
+        self,
+        config_path: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """降级响应不得静默丢掉成功路径本该携带的重建告警：错误体只有 `{code,message}`
+        两个字段（既有契约不可扩），所以该事实进 message 文本。"""
+        write_note(tmp_path / "vault")
+        sync_index(
+            tmp_path / "vault",
+            tmp_path / "data",
+            FakeEmbeddingProvider(dimensions=4, model_id="model-a"),
+        )
+        save_config(ModelSupplyConfig(embedding=EMBED_CHANNEL_A))
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app(data_dir=tmp_path / "data"))
+        response = client.put("/api/settings", json={"embedding": EMBED_CHANNEL_B_VALUES})
+        assert response.status_code == 503
+        assert response.json()["code"] == "invalid_settings"
+        message = response.json()["message"]
+        assert "model-a" in message
+        assert "model-b" in message
+        assert "全量重建" in message
+
     def test_request_body_never_reaches_logs(
         self, config_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

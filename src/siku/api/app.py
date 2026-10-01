@@ -1025,21 +1025,30 @@ def create_app(
         except ModelNotAvailableError as exc:
             # 落盘已成功，谎报「保存失败」会把自救路径变成反复重试的迷宫；但就绪判定
             # 含 env/cli 层（`validate_channel_protocols` 只管文件层），env 层的越界协议
-            # 在这里同样抛——按 GET 面同一口径给码，只补一句「已写入」的既成事实。
+            # 在这里同样抛——按 GET 面同一口径给码，并把成功路径本来会携带的事实一并带回：
+            # 是否覆盖了坏文件、embedding 身份变更的重建告警。错误体只有 `{code,message}`
+            # 两个字段（既有契约），这些事实进 message 文本，不新增字段。
             logger.debug(
                 "API settings write succeeded, view degraded: error_class=%s", type(exc).__name__
             )
             guidance = invalid_protocol_message(exc)
             if guidance is None:
+                # 兜底分支是 spec 那条 MUST 的载体（「装配失败 SHALL NOT 返 internal_error 类
+                # 5xx」）：本 try 内的解析都显式传 config，实际只可能抛协议越界，但任何后续
+                # 新增的供给类异常都必须落进领域映射而非 500。
                 mapping = map_domain_error(
                     exc, api_key_env=application.state.api_key_env, surface="http"
                 )
                 status_code, code, text = mapping.status_code, mapping.code, mapping.message
             else:
                 status_code, code, text = 503, "invalid_settings", guidance
-            return _error_response(
-                status_code, code, f"本次提交的配置已写入本机配置文件（免重启生效）；{text}"
-            )
+            facts = ["本次提交的配置已写入本机配置文件（免重启生效）"]
+            if recovered:
+                facts.append("原先不可解析的配置文件已被本次保存覆盖")
+            facts.append(text)
+            if warnings:
+                facts.extend(warnings)
+            return _error_response(status_code, code, "；".join(facts))
         return SettingsWriteResponse(
             **payload.model_dump(),
             warnings=warnings,

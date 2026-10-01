@@ -99,7 +99,7 @@
 
 ## 门禁（修复后重跑）
 
-`pytest` **731 passed**（本批新增 6 条）；`ruff check` / `ruff format --check` 绿；
+`pytest` **733 passed**（较上一批 724 净增 9 条：7 个新用例函数 + 3 行映射表参数化，另 1 条重命名）；`ruff check` / `ruff format --check` 绿；
 `ui`：`tsc --noEmit`、`eslint src --max-warnings 0`、`vitest` **109 passed**、`vite build` 绿；
 `openspec validate --specs --strict` **8/8**、`--changes --strict` **1/1**。
 `contracts/openapi.json` 无漂移，故未再刷新（快照内容与本批错误码无枚举耦合）。
@@ -108,3 +108,53 @@
 `ERR_PNPM_IGNORED_BUILDS: esbuild` 处退出，且顺手写出 `ui/pnpm-lock.yaml` 与
 `ui/pnpm-workspace.yaml` 两个孤儿文件（本仓真正锁文件是 `package-lock.json`）。直接调
 `./node_modules/.bin/{tsc,eslint,vitest,vite}` 可绕开，产生的两个文件已删除。
+
+## R3（对 R1/R2 修复自身的增量复核，独立子代理只审 `3f24327..c8e3be9` 与 kongming `1d16f42..a562bc8`）
+
+确认 6 项，修 5 项、上报 1 项：
+
+- **[P2 回归，已上报未修] 成因码收窄把「文件层协议越界」变成 UI 死路**：入口条件从「拿到错误响应」
+  收窄到 `loadErrorCode === "invalid_config_file"` 之后，`GET` 返 503 `invalid_settings`
+  （文件可解析、`[llm] protocol` 越界）时设置页只剩「重试读取」，而服务端文案正指着这个页面
+  （`settings.py:119-122`「请在『设置』页重新选择协议并保存即可覆盖」）。实测该状态 `PUT`
+  修正 protocol 后 200、再 `GET` 200——保存确实能修，页面却不再给出口。叠加另一条既有形态
+  （`cli.py` 只在 `ModelConfigFileError` 上容忍，文件层协议越界仍让 `siku serve` exit=1，
+  桌面 sidecar 根本进不到页面），修复需要择一：给 `ProtocolConfigError` 带层信息并让 serve
+  只容忍文件层 + 页面出「仅修正协议」控件，或让 `GET` 带视图返回 200 并以 `ask_readiness.missing`
+  表达不可用（后者会顶掉既有场景「越界协议在读取面 503」）。两者都动对外交互规则，按循环纪律
+  暂停上报，未擅自改。
+- **[P3 已修] 主规格场景与实现矛盾**：场景写「返回非 5xx」而实现是 503（503 就是 5xx）。
+  改为「返回 503 且与 `GET` 面同码，而非 500 `internal_error`」，并把「降级分支不得静默丢弃
+  成功响应本该携带的事实」写成 requirement。同批把 `app.py` 降级分支改为把「已写入 / 已覆盖坏文件 /
+  embedding 重建告警」一并写进 message（错误体仍是 `{code,message}` 两字段，不扩契约），
+  补两例 `test_degraded_put_over_corrupt_file_discloses_overwrite`、
+  `test_degraded_put_keeps_rebuild_warning`——撤掉修复即两条同时红，复原即两条绿。
+- **[P3 已修] ADDED 需求把「取值越界」归进 `invalid_config_file`**：代码里 protocol 越界抛
+  `ProtocolConfigError`、走 `invalid_settings`，只有类型不符的 `ValidationError` 才是
+  `ModelConfigFileError`。需求文本改为「非法 TOML、段结构非法、非 UTF-8、字段类型不符」，
+  越界一句挪进场景并点名 `invalid_settings`。
+- **[P3 已修] 用例计数错**：本批相对上一批是净增 9 条（7 个新函数 + 3 行映射表，另 1 条重命名），
+  实测 733 passed；proposal/tasks/review/HANDOFF 四处「6 条」口径已改。
+- **[P3 已修] 需求文本越过 500 字符 INFO 线**：细则移入 scenario 后回到 477 字符；
+  `提供模型供给设置的读写端点` 那条 1508→1561 是既有超长，非本轮新增。
+- **[P3 已修，kongming 侧] 三处口径**：覆盖率两次实测 72.94%/72.93%/72.95%（该套件带
+  pytest-randomly，逐次微抖），HANDOFF 改为「72.9% 级、按 run 微抖」；「原先 5 个读取点里只有
+  `user_role_scopes` 读 status」漏了 083 起就带闸的 `datascope/repository.py::custom_dept_ids`
+  ——本批前是 6 处授权读取、其中 2 处已带闸，本批后 7 处全覆盖；「降级分支只剩主表无法定位」
+  漏了 `applier.py:112-115` 的 `FilterType.SKIP`（目标列不存在等结构性原因，主规格自定场景钉着，
+  与「主体不可确定」不是一类）。三处均已改。
+- **[说明] 兜底分支不是死码**：`invalid_protocol_message` 返 None 时的 `map_domain_error` 分支
+  在当前可达集合里不会命中（该 `try` 内的解析都显式传 `config`，只可能抛协议越界），但 spec 那条
+  「装配失败 SHALL NOT 返 internal_error 类 5xx」要求它对任何供给类异常都成立，故保留并在注释
+  里写明它是 MUST 的载体，不是防御性冗余。
+
+**R3 排除（查证后不是缺陷）**：`cli.py` 内层 `try` 前后行为等价（unreadable 仍由外层 `_fail` 接住，
+warning 格式串 1 占位 1 参）；`DataScopeUnsupported` 唯一生产调用方 `internal/service.py:273` 走
+`_fin("BLOCKED")` 并落审计，无「记录后放行」；`auth/repository.py::list_role_keys` 不带 status
+谓词属角色名呈现（鉴权一律走 `perm_codes`），不构成 fail-open，作为「已核不缺陷」登记；两份主规格
+sync 无重复/孤儿需求（kongming `datascope` 告警 6→6、`rbac` 16→15）；siku 无 pytest-randomly，
+`config_path` fixture 先清 `SIKU_LLM_*` 再用 `setenv`，`chmod 000` 与 `read_text` patch 的逐字节
+断言成立；`map_ask_error` 复用 `map_domain_error`，无第三映射点。
+
+**R3 门禁**：`pytest` **733 passed**、`ruff check`/`format --check` 绿、`openspec validate --specs --strict`
+**8/8**；kongming 覆盖率与用例数按上条口径复核。

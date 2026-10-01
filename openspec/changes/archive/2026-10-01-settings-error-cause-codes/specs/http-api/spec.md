@@ -3,8 +3,9 @@
 ### Requirement: 配置文件故障以稳定 code 分道
 
 模型配置文件的两类故障 SHALL 在 HTTP 错误响应的 `code` 字段上可机器判别：内容确证不可解析
-（非法 TOML、段结构非法、非 UTF-8、取值越界）SHALL 用 `invalid_config_file`，因权限或 IO
-故障读不到（内容未知）SHALL 用 `config_file_unreadable`；两者 SHALL 与其它供给类错误
+（非法 TOML、段结构非法、非 UTF-8、字段类型不符）SHALL 用 `invalid_config_file`，因权限或 IO
+故障读不到（内容未知）SHALL 用 `config_file_unreadable`；协议取值越界不属本条，由既有
+`invalid_settings` 承载；两者 SHALL 与其它供给类错误
 （`model_not_available`）区分，且该分道 SHALL 在**所有** HTTP 错误映射点一致生效（设置读取、
 设置写入、连通性测试、检索/问答等请求期端点）。状态码与 `{code, message}` 结构 SHALL 不变。
 
@@ -16,7 +17,8 @@
 - **GIVEN** 本机配置文件分别处于「内容不可解析」与「权限读不到」两种状态
 - **WHEN** 客户端请求 `GET /api/settings`
 - **THEN** 两者均为 503，`code` 分别为 `invalid_config_file` 与 `config_file_unreadable`；
-  设置页据前者给出覆盖自救入口，据后者只给重试
+  设置页据前者给出覆盖自救入口，据后者只给重试。协议取值越界不落在本条两码上：该文件可解析、
+  只是值不在枚举内，由既有 `invalid_settings` 承载（保存可覆盖修正）
 
 #### Scenario: 请求期端点同一分道
 
@@ -50,7 +52,9 @@ SHALL NOT 再读一次文件（同请求两套事实源会让视图与回退标�
 写入已落盘之后的响应装配若抛领域错误（如环境变量层的协议越界——写入前的校验只管文件层），
 `PUT /api/settings` SHALL NOT 返回 `internal_error` 类 5xx，SHALL 按 `GET` 面同一映射给出状态码、
 `code` 与指引，并在文案中声明「本次提交的配置已写入本机配置文件」这一既成事实——写成功是事实，
-谎报保存失败会把「重新保存覆盖坏文件」这条自救路径变成反复重试的迷宫。
+谎报保存失败会把「重新保存覆盖坏文件」这条自救路径变成反复重试的迷宫。该分支 SHALL NOT 静默丢弃
+成功响应本该携带的事实（写入与覆盖告知、重建告警），错误体结构不变；兜底映射 SHALL 覆盖任何
+供给类领域错误，使装配失败在任何成因下都不退化为 500。
 
 配置文件内容不可解析时，`PUT /api/settings` SHALL NOT 因此拒绝保存：系统 SHALL 以
 空的文件层为基底合并本次提交并原子替换坏文件，响应 SHALL 携带布尔字段
@@ -122,5 +126,6 @@ SHALL 返回可行动指引（重新保存即可覆盖，或删除该配置文�
 
 - **GIVEN** 文件层配置合法，但环境变量层的 `protocol` 取值越界（就绪判定含该层）
 - **WHEN** 客户端请求 `PUT /api/settings` 提交合法配置
-- **THEN** 返回非 5xx 且 `code` 与 `GET` 面对同一故障一致（`invalid_settings`），message
-  声明本次提交已写入本机配置文件并给出协议取值指引；再次读取仍为同一码（两面同源）
+- **THEN** 返回 503 且 `code` 与 `GET` 面对同一故障一致（`invalid_settings`），而非 500
+  `internal_error`；message 声明本次提交已写入本机配置文件并给出协议取值指引，且成功响应本该
+  携带的覆盖告知与重建告警一并写入该文案；再次读取仍为同一码（两面同源）

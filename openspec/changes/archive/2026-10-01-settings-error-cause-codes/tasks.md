@@ -91,8 +91,26 @@
 
 ## 门禁
 
-- [x] `ruff check` / `ruff format --check` 绿；`pytest` 731 passed（本批新增 6 条用例：
-      探测面成因码、PUT 落盘后装配、serve 坏文件叠加协议越界、映射表三行）
+- [x] `ruff check` / `ruff format --check` 绿；`pytest` 733 passed（较上一批 724 净增 9 条：
+      探测面成因码、PUT 落盘后装配两例、serve 坏文件叠加协议越界、单读计数、
+      映射表三行参数化；另 `test_corrupt_config_get_gives_recovery_guidance` 重命名为
+      `..._gives_overwritable_cause_code`）
 - [x] ui：`tsc` / `eslint` / `vitest` 109 passed
 - [x] `contracts/openapi.json` 经 `-m siku.api.contract --refresh` 再生成，漂移测试绿
 - [x] `openspec validate --specs --strict` 8/8、`--changes --strict` 通过；归档 sync
+
+## 第 3 轮增量复核（审本轮修复自身）
+
+- [x] `app.py` 降级分支带回成功路径本该携带的事实（已写入 / 已覆盖坏文件 / 重建告警），
+      错误体仍是 `{code,message}` 两字段；补两例并做撤掉修复即红的反向验证
+- [x] http-api 主规格与本件 delta：场景「返回非 5xx」改为「503 而非 500」（503 本身是 5xx，
+      原句与实现矛盾）；ADDED 需求里的「取值越界」移出 `invalid_config_file` 定义
+      （代码中它走 `invalid_settings`），细则挪进 scenario 使需求文本回到 500 字符内
+- [x] proposal/tasks/review/HANDOFF 的用例计数改为「较上一批净增 9 条，实测 733 passed」
+- [x] kongming HANDOFF 三处口径修正（覆盖率抖动、授权读取点 6→7 且漏 `custom_dept_ids`、
+      `FilterType.SKIP` 漏述）
+- [ ] **上报待裁**：文件层协议越界的 UI 死路（成因码收窄后 `invalid_settings` 无自救入口 +
+      `siku serve` 对该状态 fail-fast 使桌面 sidecar 进不到页面）。两种收口都要动对外交互规则：
+      ①`ProtocolConfigError` 携带来源层 + serve 只容忍文件层 + 设置页出「仅修正协议」控件；
+      ②`GET` 返回 200 带视图并以 `ask_readiness.missing` 表达不可用（会顶掉既有场景
+      「越界协议在读取面 503」）。按循环纪律暂停，未擅自改契约

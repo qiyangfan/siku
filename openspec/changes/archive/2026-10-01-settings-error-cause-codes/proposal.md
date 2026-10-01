@@ -70,6 +70,6 @@
   属把错误路径改对，不新增字段、不改成功响应形状。
 - **可达性**：坏 TOML 与越界 protocol 两型下，设置页给出可执行自救入口；
   权限/IO 读不到时不再给出任何覆盖入口（此前会误导）。
-- 门禁：`pytest` 731 passed、`ruff check/format` 绿、ui `tsc`/`eslint`/`vitest` 109 passed、
+- 门禁：`pytest` 733 passed（较上一批 724 净增 9 条）、`ruff check/format` 绿、ui `tsc`/`eslint`/`vitest` 109 passed、
   `openspec validate --specs --strict` 8/8；真机冒烟（临时 HOME + 坏文件/`chmod 000` 两态）
   实录见 `tasks.md`。
