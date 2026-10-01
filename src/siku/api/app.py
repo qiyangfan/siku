@@ -92,7 +92,6 @@ from siku.api.settings import (
     apply_update,
     default_config_path,
     embedding_rebuild_warnings,
-    invalid_protocol_message,
     map_probe_error,
     masked_view,
     probe_channel,
@@ -120,7 +119,6 @@ from siku.model_supply import (
     resolve_llm_channel,
     resolve_rerank_channel,
     save_config,
-    validate_channel_protocols,
 )
 from siku.qa.providers import AnswerProvider
 from siku.qa.service import AnswerService
@@ -951,9 +949,6 @@ def create_app(
         except ModelNotAvailableError as exc:
             # 手改 config.toml 的越界 protocol 不得变成 500：给可行动中文指引
             logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
-            guidance = invalid_protocol_message(exc)
-            if guidance is not None:
-                return _error_response(503, "invalid_settings", guidance)
             mapping = map_domain_error(
                 exc, api_key_env=application.state.api_key_env, surface="http"
             )
@@ -974,10 +969,10 @@ def create_app(
         默认工厂每请求现解析。请求体（含 key）不进日志。
 
         坏文件自救（change fix-model-supply-error-surfacing 决议 #3）：现有配置
-        **确证不可解析**（坏 TOML / 非法段）时以空的文件层为基底继续合并本次提交
-        并原子替换，响应显式告知覆盖事实——否则「读就抛」会把「重新保存覆盖坏文件」
-        这条唯一可由桌面用户操作的出路彻底堵死。仅因权限/IO 读不到文件时不覆盖
-        （内容未知，覆盖即丢用户配置）。
+        **确证对模型供给无效**（坏 TOML / 非法段 / 字段取值不在允许范围）时以空的文件层
+        为基底继续合并本次提交并原子替换，响应显式告知覆盖事实——否则「读就抛」会把
+        「重新保存覆盖坏文件」这条唯一可由桌面用户操作的出路彻底堵死。仅因权限/IO
+        读不到文件时不覆盖（内容未知，覆盖即丢用户配置）。
         """
         recovered = False
         try:
@@ -985,26 +980,22 @@ def create_app(
                 current = load_config()
             except ModelConfigFileError:
                 logger.warning(
-                    "settings write overwriting unparseable config file: path=%s"
+                    "settings write overwriting invalid config file: path=%s"
                     " error_class=ModelConfigFileError",
                     default_config_path(),
                 )
                 current = ModelSupplyConfig()
                 recovered = True
             merged = apply_update(current, update)
-            # 写入前整体校验协议字段：手改文件的越界值不得先落盘再毒化读路径
-            validate_channel_protocols(merged)
+            # 写入边界已由两处覆盖:提交值经 `_validate_value` 逐字段校验(非法 → 422 不落盘),
+            # 存量文件层经 `load_config` 的取值校验(非法 → 本请求走「无效文件以空层为基底」分支)
             save_config(merged)
         except SettingsValidationError as exc:
             return _error_response(422, "invalid_settings", str(exc))
         except Exception as exc:
             logger.debug("API settings write failed: error_class=%s", type(exc).__name__)
-            # 协议越界（含手改文件存量值）在写入前拦截：给可行动中文指引而非
-            # 落盘后毒化读路径；其余沿用既有领域映射（如不可读文件 → 503）
-            if isinstance(exc, ModelNotAvailableError):
-                guidance = invalid_protocol_message(exc)
-                if guidance is not None:
-                    return _error_response(422, "invalid_settings", guidance)
+            # 沿用既有领域映射：文件层无效 → 503 invalid_config_file，
+            # env/命令行层协议越界 → 503 invalid_settings，不可读文件 → 503 且绝不覆盖
             mapping = map_domain_error(
                 exc, api_key_env=application.state.api_key_env, surface="http"
             )
@@ -1024,27 +1015,23 @@ def create_app(
             )
         except ModelNotAvailableError as exc:
             # 落盘已成功，谎报「保存失败」会把自救路径变成反复重试的迷宫；但就绪判定
-            # 含 env/cli 层（`validate_channel_protocols` 只管文件层），env 层的越界协议
+            # 含 env/cli 层,而写入只写文件层——env 层的越界协议
             # 在这里同样抛——按 GET 面同一口径给码，并把成功路径本来会携带的事实一并带回：
             # 是否覆盖了坏文件、embedding 身份变更的重建告警。错误体只有 `{code,message}`
             # 两个字段（既有契约），这些事实进 message 文本，不新增字段。
             logger.debug(
                 "API settings write succeeded, view degraded: error_class=%s", type(exc).__name__
             )
-            guidance = invalid_protocol_message(exc)
-            if guidance is None:
-                # 兜底分支是 spec 那条 MUST 的载体（「装配失败 SHALL NOT 返 internal_error 类
-                # 5xx」）：本 try 内的解析都显式传 config，实际只可能抛协议越界，但任何后续
-                # 新增的供给类异常都必须落进领域映射而非 500。
-                mapping = map_domain_error(
-                    exc, api_key_env=application.state.api_key_env, surface="http"
-                )
-                status_code, code, text = mapping.status_code, mapping.code, mapping.message
-            else:
-                status_code, code, text = 503, "invalid_settings", guidance
+            # 兜底是 spec 那条 MUST 的载体（「落盘后失败 SHALL NOT 返 internal_error 类 5xx」）:
+            # 文件层的非法值已在载入点被拒,这里可能剩 env/命令行层的协议越界,以及日后新增的
+            # 供给类异常——一律交回映射层给码与指引,不变 500。
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
+            status_code, code, text = mapping.status_code, mapping.code, mapping.message
             facts = ["本次提交的配置已写入本机配置文件（免重启生效）"]
             if recovered:
-                facts.append("原先不可解析的配置文件已被本次保存覆盖")
+                facts.append("原先无效的配置文件已被本次保存覆盖")
             facts.append(text)
             if warnings:
                 facts.extend(warnings)

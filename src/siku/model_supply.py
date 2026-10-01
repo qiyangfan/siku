@@ -163,16 +163,18 @@ class ResolvedChannel:
 
 
 def load_config(path: Path | None = None) -> ModelSupplyConfig:
-    """读取模型供给配置文件；文件缺失视为全空层，内容不可解析单独分型。
+    """读取模型供给配置文件；文件缺失视为全空层，内容对模型供给无效单独分型。
 
     空串字段（如本地端点的 ``api_key = ""``）一律归一为未设置，与"空串与
     未设置等价"的全局口径一致。
 
-    分型边界（change `fix-model-supply-error-surfacing` 决议 #3）：
-    「内容不可解析」（坏 TOML / 非法段 / 非 UTF-8）抛 :class:`ModelConfigFileError`，
-    用户可以重新保存覆盖自救；``OSError``（无权限、IO 故障）抛
-    :class:`ModelConfigFileUnreadableError`——内容未知，覆盖会丢掉可能完好的用户配置，
-    且它与「通道未配置」也不是一回事（文案不得让用户去补 base_url/model）。
+    分型边界（change `fix-model-supply-error-surfacing` 决议 #3 +
+    `validate-supply-values-at-boundaries`）：「文件层无效」（坏 TOML / 非法段 / 非
+    UTF-8 / 字段取值不在允许范围）抛 :class:`ModelConfigFileError`，用户可以重新保存
+    覆盖自救——非法取值在读取点就被拒，运行期不存在「带着坏值跑」的中间状态；
+    ``OSError``（无权限、IO 故障）抛 :class:`ModelConfigFileUnreadableError`——内容未知，
+    覆盖会丢掉可能完好的用户配置，且它与「通道未配置」也不是一回事（文案不得让用户
+    去补 base_url/model）。
     """
     file = path if path is not None else config_file_path()
     if not file.is_file():
@@ -199,11 +201,15 @@ def load_config(path: Path | None = None) -> ModelSupplyConfig:
         raise ModelConfigFileError(
             f"Model supply config file has invalid sections: {file}: {fields}"
         ) from exc
-    return ModelSupplyConfig(
+    # 校验归一后的形状：空白串与未设置等价（与 `_resolve_channel` 同一口径），
+    # 否则 `protocol = "  "` 会被当成非法取值拒掉整个文件层
+    normalized = ModelSupplyConfig(
         llm=_drop_blank(config.llm),
         embedding=_drop_blank(config.embedding),
         rerank=_drop_blank(config.rerank),
     )
+    _reject_invalid_file_protocols(normalized, file)
+    return normalized
 
 
 def save_config(config: ModelSupplyConfig, path: Path | None = None) -> None:
@@ -355,9 +361,10 @@ def ask_readiness(
     if llm.resolve_api_key() is None:
         missing.append(MISSING_LLM_API_KEY)
     embedding = _resolve_channel(supply.embedding, EmbeddingEnvSettings, embedding_cli)
-    # 与请求期 resolve_embedding_channel 同源：embedding 协议越界时整个判定失败
-    # （抛 ProtocolConfigError，settings GET 面转为 503 中文指引），不得出现
-    # 「判定就绪而请求必炸」的第二套事实源
+    # 与请求期 resolve_embedding_channel 同源：协议越界时整个判定失败（抛
+    # ProtocolConfigError，GET 面转成 503 中文指引），不得出现「判定就绪而请求必炸」
+    # 的第二套事实源。文件层的非法值已在 load_config 载入点被拒，这里挡的是程序传入的
+    # cli 层与调用方直接递进来的 config 层
     _reject_channel_protocol("embedding", embedding.protocol)
     if not embedding.base_url:
         missing.append(MISSING_EMBEDDING_BASE_URL)
@@ -399,11 +406,26 @@ def _validate_llm_protocol(protocol: str | None) -> str | None:
     )
 
 
-def validate_channel_protocols(config: ModelSupplyConfig) -> None:
-    """整体校验一份配置的协议字段（写入前调用，防手改文件的非法值落盘后毒化读路径）。"""
-    _validate_llm_protocol(config.llm.protocol)
-    for channel_name in ("embedding", "rerank"):
-        _reject_channel_protocol(channel_name, getattr(config, channel_name).protocol)
+def _reject_invalid_file_protocols(config: ModelSupplyConfig, file: Path) -> None:
+    """文件层的协议取值在载入点一次性拒绝：运行期不得携带非法值。
+
+    抛 `ModelConfigFileError`（=该文件对模型供给无效）而不是通道解析错误：这样
+    `[llm] protocol = "gemini-native"` 与坏 TOML 走同一条已建好的出路——HTTP 面
+    `code=invalid_config_file`、设置页「重新保存覆盖」自救，而无需为非法值新增一层
+    运行期状态（change `validate-supply-values-at-boundaries`）。
+    `detail` 只给字段名与合法值名单，不回显用户原值。
+    """
+    if config.llm.protocol is not None and config.llm.protocol not in LLM_PROTOCOLS:
+        raise ModelConfigFileError(
+            f"Model supply config file has an invalid value: {file}: [llm] protocol",
+            "其中 [llm] protocol 取值不在允许范围，仅支持 " + " / ".join(LLM_PROTOCOLS),
+        )
+    for name in ("embedding", "rerank"):
+        if getattr(config, name).protocol is not None:
+            raise ModelConfigFileError(
+                f"Model supply config file has an invalid value: {file}: [{name}] protocol",
+                f"其中 [{name}] protocol 是多余字段：仅 LLM 通道使用该字段，请删除它",
+            )
 
 
 def resolve_llm_channel(

@@ -68,12 +68,24 @@ class ModelCredentialError(ModelNotAvailableError):
 
 
 class ModelConfigFileError(ModelNotAvailableError):
-    """配置文件内容不可解析（坏 TOML / 段结构非法 / 非 UTF-8）。
+    """配置文件对模型供给无效：内容不可解析，或某字段取值不在允许范围。
 
     与「文件读不到」（OSError，内容未知）刻意分型：前者用户可以「重新保存」覆盖
     自救，后者覆盖即丢配置，必须继续报错。change
     `fix-model-supply-error-surfacing` 决议 #3。
+
+    非法取值归入本类而不是另造一种运行期状态：文件层是唯一的外部输入源，坏值在
+    载入点（`model_supply.load_config`）就该拒——否则「无效配置」会以合法对象的形态
+    流到解析、就绪判定与前端，逼每一层都加一条善后分支。
+
+    `detail` 是服务端自撰的**字段级**补充说明（例如「[llm] protocol 仅支持 …」），
+    供文案指明到底哪一处要改；它 MUST NOT 回显用户原值（同 `ModelCredentialError`
+    不回显凭证的纪律），走 args 位置参以保住基类 `__reduce__` 的 copy/pickle 圆厂。
     """
+
+    def __init__(self, message: str, detail: str | None = None) -> None:
+        super().__init__(message, detail)
+        self.detail = detail
 
 
 class ModelConfigFileUnreadableError(ModelNotAvailableError):

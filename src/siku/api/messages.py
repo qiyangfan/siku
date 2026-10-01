@@ -38,7 +38,7 @@ from siku.graph.errors import (
     LlmRateLimitError,
 )
 from siku.ingest import IngestError
-from siku.model_supply import config_file_path
+from siku.model_supply import ProtocolConfigError, config_file_path
 from siku.retrieve.errors import (
     BaselineExistsError,
     EvaluationError,
@@ -121,6 +121,50 @@ def map_ask_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
         # 这里不再自行拼一份口径，避免第二套事实源。
         return map_domain_error(exc, api_key_env=api_key_env, surface="http")
     return map_domain_error(exc, api_key_env=api_key_env, surface="http")
+
+
+def protocol_error_mapping(exc: ProtocolConfigError, *, surface: ErrorSurface) -> ErrorMapping:
+    """运行期协议越界的单一映射：HTTP 读取面、连通性探测面与 CLI 面共用。
+
+    状态码与错误码三面一致（`503` / `invalid_settings`），差异只在话术（模块 docstring
+    的双面口径）。文案点名的杠杆必须只有真正能触发它的那一个：文件层的非法取值已在
+    `load_config` 载入点被拒（归 `invalid_config_file`）、`--llm-protocol` 是枚举参数
+    （非法值在解析阶段就被拒）、embedding/rerank 的环境变量层没有 protocol 字段——所以
+    这里只剩「LLM 通道 + `SIKU_LLM_PROTOCOL`」与「程序传入的通道配置」两种来源。指错杠杆
+    等于让用户去改一个没坏的地方：原先的「在设置页重新保存即可覆盖」正是这样把环境变量层
+    的坏值说成了页面能修，而页面保存覆盖不了优先级更高的那一层。
+    """
+    if exc.kind == "channel_unsupported":
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "invalid_settings",
+                "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）：该字段由启动服务时"
+                "传入的通道配置携带，优先级高于本机配置文件，在「设置」页保存覆盖不了它——"
+                "请修正启动服务的那个来源后重启服务。",
+            )
+        return ErrorMapping(
+            503,
+            "invalid_settings",
+            "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）：该字段由程序传入的"
+            f"通道配置携带，请从调用处删除它；{config_file_path()} 的同名字段在读取时即被拒绝，"
+            "不是本条错误的原因。",
+        )
+    if surface == "http":
+        return ErrorMapping(
+            503,
+            "invalid_settings",
+            "LLM 通道的接口协议（protocol）取值非法：仅支持 openai-chat / anthropic / "
+            "openai-responses。该值来自环境变量 SIKU_LLM_PROTOCOL，优先级高于本机配置文件，"
+            "在「设置」页保存覆盖不了它——请在启动服务的那个环境里取消或修正该变量后重启服务。",
+        )
+    return ErrorMapping(
+        503,
+        "invalid_settings",
+        "LLM 通道的接口协议（protocol）取值非法：仅支持 openai-chat / anthropic / "
+        "openai-responses。该值来自环境变量 SIKU_LLM_PROTOCOL，优先级高于 "
+        f"{config_file_path()} 的 [llm] protocol——请取消或修正该变量后重新执行本命令。",
+    )
 
 
 def map_domain_error(
@@ -264,21 +308,31 @@ def map_domain_error(
             "不影响已摄取语料与索引。",
         )
     if isinstance(exc, ModelConfigFileError):
+        # 本类现在覆盖「文件层无效」的两种形态:内容不可解析,以及字段取值不在允许范围
+        # （非法值在载入点就被拒,见 model_supply._reject_invalid_file_protocols）。
+        # 两者出路相同:重新保存覆盖,或删除后重配。`detail` 是服务端自撰的字段级补充。
+        hint = f"{exc.detail}。" if exc.detail else ""
         if surface == "http":
             return ErrorMapping(
                 503,
                 "invalid_config_file",
-                "模型配置文件不可解析（内容已损坏）：可在「设置」页重新填写并保存，"
-                "本次保存会覆盖损坏的配置文件并免重启生效；也可删除本机配置文件后重新配置"
-                "——删除只影响模型配置，不影响已导入的资料与索引。",
+                "模型配置文件对模型供给无效（内容不可解析，或字段取值非法）："
+                + hint
+                + "可在「设置」页重新填写并保存，本次保存会覆盖该文件并免重启生效；"
+                "也可删除本机配置文件后重新配置——删除只影响模型配置，"
+                "不影响已导入的资料与索引。",
             )
         return ErrorMapping(
             503,
             "invalid_config_file",
-            f"模型配置文件不可解析：{config_file_path()} 当前无法作为配置读取"
-            "（内容不是合法 TOML 或段类型不符）。请修正或删除该文件后重试——"
-            "删除只影响模型配置，不影响已摄取语料与索引；修复前任何通道配置都无法生效。",
+            f"模型配置文件对模型供给无效：{config_file_path()} 无法作为配置读取"
+            "（内容不是合法 TOML、段类型不符，或字段取值不在允许范围）。"
+            + hint
+            + "请修正或删除该文件后重试——删除只影响模型配置，"
+            "不影响已摄取语料与索引；修复前任何通道配置都无法生效。",
         )
+    if isinstance(exc, ProtocolConfigError):
+        return protocol_error_mapping(exc, surface=surface)
     if isinstance(exc, ModelNotAvailableError):
         if surface == "http":
             return ErrorMapping(

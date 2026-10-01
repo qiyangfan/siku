@@ -23,9 +23,13 @@ from siku.api.app import create_app
 from siku.model_supply import (
     ChannelValues,
     ModelSupplyConfig,
+    ProtocolConfigError,
     load_config,
+    resolve_embedding_channel,
+    resolve_llm_channel,
     save_config,
 )
+from siku.retrieve.errors import ModelConfigFileError
 from siku.retrieve.indexer import sync_index
 
 SECRET = "sk-test-secret-12345"
@@ -184,31 +188,42 @@ class TestGetSettings:
         assert response.status_code == 422
         assert "仅 LLM 通道" in response.json()["message"]
 
-    def test_hand_edited_invalid_protocol_get_gives_guidance_not_500(
+    def test_hand_edited_invalid_protocol_is_reported_as_invalid_file(
         self, config_path: Path
     ) -> None:
-        """手改 config.toml 的越界 protocol：读取面给可行动中文指引而非 500。"""
+        """手改文件的越界 protocol 属「文件层无效」：与坏 TOML 同一个 code、同一条出路。
+
+        判据是本批的边界原则——非法值在载入点就被拒，运行期不存在「带着坏值跑」的状态，
+        所以读取面不必新增第三种成因码，页面既有的「重新保存覆盖」直接就能修它。
+        """
         save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
         client = TestClient(create_app())
         response = client.get("/api/settings")
         assert response.status_code == 503
-        assert response.json()["code"] == "invalid_settings"
-        assert "openai-chat" in response.json()["message"]
+        payload = response.json()
+        assert payload["code"] == "invalid_config_file"
+        message = payload["message"]
+        assert "[llm] protocol" in message
+        assert "openai-responses" in message
+        # 双面文案红线照旧：HTTP 面不给路径与命令行教程
+        assert "config.toml" not in message
+        assert "--llm-protocol" not in message
 
-    def test_hand_edited_invalid_protocol_put_rejected_before_write(
+    def test_hand_edited_invalid_protocol_repaired_by_save(self, config_path: Path) -> None:
+        """坏取值下的保存走「以本次提交覆盖」：这正是 invalid_config_file 承诺的自救。"""
+        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"llm": {"protocol": "anthropic"}})
+        assert response.status_code == 200
+        assert response.json()["invalid_config_file_overwritten"] is True
+        assert response.json()["llm"]["protocol"] == "anthropic"
+        assert "gemini-native" not in config_path.read_text(encoding="utf-8")
+        assert client.get("/api/settings").status_code == 200
+
+    def test_hand_edited_embedding_protocol_reported_as_invalid_file(
         self, config_path: Path
     ) -> None:
-        """存量非法 protocol 时提交设置：写入前拦截（422），文件不被部分改写。"""
-        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
-        before = config_path.read_text(encoding="utf-8")
-        client = TestClient(create_app())
-        response = client.put("/api/settings", json={"llm": {"model": "m"}})
-        assert response.status_code == 422
-        assert response.json()["code"] == "invalid_settings"
-        assert config_path.read_text(encoding="utf-8") == before
-
-    def test_hand_edited_embedding_protocol_blocks_settings_read(self, config_path: Path) -> None:
-        """手改 [embedding] protocol：就绪判定与读取面必须与请求期同源失败（非 500/非误就绪）。"""
+        """[embedding] 多出 protocol 也是「文件层无效」：指引点名该段，不说成通道未配置。"""
         save_config(
             ModelSupplyConfig(
                 embedding=ChannelValues(
@@ -219,8 +234,59 @@ class TestGetSettings:
         client = TestClient(create_app())
         response = client.get("/api/settings")
         assert response.status_code == 503
-        assert response.json()["code"] == "invalid_settings"
-        assert "仅 LLM 通道" in response.json()["message"]
+        payload = response.json()
+        assert payload["code"] == "invalid_config_file"
+        assert "[embedding] protocol" in payload["message"]
+        assert "仅 LLM 通道" in payload["message"]
+        # 请求期同样失败：判定与执行共用同一载入边界，不存在「坏值已进运行期」的分叉
+        with pytest.raises(ModelConfigFileError):
+            resolve_embedding_channel()
+
+    def test_env_layer_illegal_protocol_names_the_lever_not_the_page(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """环境变量层的坏协议值仍属运行期解析错误（它没有载入边界）：指引必须点名杠杆。
+
+        原口径「请在设置页重新选择协议并保存即可覆盖」在这种情形是错的——环境变量优先级
+        高于文件层，页面保存覆盖不了它，用户会反复保存同一个坏值而困惑。
+        """
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        assert payload["code"] == "invalid_settings"
+        assert "SIKU_LLM_PROTOCOL" in payload["message"]
+        assert "覆盖不了" in payload["message"]
+        with pytest.raises(ProtocolConfigError):
+            resolve_llm_channel()
+
+    def test_probe_of_illegal_env_protocol_is_not_reported_as_unconfigured(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """探测面与读取面同源：协议非法说成「检查 base_url、model」是指错杠杆。
+
+        同一故障两张面给两个 code（`model_not_available` vs `invalid_settings`）就是
+        第二套事实源；这里的探测不发出任何 HTTP 请求，故无须注入 transport。
+        """
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        response = client.post("/api/settings/test", json={"channel": "llm"})
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "invalid_settings"
+        assert "SIKU_LLM_PROTOCOL" in payload["message"]
+        # 文案不得把「端点没配好」当成因：那会引导用户去核对该通道的 base_url/model
+        assert "base_url" not in payload["message"]
+
+    def test_probe_of_illegal_file_value_names_the_field(self, config_path: Path) -> None:
+        """坏取值的探测指引点名字段：只说「内容已损坏」会把取值问题说成语法问题。"""
+        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
+        client = TestClient(create_app())
+        response = client.post("/api/settings/test", json={"channel": "llm"})
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "invalid_config_file"
+        assert "[llm] protocol" in payload["message"]
+        assert "openai-responses" in payload["message"]
 
     def test_probe_rejects_protocol_override_for_non_llm_channel(
         self, config_path: Path, monkeypatch: pytest.MonkeyPatch

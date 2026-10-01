@@ -21,7 +21,7 @@ from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 from siku import model_supply
-from siku.api.messages import ErrorMapping, map_domain_error
+from siku.api.messages import ErrorMapping, map_domain_error, protocol_error_mapping
 from siku.api.models import (
     AskReadinessView,
     ChannelSettingsView,
@@ -100,26 +100,6 @@ _PROBE_TIMEOUT_SECONDS = 10.0
 
 class SettingsValidationError(ValueError):
     """设置提交值不满足形状约束；message 为面向用户的中文指引。"""
-
-
-def invalid_protocol_message(exc: Exception) -> str | None:
-    """协议越界的领域错误 → 可行动中文指引；非协议类错误返回 None 走既有映射。
-
-    指引只出现在 HTTP 面（调用点是 settings GET/PUT），故按 HTTP 文案口径成文：
-    指向「设置」页与保存覆盖，不给配置文件路径与命令行参数教程。
-    """
-    if not isinstance(exc, ProtocolConfigError):
-        return None
-    if exc.kind == "llm_enum":
-        return (
-            "LLM 通道的接口协议（protocol）取值非法：仅支持 openai-chat / anthropic / "
-            "openai-responses。该值来自本机配置的越界填写，请在「设置」页重新选择协议并保存"
-            "即可覆盖，保存后免重启生效。"
-        )
-    return (
-        "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）：本机配置中存在"
-        "越界字段，请在「设置」页保持该通道协议留空并保存覆盖，保存后免重启生效。"
-    )
 
 
 def env_overrides(channel: str) -> list[str]:
@@ -435,7 +415,7 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
     """把探测失败映射为既有稳定错误码 + 通道/协议感知中文指引（不含上游错误体）。
 
     探测只有 HTTP（设置页）消费者，文案一律走 HTTP 面口径：分型分支（凭证被拒 /
-    配置文件不可解析）MUST 排在通用类之前，否则被通用文案吞掉。
+    配置文件无效 / 协议越界）MUST 排在通用类之前，否则被通用文案吞掉。
     """
     label = _CHANNEL_LABELS[channel]
     if isinstance(exc, LlmNotConfiguredError):
@@ -453,11 +433,16 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
             "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
         )
     if isinstance(exc, ModelConfigFileError):
+        # 与 GET 面同口径：本类现在覆盖「不可解析」与「字段取值非法」两种形态，
+        # 只说「内容已损坏」会把坏取值指到错误的成因上；`detail` 点名到底哪个字段
+        hint = f"{exc.detail}。" if exc.detail else ""
         return ErrorMapping(
             503,
             "invalid_config_file",
-            "模型配置文件不可解析（内容已损坏）：请先在「设置」页重新填写并保存以覆盖该文件，"
-            "保存后免重启生效；表单提交到的字段不依赖原文件内容。",
+            "模型配置文件对模型供给无效（内容不可解析，或字段取值非法）："
+            + hint
+            + "请先在「设置」页重新填写并保存以覆盖该文件，保存后免重启生效；"
+            "表单提交到的字段不依赖原文件内容。",
         )
     if isinstance(exc, ModelConfigFileUnreadableError):
         return ErrorMapping(
@@ -466,6 +451,10 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
             "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）：请修复该文件的可读性后"
             "重试；此情况不会由保存覆盖，以免毁掉可能完好的配置。",
         )
+    if isinstance(exc, ProtocolConfigError):
+        # 探测与读取面同源：协议非法说成「检查 base_url、model」是把用户支到没坏的字段上，
+        # 且同一故障在两张面给出两个 code 就是第二套事实源
+        return protocol_error_mapping(exc, surface="http")
     if isinstance(exc, ModelNotAvailableError):
         return ErrorMapping(
             503,

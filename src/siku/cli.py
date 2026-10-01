@@ -45,6 +45,7 @@ from siku.ingest import IngestError, ingest_path
 from siku.model_supply import (
     ChannelValues,
     ModelSupplyConfig,
+    ProtocolConfigError,
     ResolvedChannel,
     base_url_host,
     build_embedding_provider,
@@ -140,6 +141,33 @@ RerankApiKeyEnvOpt = Annotated[
 ]
 
 
+class LlmProtocol(StrEnum):
+    """`--llm-protocol` 的合法取值：命令行边界的枚举，非法值在解析阶段就被拒。
+
+    与内核 `LLM_PROTOCOLS` 同源的名单由用例钉住漂移。放在类型层而不是运行期校验，是为了
+    让 CLI 层根本交不出非法值（change `validate-supply-values-at-boundaries`）。
+    """
+
+    OPENAI_CHAT = "openai-chat"
+    ANTHROPIC = "anthropic"
+    OPENAI_RESPONSES = "openai-responses"
+
+
+LlmProtocolOpt = Annotated[
+    LlmProtocol | None,
+    typer.Option(
+        "--llm-protocol",
+        help="LLM 线协议：openai-chat（缺省）/ anthropic / openai-responses；"
+        "缺省读分层配置，取值不在名单内当场拒绝。",
+    ),
+]
+
+
+def _protocol_value(protocol: LlmProtocol | None) -> str | None:
+    """枚举转回普通字符串：None 表示该层未设置（与空白串等价）。"""
+    return protocol.value if protocol is not None else None
+
+
 def _embedding_cli_values(
     base_url: str | None, model: str | None, api_key_env: str | None
 ) -> ChannelValues:
@@ -187,14 +215,14 @@ def _rerank_mode_text(reranker: RerankerProvider | None) -> str:
 
 
 def _config_file_gap_text() -> str:
-    """通道被「不可解析」的配置文件挡住时的播报口径（不得说「未配置」）。
+    """通道被「对模型供给无效」的配置文件挡住时的播报口径（不得说「未配置」）。
 
-    serve 遇不可解析文件会告警后继续启动，随后 embedding/rerank 解析再读同一个
-    坏文件——若这里仍按「未配置」播报，就与上一行的告警自相矛盾，且把用户推向
-    一个其实不缺配置的通道。「读不到」（权限/IO）不走这条路径：那时 serve 在 LLM
+    serve 遇无效文件（坏 TOML 或字段取值非法）会告警后继续启动，随后 embedding/rerank
+    解析再读同一个坏文件——若这里仍按「未配置」播报，就与上一行的告警自相矛盾，且把用户
+    推向一个其实不缺配置的通道。「读不到」（权限/IO）不走这条路径：那时 serve 在 LLM
     解析处就已快速失败退出，活不到打印横幅这一步（实测确认）。
     """
-    return "配置文件不可解析（非未配置，可在设置页重新保存覆盖）"
+    return "配置文件无效（非未配置，可在设置页重新保存覆盖）"
 
 
 def _announce_supply_channels(
@@ -265,32 +293,26 @@ def version() -> None:
 
 
 def _llm_config_error_message(exc: ModelNotAvailableError) -> str:
-    """LLM 通道解析失败的 CLI 用户面中文文案（协议与坏配置文件是两个入口）。"""
-    kind = getattr(exc, "kind", None)
-    if kind == "llm_enum":
-        return (
-            "LLM 线协议非法：仅支持 openai-chat / anthropic / openai-responses；"
-            "请修正 --llm-protocol、SIKU_LLM_PROTOCOL 或 config.toml 的 [llm] protocol。"
-        )
-    if kind == "channel_unsupported":
-        return (
-            "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）；"
-            "请从 config.toml 对应段移除后重试。"
-        )
-    if isinstance(exc, (ModelConfigFileError, ModelConfigFileUnreadableError)):
+    """LLM 通道解析失败的 CLI 用户面中文文案（协议与坏配置文件是两个入口）。
+
+    一律取映射层文案，不在此另写一份：同一异常在 HTTP 面与 CLI 面必须同口径。
+    原先这里的「请修正 … 或 config.toml 的 [llm] protocol」在文件层坏值下还说错了
+    杠杆——那种值现在根本进不到运行期（载入即拒）。
+    """
+    if isinstance(exc, (ProtocolConfigError, ModelConfigFileError, ModelConfigFileUnreadableError)):
         # 两类配置文件故障都只走映射层文案（内部英文串不进用户面）；
         # 「不可解析」与「读不到」的指引不同：前者可覆盖自救，后者覆盖即丢配置
         return map_domain_error(exc, api_key_env=DEFAULT_API_KEY_ENV).message
     return f"LLM 通道配置无效：{exc}"
 
 
-def _config_file_error_message() -> str:
-    """配置文件不可解析的 CLI 用户面文案（删除只影响配置，不影响已摄取语料）。"""
-    mapping = map_domain_error(
-        ModelConfigFileError("Model supply config file is not valid TOML"),
-        api_key_env=DEFAULT_API_KEY_ENV,
-    )
-    return mapping.message
+def _config_file_error_message(exc: ModelConfigFileError) -> str:
+    """无效配置文件的 CLI 用户面文案（删除只影响配置，不影响已摄取语料）。
+
+    用捕获到的异常本身而不是另造一份：`detail` 带着「到底哪个字段非法」，凭空造的
+    异常只会说出「非合法 TOML」这一种成因。
+    """
+    return map_domain_error(exc, api_key_env=DEFAULT_API_KEY_ENV).message
 
 
 def _fail(message: str, exc: Exception) -> NoReturn:
@@ -756,13 +778,7 @@ def graph(
         str | None,
         typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
     ] = None,
-    llm_protocol: Annotated[
-        str | None,
-        typer.Option(
-            "--llm-protocol",
-            help="LLM 线协议：openai-chat（缺省）/ anthropic / openai-responses；缺省读分层配置。",
-        ),
-    ] = None,
+    llm_protocol: LlmProtocolOpt = None,
     rebuild: Annotated[
         bool, typer.Option("--rebuild", help="忽略抽取缓存，强制全部重抽。")
     ] = False,
@@ -775,7 +791,7 @@ def graph(
                 base_url=llm_base_url,
                 model=llm_model,
                 api_key_env=api_key_env,
-                protocol=llm_protocol,
+                protocol=_protocol_value(llm_protocol),
             )
         )
     except ModelNotAvailableError as exc:
@@ -880,13 +896,7 @@ def wiki(
         str | None,
         typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
     ] = None,
-    llm_protocol: Annotated[
-        str | None,
-        typer.Option(
-            "--llm-protocol",
-            help="LLM 线协议：openai-chat（缺省）/ anthropic / openai-responses；缺省读分层配置。",
-        ),
-    ] = None,
+    llm_protocol: LlmProtocolOpt = None,
     json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
 ) -> None:
     """生成 wiki 总目条目（每社区一篇，LLM 摘要，BYO key）。"""
@@ -896,7 +906,7 @@ def wiki(
                 base_url=llm_base_url,
                 model=llm_model,
                 api_key_env=api_key_env,
-                protocol=llm_protocol,
+                protocol=_protocol_value(llm_protocol),
             )
         )
     except ModelNotAvailableError as exc:
@@ -963,13 +973,7 @@ def serve(
         str | None,
         typer.Option("--llm-model", help="LLM 模型名称；缺省读分层配置。"),
     ] = None,
-    llm_protocol: Annotated[
-        str | None,
-        typer.Option(
-            "--llm-protocol",
-            help="LLM 线协议：openai-chat（缺省）/ anthropic / openai-responses；缺省读分层配置。",
-        ),
-    ] = None,
+    llm_protocol: LlmProtocolOpt = None,
     embedding_base_url: EmbeddingBaseUrlOpt = None,
     embedding_model: EmbeddingModelOpt = None,
     embedding_api_key_env: EmbeddingApiKeyEnvOpt = None,
@@ -1016,7 +1020,10 @@ def serve(
     if host == "0.0.0.0":
         typer.echo("警告：服务将监听所有网卡，请确认这是你的明确选择。", err=True)
     llm_cli = ChannelValues(
-        base_url=llm_base_url, model=llm_model, api_key_env=api_key_env, protocol=llm_protocol
+        base_url=llm_base_url,
+        model=llm_model,
+        api_key_env=api_key_env,
+        protocol=_protocol_value(llm_protocol),
     )
     try:
         try:
@@ -1026,10 +1033,10 @@ def serve(
             # 启动即退出会让「设置页重新保存覆盖」这条唯一自救路径无从可达
             # （change fix-model-supply-error-surfacing 决议 #3）。明示告警（非静默）
             # 后以空文件层继续启动；请求期各面仍现读配置，按各自指引报错或接受覆盖保存。
-            typer.echo(_config_file_error_message(), err=True)
+            typer.echo(_config_file_error_message(exc), err=True)
             logger.warning(
-                "model supply config file is unparseable; serve startup ignores the file layer:"
-                " error_class=%s",
+                "model supply config file is not valid for model supply; serve startup ignores"
+                " the file layer: error_class=%s",
                 type(exc).__name__,
             )
             # 兜底再解析一次必须落在外层 try 之内：except 块里抛出的异常不会被同一

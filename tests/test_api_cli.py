@@ -466,5 +466,8 @@ def test_serve_starts_and_warns_when_config_file_is_unparseable(
 
     result = runner.invoke(app, ["serve", "--port", "8123"])
     assert result.exit_code == 0, result.output
-    assert "不可解析" in result.output
+    # 告警必须真的出现并指认文件层（文案统一为「对模型供给无效」后不再是「不可解析」，
+    # 断言改为抓成因本身：不是合法 TOML + 文案里给出真实 config.toml 路径）
+    assert "不是合法 TOML" in result.output
+    assert "config.toml" in result.output
     assert len(created) == 1

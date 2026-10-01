@@ -267,36 +267,74 @@ class TestLlmProtocolField:
         resolved = resolve_llm_channel(config_path=file)
         assert resolved.protocol == "openai-chat"
 
-    def test_protocol_error_survives_copy_and_pickle(self, tmp_path: Path) -> None:
+    def test_protocol_error_survives_copy_and_pickle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """kind 进 args：copy/deepcopy/pickle 圆厂不因自定义 __init__ 缺参而炸。"""
         import copy
         import pickle
 
-        file = write_toml(tmp_path / "config.toml", '[embedding]\nprotocol = "anthropic"\n')
-        with pytest.raises(ModelNotAvailableError) as excinfo:
-            resolve_embedding_channel(config_path=file)
+        # env 层的越界协议才会走到运行期解析错误(文件层的非法值已在载入点被拒)
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        with pytest.raises(ProtocolConfigError) as excinfo:
+            resolve_llm_channel(config=ModelSupplyConfig())
         error = excinfo.value
-        assert error.kind == "channel_unsupported"
+        assert error.kind == "llm_enum"
         for round_trip in (
             copy.copy(error),
             copy.deepcopy(error),
             pickle.loads(pickle.dumps(error)),
         ):
             assert str(round_trip) == str(error)
-            assert round_trip.kind == "channel_unsupported"
+            assert round_trip.kind == "llm_enum"
 
-    def test_invalid_protocol_value_raises_guidance(self, tmp_path: Path) -> None:
+    def test_config_file_error_detail_survives_copy_and_pickle(self) -> None:
+        """detail 进 args：同上，自定义 __init__ 不得破坏基类 `__reduce__` 圆厂。"""
+        import copy
+        import pickle
+
+        error = ModelConfigFileError("bad file", "其中 [llm] protocol 取值不在允许范围")
+        for round_trip in (
+            copy.copy(error),
+            copy.deepcopy(error),
+            pickle.loads(pickle.dumps(error)),
+        ):
+            assert round_trip.detail == "其中 [llm] protocol 取值不在允许范围"
+
+    def test_illegal_llm_protocol_is_rejected_at_load_with_allowed_values(
+        self, tmp_path: Path
+    ) -> None:
+        """非法取值在载入点就被拒（运行期不存在非法状态），且指引给出合法名单。"""
         file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "gemini-native"\n')
-        with pytest.raises(ModelNotAvailableError) as excinfo:
-            resolve_llm_channel(config_path=file)
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        detail = excinfo.value.detail
+        assert detail is not None
+        for name in LLM_PROTOCOLS:
+            assert name in detail
+        assert "[llm] protocol" in detail
+        assert "gemini-native" not in str(excinfo.value)  # 不回显用户原值
+
+    def test_embedding_channel_protocol_is_rejected_at_load(self, tmp_path: Path) -> None:
+        """embedding 段多出的 protocol 字段同样归入「文件无效」，并说清只有 LLM 通道用它。"""
+        file = write_toml(tmp_path / "config.toml", '[embedding]\nprotocol = "anthropic"\n')
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        detail = excinfo.value.detail
+        assert detail is not None
+        assert "[embedding] protocol" in detail
+        assert "仅 LLM 通道" in detail
+
+    def test_env_layer_illegal_protocol_still_raises_at_resolve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """环境变量层是另一个输入源：它没有 schema 载入点，越界值在解析时拒。"""
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        with pytest.raises(ProtocolConfigError) as excinfo:
+            resolve_llm_channel(config=ModelSupplyConfig())
+        assert excinfo.value.kind == "llm_enum"
         for name in LLM_PROTOCOLS:
             assert name in str(excinfo.value)
-
-    def test_embedding_channel_rejects_protocol(self, tmp_path: Path) -> None:
-        file = write_toml(tmp_path / "config.toml", '[embedding]\nprotocol = "anthropic"\n')
-        with pytest.raises(ModelNotAvailableError) as excinfo:
-            resolve_embedding_channel(config_path=file)
-        assert "protocol" in str(excinfo.value)
 
     def test_rerank_channel_rejects_protocol(self, tmp_path: Path) -> None:
         file = write_toml(tmp_path / "config.toml", '[rerank]\nprotocol = "anthropic"\n')

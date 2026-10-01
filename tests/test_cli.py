@@ -6,8 +6,8 @@ import pytest
 from typer.testing import CliRunner
 
 from siku import __version__
-from siku.cli import _announce_supply_channels, app
-from siku.model_supply import ChannelValues, ResolvedChannel
+from siku.cli import LlmProtocol, _announce_supply_channels, app
+from siku.model_supply import LLM_PROTOCOLS, ChannelValues, ResolvedChannel
 from siku.retrieve.errors import ModelConfigFileError
 
 runner = CliRunner()
@@ -53,6 +53,47 @@ def test_serve_fails_fast_on_unreadable_config_with_accurate_copy(
     assert "补全" not in result.output
 
 
+def test_serve_rejects_illegal_llm_protocol_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """命令行边界：`--llm-protocol` 的枚举在解析阶段就拒，非法值交不进运行期。"""
+    started: list[bool] = []
+    monkeypatch.setattr("siku.cli.uvicorn.run", lambda *_a, **_k: started.append(True))
+    result = runner.invoke(app, ["serve", "--port", "8195", "--llm-protocol", "bogus"])
+    assert result.exit_code == 2
+    assert started == []
+    for name in LLM_PROTOCOLS:
+        assert name in result.output
+    assert "Traceback" not in result.output
+
+
+def test_cli_protocol_enum_matches_kernel_list() -> None:
+    """CLI 枚举与内核合法名单同源：漂移必须在这里红，而不是让用户看到两套名单。"""
+    assert {member.value for member in LlmProtocol} == set(LLM_PROTOCOLS)
+
+
+def test_serve_startup_warning_names_the_invalid_field(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """坏取值的启动告警必须点名到底哪个字段（ synthesized 异常只会说「非合法 TOML」）。
+
+    启动面的文案取自捕获到的异常本身：`detail` 是载入点自撰的字段级说明，少了它，
+    用户在启动输出里看不出该改哪一行，也不知道这次的成因是取值而不是语法。
+    """
+    home = tmp_path / "home"
+    cfg_dir = home / "Library" / "Application Support" / "siku"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text('[llm]\nprotocol = "gemini-native"\n', encoding="utf-8")
+    monkeypatch.setattr("siku.cli.uvicorn.run", lambda *_a, **_k: None)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "")  # 关掉厂商回退，逼出文件层解析
+    result = runner.invoke(app, ["serve", "--port", "8196"])
+    assert result.exit_code == 0
+    assert "[llm] protocol" in result.output
+    assert "openai-responses" in result.output
+    assert "gemini-native" not in result.output  # 不回显用户原值
+
+
 def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -75,28 +116,34 @@ def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     result = runner.invoke(app, ["serve", "--port", "8198"])
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
-    assert "线协议非法" in result.output
+    # CLI 面点名环境变量与配置文件路径，且不得把这个杠杆指到 `--llm-protocol`：该参数
+    # 是枚举型，非法值在解析阶段就被拒（exit 2），根本进不到运行期（见上面那条用例）
+    assert "SIKU_LLM_PROTOCOL" in result.output
+    assert "config.toml" in result.output
+    assert "--llm-protocol" not in result.output
     assert "Traceback" not in result.output
     # 文件层的故障仍先行明示(不是静默忽略),两因分别可读
-    assert "不可解析" in result.output
+    assert "不是合法 TOML" in result.output
 
 
 def test_supply_banner_corrupt_config_is_not_reported_as_unconfigured(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """serve 遇不可解析配置会告警后继续启动，随后通道解析再读同一个坏文件。
+    """serve 遇无效配置文件会告警后继续启动，随后通道解析再读同一个坏文件。
 
     原实现让这两个分支落进 `except ModelNotAvailableError`，于是同一份启动输出里
     上一行说「配置文件不可解析」、下一行说「embedding=未配置」，自相矛盾且把用户
     推向其实并不缺配置的通道。
     """
-    corrupt = ModelConfigFileError("Model supply config file is not valid TOML")
+    corrupt = ModelConfigFileError(
+        "Model supply config file is not valid TOML", "其中 [llm] protocol 取值不在允许范围"
+    )
     monkeypatch.setattr("siku.cli.resolve_embedding_channel", _raises(corrupt))
     monkeypatch.setattr("siku.cli.resolve_rerank_channel", _raises(corrupt))
     _announce_supply_channels(ChannelValues(), ChannelValues(), _LLM_ONLY)
     out = capsys.readouterr().err
-    assert "embedding=配置文件不可解析" in out
-    assert "rerank=配置文件不可解析" in out
+    assert "embedding=配置文件无效" in out
+    assert "rerank=配置文件无效" in out
     # 通道本身没被判定过，就不许播报成未配置/RRF-only（文案里「非未配置」是对成因的限定）
     assert "embedding=未配置" not in out
     assert "rerank=none（RRF-only）" not in out
