@@ -46,7 +46,12 @@
 
 API 层 SHALL 把领域错误体系映射为稳定的三类状态码（状态前置 409 / 输入不可处理 422 /
 外部依赖不可用 503）与稳定英文错误码、简体中文文案；SHALL NOT 泄漏堆栈或裸异常信息；
-错误文案 SHALL 与 CLI 共享同一映射来源。
+错误文案 SHALL 与 CLI 共享同一映射来源（同一函数），并 SHALL 按调用面（命令行 / HTTP）
+分别成文：HTTP 面（含 localhost API 与桌面壳）的指引 MUST NOT 出现配置文件路径或
+命令行参数教程，SHALL 指向「设置」页并说明保存后免重启生效；命令行面 SHALL 保留
+配置文件与参数级指引。同一错误码在两面的文案差异 SHALL NOT 改变状态码与错误码本身。
+「凭证被端点拒绝」「通道未配置」「配置文件不可解析」三种语义 SHALL 各有独立文案，
+SHALL NOT 相互顶替。
 
 #### Scenario: 无裸异常穿透
 
@@ -65,6 +70,20 @@ API 层 SHALL 把领域错误体系映射为稳定的三类状态码（状态前
 - **GIVEN** 未配置 LLM API key
 - **WHEN** 客户端请求 `POST /api/graph` 且语料需要真实抽取
 - **THEN** 返回 503 与 `code=llm_not_configured`，message 给出中文配置指引
+
+#### Scenario: HTTP 面文案不含命令行语境指引
+
+- **GIVEN** 检索或问答请求因模型端点未配置而失败
+- **WHEN** 客户端经 HTTP API 读取错误响应
+- **THEN** 返回 503 与既有错误码，message 指向「设置」页并说明保存后免重启生效，
+  不出现配置文件路径与命令行参数示例
+
+#### Scenario: 凭证被拒与未配置文案分道
+
+- **GIVEN** 端点已正确配置 base_url 与 model，但对当前凭证返回 401/403
+- **WHEN** 客户端经 HTTP API 读取错误响应
+- **THEN** message 说明凭证被拒并指引核对该通道的 api_key 与 base_url 是否属同一
+  厂商同一账号，不再要求「补全 base_url 与 model」
 
 ### Requirement: OpenAPI 契约快照冻结入库
 
@@ -168,10 +187,11 @@ SHALL 为 `{code, message}` 且不包含英文异常类名或堆栈。问答错�
 
 `GET /api/settings` 与 `PUT /api/settings` 响应 SHALL 附带 `ask_readiness`
 （`ready` 布尔与 `missing` 字符串列表）：就绪 SHALL 按 ADR-0009 三层合并口径判定
-——llm 通道凭证可解析且 embedding 通道 base_url/model 齐备；rerank 通道 SHALL NOT
-阻塞就绪。`missing` SHALL 使用稳定的 `<channel>.<field>` 机器 token，SHALL NOT
-包含任何凭证明文。判定 SHALL 与问答请求期的通道解析同源，不得引入第二套配置
-事实源。
+——llm 通道凭证可解析且 embedding 通道 base_url/model 齐备；「三层」SHALL 计入
+服务入口（`siku serve`）传入的命令行层，与请求期通道解析共用同一合并路径，
+SHALL NOT 引入第二套判定逻辑；rerank 通道 SHALL NOT 阻塞就绪。`missing` SHALL
+使用稳定的 `<channel>.<field>` 机器 token，SHALL NOT 包含任何凭证明文。判定 SHALL
+与问答请求期的通道解析同源，不得出现「判定未就绪而请求实际可用」或反向的分裂。
 
 #### Scenario: 未配置时返回缺失明细
 
@@ -186,6 +206,13 @@ SHALL 为 `{code, message}` 且不包含英文异常类名或堆栈。问答错�
   `SIKU_EMBEDDING_MODEL` 均已设置
 - **WHEN** 客户端请求 `GET /api/settings`
 - **THEN** `ask_readiness.ready=true` 且 `missing` 为空——判定覆盖环境变量层
+
+#### Scenario: 命令行层补齐即就绪
+
+- **GIVEN** 文件层与环境变量层的 embedding 通道为空，但服务以
+  `siku serve --embedding-base-url … --embedding-model …` 启动
+- **WHEN** 客户端请求 `GET /api/settings`
+- **THEN** `ask_readiness.ready=true` 且 `missing` 为空——判定与请求期实际可用一致
 
 #### Scenario: 保存后响应携带最新就绪状态
 
@@ -214,6 +241,13 @@ SHALL NOT 在响应中回显任何 key 明文；当通道的有效值来自环�
 非法枚举值均 SHALL 返回 422 与既有 `{code, message}` 结构且不改写配置文件。
 连通性测试 SHALL 按通道当前协议发起最小调用。设置读写 SHALL NOT 使 key 进入
 日志或错误消息。
+
+配置文件内容不可解析时，`PUT /api/settings` SHALL NOT 因此拒绝保存：系统 SHALL 以
+空的文件层为基底合并本次提交并原子替换坏文件，响应 SHALL 携带布尔字段
+`invalid_config_file_overwritten`（缺省 `false`）明示该次保存覆盖了不可解析的文件；
+仅因权限/IO 故障读不到文件时 SHALL NOT 走覆盖路径。`GET /api/settings` 遇同型错误
+SHALL 返回可行动指引（重新保存即可覆盖，或删除该配置文件后重配且删除不影响已摄取
+语料），SHALL NOT 输出「补全 base_url 与 model」这类与实际成因不符的文案。
 
 #### Scenario: 读取返回掩码视图
 
@@ -255,6 +289,21 @@ SHALL NOT 在响应中回显任何 key 明文；当通道的有效值来自环�
 - **GIVEN** 一次合法的三通道设置提交
 - **WHEN** 服务端合并写入 config.toml
 - **THEN** 文件权限保持 0600，响应为写入后的掩码视图，日志与响应均无 key 明文
+
+#### Scenario: 不可解析的配置文件被保存覆盖并告知
+
+- **GIVEN** config.toml 内容已损坏到无法解析
+- **WHEN** 客户端请求 `PUT /api/settings` 提交合法配置
+- **THEN** 返回 200，文件被替换为本次提交的内容，响应
+  `invalid_config_file_overwritten=true` 且不含英文异常信息；正常保存路径下该字段
+  为 `false`
+
+#### Scenario: 读取损坏配置文件给出恢复指引
+
+- **GIVEN** config.toml 内容无法解析
+- **WHEN** 客户端请求 `GET /api/settings`
+- **THEN** 返回 503 与 `{code, message}`，message 说明配置文件不可解析并给出
+  「重新保存覆盖 / 删除该文件后重配」两条出路，不出现命令行参数教程
 
 ### Requirement: 设置写入后无需重启生效
 

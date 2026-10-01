@@ -31,6 +31,10 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 
 当前没有待处理的已立项队列项。最近完成并归档：
 
+1. **模型供给错误分型与双面文案**：归档 `2026-10-01-fix-model-supply-error-surfacing`——401/403 凭证
+   被拒不再与「未配置」同型；config.toml 不可解析时 PUT 可覆盖自救 + serve 可启动，且设置页给出
+   显式确认的覆盖入口；`ask_readiness` 计入 serve 的 CLI 层；`map_domain_error` 分 CLI/HTTP 双面文案。
+
 1. **通用组件与移动端导航**：归档 `2026-09-24-adopt-mantine-ui-components`；新增 ADR-0011，接入 Mantine Core 9.x，移动端使用三项底部导航与更多视图菜单。
 2. **桌面本地服务恢复**：归档 `2026-09-24-recover-sidecar-after-exit`；Tauri 监测 sidecar 运行期故障，并提供重新启动和串行关闭清理。
 3. **基于内容的提问建议**：归档 `2026-09-24-recommend-content-based-questions`；从已导入笔记章节与 wiki 实体生成可编辑建议，空语料不展示固定示例。
