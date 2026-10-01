@@ -261,7 +261,7 @@ const CHANNEL_PRESETS: Record<ChannelName, VendorPreset[]> = {
   rerank: RERANK_PRESETS,
 };
 
-// 通道视图不可得（配置文件未能读取）时的显示基底：按「未设置」渲染，不伪造服务端读数
+// 文件层确证不可解析时表单的显示基底：按「未设置」渲染，不伪造服务端读数
 const BLANK_CHANNEL_VIEW: ChannelSettingsView = {
   base_url: null,
   model: null,
@@ -364,11 +364,9 @@ export function SettingsView({
     rerank: EMPTY_FORM,
   });
   const [loadError, setLoadError] = useState<string | null>(null);
-  // GET 失败但服务可达(拿到了 {code,message})：PUT 同样可达，坏配置文件的覆盖自救
-  // 必须由这里进去——读取失败页只留「重试读取」会让服务端文案里「重新保存即可覆盖」
-  // 的承诺落空。连接失败(没拿到响应)不适用：那时保存也无处可去。
-  const [loadFailedButReachable, setLoadFailedButReachable] = useState(false);
-  // 用户显式确认后，以空的文件层渲染表单（views 为 null 时的唯一出图路径）
+  // 成因码来自服务端的 {code,message}：只有 invalid_config_file（内容确证不可解析）
+  // 能由「重新保存覆盖」修复；权限/IO 读不到属内容未知，给覆盖入口就会毁掉用户配置。
+  const [loadErrorCode, setLoadErrorCode] = useState<string | null>(null);
   const [blankFormConfirmed, setBlankFormConfirmed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -391,20 +389,21 @@ export function SettingsView({
   const applySettings = useCallback((settings: SettingsResponse) => {
     setViews(settings);
     setForms(formsFrom(settings));
-    setLoadError(null);
-    setLoadFailedButReachable(false);
     setBlankFormConfirmed(false);
+    setLoadError(null);
     // 表单已被服务端视图覆盖：预设下拉同步回到「自定义」，避免显示陈旧厂商
     setPresetIds({ llm: null, embedding: null, rerank: null });
   }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
-    setLoadFailedButReachable(false);
+    setLoadErrorCode(null);
     try {
       applySettings(await getSettings());
     } catch (caught: unknown) {
-      setLoadFailedButReachable(isApiError(caught));
+      if (isApiError(caught)) {
+        setLoadErrorCode(caught.code);
+      }
       setLoadError(
         isApiError(caught)
           ? caught.message
@@ -559,9 +558,8 @@ export function SettingsView({
           >
             重试读取
           </Button>
-          {loadFailedButReachable && (
-            // 破坏性动作要显式同意：这条按钮唯一的作用是放弃文件层、以空配置重填，
-            // 服务端只在「内容确证不可解析」时接受覆盖（权限/IO 读不到会被拒绝并说明原因）
+          {loadErrorCode === "invalid_config_file" && (
+            // 破坏性动作以按钮文案本身完成告知：唯一作用是放弃文件层、以空配置重填
             <Button
               type="button"
               color="red"
@@ -599,11 +597,10 @@ export function SettingsView({
       <h2 id="settings-title">模型供给设置</h2>
       {views === null ? (
         <Alert className="status-card" color="yellow" role="status" title="按空配置显示">
-          <p>{loadError}</p>
-          <p>
-            下方表单不含任何已存值。保存只会覆盖「内容确证不可解析」的文件；若因权限或磁盘故障读不到，
-            保存会被拒绝并说明原因，不会动原文件。
-          </p>
+          读取时本机配置文件已损坏、无法读出，下方表单不含任何已存值；保存会以本次提交覆盖
+          该文件（若其间你已手动修好，则改为正常合并，是否覆盖由响应的
+          <code>invalid_config_file_overwritten</code> 如实标注）。环境变量层与命令行层不受影响，
+          仍照常生效。
         </Alert>
       ) : (
         <p className="hint settings-path">

@@ -169,9 +169,9 @@ describe("设置中心", () => {
     );
   });
 
-  it("配置文件不可解析导致读取失败时,给出可执行的覆盖自救入口", async () => {
-    // 回归钉子:GET 失败曾让整张表单连同保存按钮一起消失(只剩「重试读取」),
-    // 于是服务端「重新保存即可覆盖」的指引在桌面上无从执行
+  it("配置文件不可解析(成因码可辨)时给出覆盖自救入口,确认后按空配置出图", async () => {
+    // 回归钉子:读面曾把这张页堵成只剩「重试读取」,而 503 文案承诺「重新保存即可覆盖」;
+    // 入口必须只出现在 invalid_config_file 这一型(权限/IO 读不到时覆盖会毁掉好配置)
     const calls: Call[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
@@ -182,14 +182,19 @@ describe("设置中心", () => {
           status: 503,
           json: () =>
             Promise.resolve({
-              code: "model_not_available",
-              message: "模型配置文件不可解析（内容已损坏）：可在「设置」页重新填写并保存。",
+              code: "invalid_config_file",
+              message: "模型配置文件不可解析（内容已损坏）：可重新填写并保存以覆盖。",
             }),
         } as Response;
       }
       return {
         ok: true,
-        json: () => Promise.resolve({ ...settings, warnings: [], invalid_config_file_overwritten: true }),
+        json: () =>
+          Promise.resolve({
+            ...settings,
+            warnings: [],
+            invalid_config_file_overwritten: true,
+          }),
       } as Response;
     });
     const user = userEvent.setup();
@@ -200,30 +205,37 @@ describe("设置中心", () => {
       screen.getByRole("button", { name: "确认以空配置覆盖本机配置文件并重新填写" }),
     );
 
-    // 表单出图且按空配置显示:不得沿用服务端读数,也不得伪造 config_path
     await screen.findByText("模型供给设置");
     expect(screen.getByText("按空配置显示")).toBeInTheDocument();
+    // 不伪造服务端读数:路径行不出图,表单按空值渲染
     expect(screen.queryByText(/配置写入/)).not.toBeInTheDocument();
     const llm = within(await screen.findByRole("group", { name: "LLM 通道" }));
     expect(llm.getByLabelText("base_url")).toHaveValue("");
 
-    await user.type(llm.getByLabelText("base_url"), "https://api.deepseek.com");
-    await user.type(llm.getByLabelText("model"), "deepseek-chat");
     await user.click(screen.getByRole("button", { name: "保存设置" }));
-
-    const put = calls.find((call) => call.init?.method === "PUT");
-    expect(put).toBeDefined();
+    expect(calls.some((call) => call.init?.method === "PUT")).toBe(true);
     expect(await screen.findByText("原配置文件不可解析")).toBeInTheDocument();
   });
 
-  it("服务不可达时不提供覆盖入口(保存同样无处可去)", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(() => Promise.reject(new TypeError("offline")));
+  it("读不到文件(内容未知)时不给覆盖入口:保存无法修好它", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve({
+        ok: false,
+        status: 503,
+        json: () =>
+          Promise.resolve({
+            code: "config_file_unreadable",
+            message: "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）。",
+          }),
+      } as Response),
+    );
     render(<SettingsView />);
 
     expect(await screen.findByText("设置读取失败")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "确认以空配置覆盖本机配置文件并重新填写" }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText("模型供给设置")).not.toBeInTheDocument();
   });
 
   it("env 模式下已存明文 key 时提示优先生效，并可直接勾选清除", async () => {
