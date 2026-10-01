@@ -1019,18 +1019,23 @@ def serve(
         base_url=llm_base_url, model=llm_model, api_key_env=api_key_env, protocol=llm_protocol
     )
     try:
-        llm = resolve_llm_channel(llm_cli)
-    except ModelConfigFileError as exc:
-        # 坏配置文件不得堵死启动面：桌面 sidecar 就是 `siku serve --with-ui`，
-        # 启动即退出会让「设置页重新保存覆盖」这条唯一自救路径无从可达
-        # （change fix-model-supply-error-surfacing 决议 #3）。明示告警（非静默）
-        # 后以空文件层继续启动；请求期各面仍现读配置，按各自指引报错或接受覆盖保存。
-        typer.echo(_config_file_error_message(), err=True)
-        logger.warning(
-            "model supply config file is unparseable; serve startup ignores the file layer: %s",
-            exc,
-        )
-        llm = resolve_llm_channel(llm_cli, config=ModelSupplyConfig())
+        try:
+            llm = resolve_llm_channel(llm_cli)
+        except ModelConfigFileError as exc:
+            # 坏配置文件不得堵死启动面：桌面 sidecar 就是 `siku serve --with-ui`，
+            # 启动即退出会让「设置页重新保存覆盖」这条唯一自救路径无从可达
+            # （change fix-model-supply-error-surfacing 决议 #3）。明示告警（非静默）
+            # 后以空文件层继续启动；请求期各面仍现读配置，按各自指引报错或接受覆盖保存。
+            typer.echo(_config_file_error_message(), err=True)
+            logger.warning(
+                "model supply config file is unparseable; serve startup ignores the file layer:"
+                " error_class=%s",
+                type(exc).__name__,
+            )
+            # 兜底再解析一次必须落在外层 try 之内：except 块里抛出的异常不会被同一
+            # try 的后续 except 分支接住，env/cli 层的越界协议（如 SIKU_LLM_PROTOCOL）
+            # 在这里会直接穿成一段裸 traceback（实测崩溃），而不是归一化的中文指引
+            llm = resolve_llm_channel(llm_cli, config=ModelSupplyConfig())
     except ModelNotAvailableError as exc:
         _fail(_llm_config_error_message(exc), exc)
     embedding_supply = _embedding_cli_values(

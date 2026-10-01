@@ -929,7 +929,13 @@ def create_app(
 
     @application.get("/api/settings", response_model=SettingsResponse)
     def read_settings() -> SettingsResponse | JSONResponse:
-        """返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。"""
+        """返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。
+
+        错误面的 `code` 按成因分道（`invalid_config_file` / `config_file_unreadable`），
+        设置页据此决定是否给出「覆盖自救」入口：只有「确证不可解析」能由保存修复，
+        内容未知（权限/IO）不得覆盖。读面刻意不做容忍式 200——请求期每请求现读该文件，
+        容忍会让就绪状态与真实结果分叉（误就绪比死路更糟）。
+        """
         try:
             config = load_config()
             view = masked_view(
@@ -937,7 +943,9 @@ def create_app(
                 default_config_path(),
                 # 与请求期 LLM 解析同一口径（含 serve 的 CLI 层），保证
                 # 「响应说回退生效」⇔「生成请求真的走回退」
-                llm_fallback=llm_env_fallback_channel(llm_supply),
+                # 同一份已解析的文件层显式传入:回退判定不得再读一次文件
+                # (否则坏文件下视图按空层渲染、回退却另抛一次,两处不同源)
+                llm_fallback=llm_env_fallback_channel(llm_supply, config=config),
                 cli=cli_supply_layer,
             )
         except ModelNotAvailableError as exc:
@@ -975,11 +983,11 @@ def create_app(
         try:
             try:
                 current = load_config()
-            except ModelConfigFileError as exc:
+            except ModelConfigFileError:
                 logger.warning(
-                    "settings write overwriting unparseable config file: path=%s detail=%s",
+                    "settings write overwriting unparseable config file: path=%s"
+                    " error_class=ModelConfigFileError",
                     default_config_path(),
-                    exc,
                 )
                 current = ModelSupplyConfig()
                 recovered = True
@@ -1005,13 +1013,35 @@ def create_app(
         if cache is not None:
             cache.invalidate()
         warnings = embedding_rebuild_warnings(merged, application.state.data_dir)
-        return SettingsWriteResponse(
-            **masked_view(
+        try:
+            payload = masked_view(
                 merged,
                 default_config_path(),
-                llm_fallback=llm_env_fallback_channel(llm_supply),
+                # 复用刚写入的层：回退判定不得再读一次文件——通道视图取 merged、
+                # 回退取重读结果就是两套事实源
+                llm_fallback=llm_env_fallback_channel(llm_supply, config=merged),
                 cli=cli_supply_layer,
-            ).model_dump(),
+            )
+        except ModelNotAvailableError as exc:
+            # 落盘已成功，谎报「保存失败」会把自救路径变成反复重试的迷宫；但就绪判定
+            # 含 env/cli 层（`validate_channel_protocols` 只管文件层），env 层的越界协议
+            # 在这里同样抛——按 GET 面同一口径给码，只补一句「已写入」的既成事实。
+            logger.debug(
+                "API settings write succeeded, view degraded: error_class=%s", type(exc).__name__
+            )
+            guidance = invalid_protocol_message(exc)
+            if guidance is None:
+                mapping = map_domain_error(
+                    exc, api_key_env=application.state.api_key_env, surface="http"
+                )
+                status_code, code, text = mapping.status_code, mapping.code, mapping.message
+            else:
+                status_code, code, text = 503, "invalid_settings", guidance
+            return _error_response(
+                status_code, code, f"本次提交的配置已写入本机配置文件（免重启生效）；{text}"
+            )
+        return SettingsWriteResponse(
+            **payload.model_dump(),
             warnings=warnings,
             invalid_config_file_overwritten=recovered,
         )

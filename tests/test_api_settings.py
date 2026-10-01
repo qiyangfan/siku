@@ -402,12 +402,15 @@ class TestPutSettings:
 
         got = client.get("/api/settings")
         assert got.status_code == 503
+        # 成因码分道是设置页判定「这条指引能不能自救」的唯一依据，只断文案钉不住
+        assert got.json()["code"] == "config_file_unreadable"
         message = got.json()["message"]
         assert "无法读取" in message
         assert "补全" not in message
 
         put = client.put("/api/settings", json={"llm": {"model": "clobber"}})
         assert put.status_code == 503
+        assert put.json()["code"] == "config_file_unreadable"
         assert "无法读取" in put.json()["message"]
 
         # 原文件必须逐字节未动（read_bytes 未被 patch，读的是真实磁盘状态）
@@ -446,20 +449,70 @@ class TestPutSettings:
         assert response.status_code == 200
         assert response.json()["invalid_config_file_overwritten"] is True
 
-    def test_corrupt_config_get_gives_recovery_guidance(self, config_path: Path) -> None:
+    def test_settings_reads_config_file_once_per_request(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """单次设置请求只读一次配置文件(契约:同一响应内不得有两套事实源)。
+
+        视图取本次合并结果、回退判定另读一次文件时,两者可静默不一致。
+
+        两个绑定都要换:`from siku.model_supply import load_config` 让 `api.app` 与
+        `model_supply` 各持一份名字,而 `llm_env_fallback_channel` 内部解析的是
+        `model_supply` 那一份——只换 `siku.api.app.load_config` 的用例钉不住这条 MUST
+        (把调用改回不传 `config`,它照样绿)。
+        """
+        save_config(
+            ModelSupplyConfig(
+                llm=ChannelValues(
+                    base_url="https://api.deepseek.com",
+                    model="deepseek-chat",
+                    api_key=SecretStr(SECRET),
+                )
+            )
+        )
+        real = load_config
+        reads = {"n": 0}
+
+        def counted(*args: object, **kwargs: object) -> ModelSupplyConfig:
+            reads["n"] += 1
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr("siku.api.app.load_config", counted)
+        monkeypatch.setattr("siku.model_supply.load_config", counted)
+        client = TestClient(create_app())
+
+        reads["n"] = 0
+        assert client.put("/api/settings", json={"embedding": {"model": "m"}}).status_code == 200
+        assert reads["n"] == 1, f"PUT 只应读一次配置文件,实际 {reads['n']} 次"
+
+        reads["n"] = 0
+        assert client.get("/api/settings").status_code == 200
+        assert reads["n"] == 1, f"GET 只应读一次配置文件,实际 {reads['n']} 次"
+
+    def test_corrupt_config_get_gives_overwritable_cause_code(self, config_path: Path) -> None:
+        """坏文件的读取面：503 但成因码可辨为「可覆盖」，与读不到分道。
+
+        读面刻意不做容忍式 200：请求期每请求现读该文件，容忍会让设置页的就绪状态
+        与真实请求结果分叉（误就绪比死路更糟）。自救入口由 code 精确驱动即可。
+        """
         config_path.write_text("not [valid toml", encoding="utf-8")
         client = TestClient(create_app())
         response = client.get("/api/settings")
         assert response.status_code == 503
         payload = response.json()
-        assert payload["code"] == "model_not_available"
+        assert payload["code"] == "invalid_config_file"
         message = payload["message"]
         assert "不可解析" in message
         assert "设置" in message
         assert "删除" in message
-        # 双面文案红线：HTTP 面不出现命令行参数教程
+        # 双面文案红线：HTTP 面不出现命令行教程与配置文件路径
         assert "--embedding-base-url" not in message
         assert "config.toml" not in message
+        # 自救闭环：同一客户端保存即覆盖，且下一次读取恢复正常
+        saved = client.put("/api/settings", json={"llm": {"model": "m"}})
+        assert saved.status_code == 200
+        assert saved.json()["invalid_config_file_overwritten"] is True
+        assert client.get("/api/settings").status_code == 200
 
     def test_invalid_protocol_still_blocks_write_without_overwrite(self, config_path: Path) -> None:
         """越界 protocol 仍可写（文件本身可解析）：不得被「不可解析」分支误吞。"""
@@ -468,6 +521,30 @@ class TestPutSettings:
         response = client.put("/api/settings", json={"llm": {"protocol": "gemini-native"}})
         assert response.status_code == 422
         assert config_path.read_text(encoding="utf-8") == '[llm]\nprotocol = "gemini-native"\n'
+
+    def test_put_with_invalid_env_protocol_reports_written_not_500(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """env 层的越界协议毒化响应装配：落盘是既成事实，响应既不能 500 也不能谎报保存失败。
+
+        写入前的 `validate_channel_protocols` 只管文件层，而响应里的就绪判定含 env/cli 层
+        （与 GET、请求期同源），所以「文件已写入 + 判定抛 ProtocolConfigError」是可达状态；
+        此前它落在 try 之外，由全局兜底返 500 `internal_error`。
+        """
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"embedding": {"model": "bge-m3"}})
+        assert response.status_code != 500
+        payload = response.json()
+        assert payload["code"] == "invalid_settings"
+        assert "已写入" in payload["message"]
+        assert "openai-chat" in payload["message"]
+        # 本次提交确实落盘（不是被回滚后谎报）
+        assert 'model = "bge-m3"' in config_path.read_text(encoding="utf-8")
+        # 与 GET 面同码同指引，只差「已写入」那句事实
+        again = client.get("/api/settings")
+        assert again.status_code == 503
+        assert again.json()["code"] == "invalid_settings"
 
     def test_request_body_never_reaches_logs(
         self, config_path: Path, caplog: pytest.LogCaptureFixture
@@ -664,9 +741,20 @@ class TestSettingsTestEndpoint:
         finally:
             config_path.chmod(0o600)
         assert response.status_code == 503
+        assert response.json()["code"] == "config_file_unreadable"
         message = response.json()["message"]
         assert "无法读取" in message
         assert "检查该通道的 base_url" not in message
+
+    def test_probe_corrupt_config_gives_overwritable_cause_code(self, config_path: Path) -> None:
+        """探测面的「内容不可解析」必须给同一个成因码：分道要在所有映射点一致生效，
+        只改读取/写入两面而探测面仍落 `model_not_available` 就是第二套口径。"""
+        config_path.write_text("not [valid toml", encoding="utf-8")
+        client = TestClient(create_app())
+        response = client.post("/api/settings/test", json={"channel": "embedding"})
+        assert response.status_code == 503
+        assert response.json()["code"] == "invalid_config_file"
+        assert "重新填写并保存" in response.json()["message"]
 
     def test_probe_unconfigured_channel_returns_guidance(self, config_path: Path) -> None:
         """embedding 通道未配置（留空 = 无供给）：探测返回既有配置指引语义。"""

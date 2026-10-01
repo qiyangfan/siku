@@ -455,14 +455,14 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
     if isinstance(exc, ModelConfigFileError):
         return ErrorMapping(
             503,
-            "model_not_available",
+            "invalid_config_file",
             "模型配置文件不可解析（内容已损坏）：请先在「设置」页重新填写并保存以覆盖该文件，"
             "保存后免重启生效；表单提交到的字段不依赖原文件内容。",
         )
     if isinstance(exc, ModelConfigFileUnreadableError):
         return ErrorMapping(
             503,
-            "model_not_available",
+            "config_file_unreadable",
             "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）：请修复该文件的可读性后"
             "重试；此情况不会由保存覆盖，以免毁掉可能完好的配置。",
         )

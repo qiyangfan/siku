@@ -249,7 +249,7 @@ def map_domain_error(
         if surface == "http":
             return ErrorMapping(
                 503,
-                "model_not_available",
+                "config_file_unreadable",
                 "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）：请修复该文件"
                 "的可读性后重试。为避免毁掉可能完好的配置，本次不会由保存覆盖它；"
                 "若确认不再保留其中的配置，可删除该文件后重新配置——删除只影响模型配置，"
@@ -257,7 +257,7 @@ def map_domain_error(
             )
         return ErrorMapping(
             503,
-            "model_not_available",
+            "config_file_unreadable",
             f"模型配置文件当前无法读取：{config_file_path()} 因权限或 IO 故障打不开"
             "（内容未知，不是格式问题）。请修复该文件的可读性后重试；"
             "确认不再需要其中的配置时可删除该文件——删除只影响模型配置，"
@@ -267,14 +267,14 @@ def map_domain_error(
         if surface == "http":
             return ErrorMapping(
                 503,
-                "model_not_available",
+                "invalid_config_file",
                 "模型配置文件不可解析（内容已损坏）：可在「设置」页重新填写并保存，"
                 "本次保存会覆盖损坏的配置文件并免重启生效；也可删除本机配置文件后重新配置"
                 "——删除只影响模型配置，不影响已导入的资料与索引。",
             )
         return ErrorMapping(
             503,
-            "model_not_available",
+            "invalid_config_file",
             f"模型配置文件不可解析：{config_file_path()} 当前无法作为配置读取"
             "（内容不是合法 TOML 或段类型不符）。请修正或删除该文件后重试——"
             "删除只影响模型配置，不影响已摄取语料与索引；修复前任何通道配置都无法生效。",

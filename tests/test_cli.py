@@ -53,6 +53,34 @@ def test_serve_fails_fast_on_unreadable_config_with_accurate_copy(
     assert "补全" not in result.output
 
 
+def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """坏文件已让启动面走「忽略文件层」分支,其间 env 层协议越界不得漏成裸 traceback。
+
+    except 块里再抛的异常不会被同一 try 的后续 except 接住——原实现正是如此:
+    `resolve_llm_channel(llm_cli, config=ModelSupplyConfig())` 落在 `except
+    ModelConfigFileError` 的体内,ProtocolConfigError 直接穿出 `serve`。
+    """
+    home = tmp_path / "home"
+    cfg_dir = home / "Library" / "Application Support" / "siku"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "config.toml").write_text("not [valid toml", encoding="utf-8")
+    monkeypatch.setattr(
+        "siku.cli.uvicorn.run",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("serve 不应走到起服")),
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+    result = runner.invoke(app, ["serve", "--port", "8198"])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "线协议非法" in result.output
+    assert "Traceback" not in result.output
+    # 文件层的故障仍先行明示(不是静默忽略),两因分别可读
+    assert "不可解析" in result.output
+
+
 def test_supply_banner_corrupt_config_is_not_reported_as_unconfigured(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

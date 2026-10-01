@@ -1005,7 +1005,7 @@
     "/api/settings": {
       "get": {
         "summary": "Read Settings",
-        "description": "返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。",
+        "description": "返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。\n\n错误面的 `code` 按成因分道（`invalid_config_file` / `config_file_unreadable`），\n设置页据此决定是否给出「覆盖自救」入口：只有「确证不可解析」能由保存修复，\n内容未知（权限/IO）不得覆盖。读面刻意不做容忍式 200——请求期每请求现读该文件，\n容忍会让就绪状态与真实结果分叉（误就绪比死路更糟）。",
         "operationId": "read_settings_api_settings_get",
         "responses": {
           "200": {

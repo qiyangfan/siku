@@ -44,6 +44,7 @@ from siku.retrieve.errors import (
     IndexUnavailableError,
     InvalidQueryError,
     ModelConfigFileError,
+    ModelConfigFileUnreadableError,
     ModelConfigMismatchError,
     ModelCredentialError,
     ModelNotAvailableError,
@@ -442,6 +443,11 @@ def test_wiki_success_and_graph_missing_error(tmp_path: Path) -> None:
         (NoteParseError("bad"), 422, "note_parse_error"),
         (FtsUnavailableError("bad"), 503, "fts_unavailable"),
         (ModelNotAvailableError("bad"), 503, "model_not_available"),
+        # 子类分道:凭证被拒仍走基类码,配置文件两型各自独立码(设置页的覆盖自救入口
+        # 只由 `invalid_config_file` 驱动,把任一映射点改回共用码即为此处红灯)
+        (ModelCredentialError("bad", "embedding"), 503, "model_not_available"),
+        (ModelConfigFileError("bad"), 503, "invalid_config_file"),
+        (ModelConfigFileUnreadableError("bad"), 503, "config_file_unreadable"),
         (ProviderError("bad"), 503, "provider_error"),
         (GoldenSetError("bad"), 422, "golden_set_error"),
         (FixtureMismatchError("bad"), 422, "fixture_mismatch"),
@@ -568,7 +574,9 @@ class TestDualSurfaceErrorCopy:
         response = client.post("/api/search", json={"query": "检索"})
         assert response.status_code == 503
         payload = response.json()
-        assert payload["code"] == "model_not_available"
+        # 成因码分道:配置文件内容不可解析不再与「端点未配置」共用 model_not_available,
+        # 客户端据此才能判断「重新保存覆盖」是否真能修好它
+        assert payload["code"] == "invalid_config_file"
         assert "不可解析" in payload["message"]
         assert "config.toml" not in payload["message"]
         assert "--embedding-base-url" not in payload["message"]
