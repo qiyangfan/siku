@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Alert, Button, Group, Loader, Paper, Stack, TextInput } from "@mantine/core";
 import {
   buildGraph,
   getGraphNeighbors,
@@ -12,6 +13,7 @@ import {
   type GraphSubgraph,
 } from "./api";
 import { GraphCanvas } from "./GraphCanvas";
+import { LlmReadinessHint } from "./LlmReadinessHint";
 
 const OVERVIEW_LIMIT = 200;
 const NEIGHBOR_LIMIT = 50;
@@ -32,7 +34,7 @@ function isApiError(error: unknown): error is ApiError {
 function connectionFallback(caught: unknown): string {
   return isApiError(caught)
     ? caught.message
-    : "无法连接本地内核，请确认 siku serve 已启动。";
+    : "无法连接本地服务，请确认 siku serve --with-ui 正在运行。";
 }
 
 type GraphModel = {
@@ -69,7 +71,13 @@ function mergeSubgraph(model: GraphModel, subgraph: GraphSubgraph): GraphModel {
   };
 }
 
-export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void }) {
+export function GraphView({
+  onAskEntity,
+  onGoToSettings,
+}: {
+  onAskEntity: (name: string) => void;
+  onGoToSettings: () => void;
+}) {
   const [stats, setStats] = useState<GraphStats | null>(null);
   const [model, setModel] = useState<GraphModel | null>(null);
   const [missing, setMissing] = useState(false);
@@ -230,92 +238,79 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
 
   if (missing) {
     return (
-      <section className="graph-view" aria-labelledby="graph-title">
+      <Stack component="section" className="graph-view" gap="lg" aria-labelledby="graph-title">
         <GraphHeader />
-        <div className="library-empty" role="note">
-          <strong>图谱尚未构建</strong>
+        <Alert className="library-empty" color="gray" role="note" title="图谱尚未构建">
           <p>
             图谱由笔记投影抽取实体与关系生成，使用「设置」中配置的 LLM 通道；真实抽取
             可能需要几分钟，完成后画布自动加载。
           </p>
+          <LlmReadinessHint onGoToSettings={onGoToSettings} />
           {buildNote !== null && (
             <p className="hint" role="status">
               {buildNote}
             </p>
           )}
-          {actionError !== null && (
-            <p className="message message-error" role="alert">
-              {actionError}
-            </p>
-          )}
+          {actionError !== null && <Alert color="red" role="alert">{actionError}</Alert>}
           {/* 构建成功但数据面刷新失败（loadGraph 内部吞错）不得静默：
               否则「尚未构建」卡与「已构建」note 同屏矛盾 */}
           {loadError !== null && (
-            <p className="message message-error" role="alert">
-              {loadError}
-            </p>
+            <Alert color="red" role="alert">{loadError}</Alert>
           )}
           {loadError !== null && (
-            <button
+            <Button variant="default"
               type="button"
               className="button-secondary"
               disabled={building}
               onClick={() => void loadGraph()}
             >
               重试读取
-            </button>
+            </Button>
           )}
-          <button
-            type="button"
-            className="button-secondary"
-            disabled={building}
-            onClick={() => void runBuild()}
-          >
+          <Button type="button" disabled={building} onClick={() => void runBuild()}>
             {building ? "构建中…（可能需要几分钟）" : "构建图谱"}
-          </button>
-        </div>
-      </section>
+          </Button>
+        </Alert>
+      </Stack>
     );
   }
 
   if (loadError !== null && model === null) {
     return (
-      <div className="status-card status-error" role="alert">
-        <div>
-          <strong>图谱读取失败</strong>
-          <p>{loadError}</p>
-        </div>
-        <button
+      <Alert className="status-card" color="red" role="alert" title="图谱读取失败">
+        <p>{loadError}</p>
+        <Button variant="default"
           type="button"
           className="button-secondary"
           onClick={() => void loadGraph()}
         >
           重试读取
-        </button>
-      </div>
+        </Button>
+      </Alert>
     );
   }
 
   if (model === null) {
     return (
-      <div className="settings-loading" role="status" aria-live="polite">
+      <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
+        <Loader size="sm" />
         正在加载图谱…
-      </div>
+      </Group>
     );
   }
 
   return (
-    <section className="graph-view" aria-labelledby="graph-title">
+    <Stack component="section" className="graph-view" gap="lg" aria-labelledby="graph-title">
       <GraphHeader
         action={
-          <button
+          <Button variant="default"
             type="button"
             className="button-secondary"
             disabled={building}
             onClick={() => void runBuild()}
           >
             {building ? "更新中…（可能需要几分钟）" : "更新图谱"}
-          </button>
+          </Button>
         }
       />
       <p className="hint">
@@ -333,15 +328,12 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
       {/* 已建态数据保留时 loadError 无渲染落点（全屏错误卡仅在 model===null）：
           生成成功但刷新失败必须显式告警，防统计与画布静默陈旧 */}
       {loadError !== null && (
-        <div className="status-card status-error" role="alert">
-          <div>
-            <strong>图谱刷新失败</strong>
-            <p>{loadError}</p>
-          </div>
-          <button type="button" className="button-secondary" onClick={() => void loadGraph()}>
+        <Alert className="status-card" color="red" role="alert" title="图谱刷新失败">
+          <p>{loadError}</p>
+          <Button variant="default" type="button" className="button-secondary" onClick={() => void loadGraph()}>
             重试读取
-          </button>
-        </div>
+          </Button>
+        </Alert>
       )}
 
       <div className="graph-controls">
@@ -352,19 +344,17 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
             void runSearch();
           }}
         >
-          <label className="visually-hidden" htmlFor="graph-search-input">
-            搜索实体
-          </label>
-          <input
+          <TextInput
             id="graph-search-input"
-            type="text"
+            label="搜索实体"
+            className="graph-search-field"
             value={searchQuery}
             placeholder="按实体名搜索…"
             onChange={(event) => setSearchQuery(event.target.value)}
           />
-          <button type="submit" disabled={searching || searchQuery.trim() === ""}>
+          <Button type="submit" loading={searching} disabled={searchQuery.trim() === ""}>
             {searching ? "搜索中…" : "搜索"}
-          </button>
+          </Button>
         </form>
         {truncated && (
           <p className="graph-truncated" role="status">
@@ -387,7 +377,7 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
           </p>
           <div className="graph-search-chips">
             {searchResults.map((node) => (
-              <button
+              <Button
                 key={node.entity_id}
                 type="button"
                 className={
@@ -395,10 +385,12 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
                     ? "graph-chip graph-chip-active"
                     : "graph-chip"
                 }
+                variant="light"
+                title={node.name}
                 onClick={() => setSelected(node)}
               >
                 {node.name}
-              </button>
+              </Button>
             ))}
           </div>
         </div>
@@ -412,7 +404,7 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
           onSelect={setSelected}
         />
         {selected !== null && (
-          <aside className="graph-panel" aria-label="实体详情">
+          <Paper component="aside" withBorder shadow="xs" radius="md" className="graph-panel" aria-label="实体详情">
             <h3>{selected.name}</h3>
             <dl className="graph-panel-meta">
               <div>
@@ -429,7 +421,7 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
               </div>
             </dl>
             <div className="graph-panel-actions">
-              <button
+              <Button
                 type="button"
                 disabled={expanding || expanded.has(selected.entity_id)}
                 onClick={() => void expandNeighborhood(selected)}
@@ -439,27 +431,27 @@ export function GraphView({ onAskEntity }: { onAskEntity: (name: string) => void
                   : expanding
                     ? "展开中…"
                     : "展开邻域"}
-              </button>
-              <button type="button" className="button-secondary" onClick={() => onAskEntity(selected.name)}>
+              </Button>
+              <Button variant="default" type="button" className="button-secondary" onClick={() => onAskEntity(selected.name)}>
                 在问答中查询
-              </button>
+              </Button>
             </div>
-          </aside>
+          </Paper>
         )}
       </div>
-    </section>
+    </Stack>
   );
 }
 
 function GraphHeader({ action }: { action?: ReactNode }) {
   return (
-    <div className="graph-header">
+    <Group component="header" className="graph-header" align="flex-start" justify="space-between" wrap="wrap">
       <div>
         <h2 id="graph-title">图谱</h2>
         <p className="hint">点击节点查看详情，服务端保证查询有界。</p>
       </div>
       {action !== undefined && <div className="graph-header-actions">{action}</div>}
-    </div>
+    </Group>
   );
 }
 

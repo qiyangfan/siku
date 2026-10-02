@@ -4,7 +4,7 @@
 
 定稿时间：2026-09-17。决策准则：资深架构师视角，优先简洁优雅、代码质量、长期维护与用户体验；不受现状束缚，输出最优完整方案。
 
-本文是选型快照总表；每项决策的完整论证、被否选项与复核信号见 `docs/adr/`（ADR-0001~0008），两者冲突时以 ADR 为准。不可协商红线见 `openspec/project.md`。
+本文是选型快照总表；每项决策的完整论证、被否选项与复核信号见 `docs/adr/`（ADR-0001~0011），两者冲突时以 ADR 为准。不可协商红线见 `openspec/project.md`。
 
 ## 0. 产品定位
 
@@ -28,7 +28,7 @@
 
 ## 2. 语言与进程边界
 
-- **内核 Python 3.12+**（uv 管理，FastAPI）；**UI TypeScript/React**。
+- **内核 Python 3.12+**（uv 管理，FastAPI）；**UI TypeScript/React + Mantine Core 9.x**，图视图使用 Sigma.js + graphology。
 - 否决 Java/Go/纯 Rust 做内核：图谱/RAG 生态（GraphRAG、LightRAG、sentence-transformers、Docling）全在 Python，重写无收益。
 - **红线：UI ↔ 内核只经 localhost HTTP API**，业务逻辑禁入前端。
 

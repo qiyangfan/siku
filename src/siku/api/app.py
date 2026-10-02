@@ -51,6 +51,7 @@ from siku.api.models import (
     LibraryJobResponse,
     LibraryPurgeRequest,
     LibraryRebuildRequest,
+    LibraryRemoveRequest,
     LibraryResponse,
     LibraryScanRequest,
     LibraryScanSettingsResponse,
@@ -109,8 +110,11 @@ from siku.graph.service import GraphBuildResult, build_graph
 from siku.ingest import IngestReport, ingest_path
 from siku.model_supply import (
     ChannelValues,
+    ModelConfigFileError,
+    ModelSupplyConfig,
     build_embedding_provider,
     build_reranker_provider,
+    llm_env_fallback_channel,
     load_config,
     resolve_embedding_channel,
     resolve_llm_channel,
@@ -123,7 +127,14 @@ from siku.retrieve.errors import InvalidQueryError, ModelNotAvailableError
 from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import IndexReport, SearchOptions
 from siku.retrieve.service import SearchService
+from siku.sync.locking import LibraryWriteBusyError, library_write_lock
 from siku.sync.registry import SourceAlreadyRegisteredError, SyncRegistry, library_db_path
+from siku.sync.removal import (
+    SourceNotFoundError,
+    SourceSyncManagedError,
+    ensure_library_writable,
+    removal_eligibility,
+)
 from siku.sync.scanner import SourcePlan
 from siku.sync.service import ScanObserver, SyncService
 from siku.wiki.service import WikiResult, generate_wiki
@@ -135,6 +146,13 @@ DEFAULT_VAULT = Path("vault")
 DEFAULT_DATA_DIR = Path("data")
 ALLOWED_CORS_ORIGINS = ("http://127.0.0.1:5173", "http://localhost:5173")
 SNAPSHOT_GENERATOR = "uv run python -m siku.api.contract --refresh"
+# 同库写入口的锁等待：平滑同进程正常交接，真冲突快速如实报忙
+_WRITE_LOCK_TIMEOUT_SECS = 1.0
+_LIBRARY_BUSY_RESPONSE = (
+    409,
+    "library_job_busy",
+    "另一个 siku 进程正在写入该资料库，请等待其完成后再试。",
+)
 
 IngestHandler = Callable[[Path, Path], IngestReport]
 SearchServiceFactory = Callable[[Path], SearchService]
@@ -221,6 +239,7 @@ def _llm_provider_factory(
             model_id=channel.model,
             api_key=channel.api_key.get_secret_value() if channel.api_key else None,
             api_key_env=channel.api_key_env or DEFAULT_API_KEY_ENV,
+            protocol=channel.protocol,
         )
 
     return factory
@@ -303,6 +322,14 @@ def create_app(
         search_cache = _SearchSupplyCache(embedding_supply, rerank_supply, embedding_dimensions)
         resolved_search_factory = search_cache.get
     llm_providers = _llm_provider_factory(llm_supply)
+    # serve 的 CLI 层（--llm-*/--embedding-*/--rerank-*）：设置视图的 ask_readiness
+    # 与 llm_env_fallback 必须按请求期同一口径判定，否则「CLI 配齐、请求真能跑」
+    # 的部署会被判为未配置（change fix-model-supply-error-surfacing 决议 #4）
+    cli_supply_layer = ModelSupplyConfig(
+        llm=llm_supply or ChannelValues(),
+        embedding=embedding_supply or ChannelValues(),
+        rerank=rerank_supply or ChannelValues(),
+    )
 
     # 来源目录同步（ADR-0010）：库域状态库 + 扫描执行体 + 单任务槽 + 轮询调度。
     # 注册表随应用生命周期持有（状态非派生物）；调度线程经 lifespan 启停。
@@ -310,6 +337,7 @@ def create_app(
     sync_service = SyncService(
         sync_registry,
         vault=vault,
+        data_dir=data_dir,
         ingest_handler=ingest_handler,
         whitelist=set(extractor_registry()),
     )
@@ -323,12 +351,15 @@ def create_app(
 
     library_jobs = LibraryJobManager(
         vault=vault,
+        data_dir=data_dir,
+        registry=sync_registry,
         ingest_handler=ingest_handler,
         index_runner=index_runner
         or _supply_index_runner(vault, data_dir, embedding_supply, embedding_dimensions),
         api_key_env=api_key_env,
         scan_runner=_scan_job_body,
         purge_runner=sync_service.run_purge,
+        remove_runner=sync_service.run_removal,
     )
     sync_scheduler = SyncScheduler(
         sync_registry,
@@ -409,7 +440,14 @@ def create_app(
     def ingest(request: IngestRequest) -> IngestResponse | JSONResponse:
         target_vault = request.vault or application.state.vault
         try:
-            report = application.state.ingest_handler(request.source, target_vault)
+            # 原始摄取也是同库写入：与资料库任务/移除共享跨进程互斥（spec）；
+            # 仅当写入应用自身 vault 时才做消减恢复（自定义 vault 无对应库域登记）
+            with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                if target_vault == application.state.vault:
+                    ensure_library_writable(application.state.data_dir, sync_registry)
+                report = application.state.ingest_handler(request.source, target_vault)
+        except LibraryWriteBusyError:
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         except Exception as exc:
             logger.debug(
                 "API ingest failed: error_class=%s error_detail=%s",
@@ -417,7 +455,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return IngestResponse(
             created=report.created,
@@ -510,7 +550,12 @@ def create_app(
         source_id: str, request: LibrarySourceUpdateRequest
     ) -> LibrarySourceInfo | JSONResponse:
         """启停来源目录：停用后扫描跳过该目录，登记与文档不受影响。"""
-        source = sync_registry.set_source_enabled(source_id, request.enabled)
+        # 启停改变同步归属：与移除/扫描共享同库写锁（锁后重验的前提）
+        try:
+            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                source = sync_registry.set_source_enabled(source_id, request.enabled)
+        except LibraryWriteBusyError:
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         if source is None:
             return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
         return LibrarySourceInfo(
@@ -526,7 +571,12 @@ def create_app(
     )
     def library_sources_delete(source_id: str) -> LibrarySourceRemovedResponse | JSONResponse:
         """移除登记与检测缓存；已入库文档与既有标记不受影响。"""
-        if not sync_registry.remove_source(source_id):
+        try:
+            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                removed = sync_registry.remove_source(source_id)
+        except LibraryWriteBusyError:
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
+        if not removed:
             return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
         return LibrarySourceRemovedResponse(removed=True)
 
@@ -568,6 +618,41 @@ def create_app(
             )
         try:
             return library_jobs.start_purge()
+        except LibraryJobBusyError:
+            return _error_response(
+                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
+            )
+
+    @application.post("/api/library/remove", response_model=LibraryJobResponse)
+    def library_remove(request: LibraryRemoveRequest) -> LibraryJobResponse | JSONResponse:
+        """单来源确认移除：真实来源 ID + 显式确认；请求不接受文件路径。"""
+        if not request.confirmed:
+            return _error_response(
+                422,
+                "remove_confirm_required",
+                "移除需要显式确认：请在请求中携带 confirmed=true。",
+            )
+        # 资格判定先行（请求面如实分型）；执行体内取得写锁后再次核对同步登记
+        try:
+            removal_eligibility(
+                sync_registry,
+                application.state.vault,
+                application.state.data_dir,
+                request.source_id,
+            )
+        except SourceNotFoundError:
+            return _error_response(
+                404, "source_not_found", "目标资料不存在，可能已被移除；请刷新清单后重试。"
+            )
+        except SourceSyncManagedError:
+            return _error_response(
+                409,
+                "source_sync_managed",
+                "该资料由来源目录同步管理：请经来源目录的停用/解除登记与既有清理流程处理，"
+                "不能手动单项移除。",
+            )
+        try:
+            return library_jobs.start_remove(request.source_id)
         except LibraryJobBusyError:
             return _error_response(
                 409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
@@ -686,7 +771,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return SearchResponse(
             query=request.query,
@@ -745,13 +832,22 @@ def create_app(
         extractor: GraphExtractor | None = None
         try:
             extractor = application.state.graph_extractor_factory()
-            result = application.state.graph_builder(
-                target_vault,
-                target_data_dir,
-                extractor,
-                rebuild=request.rebuild,
-                summary_identity=SummaryIdentity(model_id=extractor.model_id),
-            )
+            # 图谱构建是同库写入：与移除/摄取互斥，且构建结果不得发布已移除内容
+            with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                if target_vault == application.state.vault:
+                    ensure_library_writable(application.state.data_dir, sync_registry)
+                result = application.state.graph_builder(
+                    target_vault,
+                    target_data_dir,
+                    extractor,
+                    rebuild=request.rebuild,
+                    summary_identity=SummaryIdentity(model_id=extractor.model_id),
+                )
+        except LibraryWriteBusyError:
+            if extractor is not None:
+                _close_if_supported(extractor)
+                extractor = None
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         except Exception as exc:
             logger.debug(
                 "API graph failed: error_class=%s error_detail=%s",
@@ -759,7 +855,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         finally:
             if extractor is not None:
@@ -853,7 +951,15 @@ def create_app(
         summarizer: Summarizer | None = None
         try:
             summarizer = application.state.summarizer_factory()
-            result = application.state.wiki_generator(target_data_dir, summarizer)
+            # wiki 写盘同样是同库写入：与移除互斥，不复活已移除内容
+            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                ensure_library_writable(application.state.data_dir, sync_registry)
+                result = application.state.wiki_generator(target_data_dir, summarizer)
+        except LibraryWriteBusyError:
+            if summarizer is not None:
+                _close_if_supported(summarizer)
+                summarizer = None
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         except Exception as exc:
             logger.debug(
                 "API wiki failed: error_class=%s error_detail=%s",
@@ -861,7 +967,9 @@ def create_app(
                 exc,
                 exc_info=True,
             )
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         finally:
             if summarizer is not None:
@@ -907,14 +1015,39 @@ def create_app(
 
     @application.get("/api/settings", response_model=SettingsResponse)
     def read_settings() -> SettingsResponse | JSONResponse:
-        """返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。"""
+        """返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。
+
+        错误面的 `code` 按成因分道（`invalid_config_file` / `config_file_unreadable`），
+        设置页据此决定是否给出「覆盖自救」入口：只有「确证不可解析」能由保存修复，
+        内容未知（权限/IO）不得覆盖。读面刻意不做容忍式 200——请求期每请求现读该文件，
+        容忍会让就绪状态与真实结果分叉（误就绪比死路更糟）。
+        """
         try:
             config = load_config()
+            view = masked_view(
+                config,
+                default_config_path(),
+                # 与请求期 LLM 解析同一口径（含 serve 的 CLI 层），保证
+                # 「响应说回退生效」⇔「生成请求真的走回退」
+                # 同一份已解析的文件层显式传入:回退判定不得再读一次文件
+                # (否则坏文件下视图按空层渲染、回退却另抛一次,两处不同源)
+                llm_fallback=llm_env_fallback_channel(llm_supply, config=config),
+                cli=cli_supply_layer,
+            )
+        except ModelNotAvailableError as exc:
+            # 手改 config.toml 的越界 protocol 不得变成 500：给可行动中文指引
+            logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
         except Exception as exc:
             logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return masked_view(config, default_config_path())
+        return view
 
     @application.put("/api/settings", response_model=SettingsWriteResponse)
     def write_settings(update: SettingsUpdateRequest) -> SettingsWriteResponse | JSONResponse:
@@ -922,42 +1055,102 @@ def create_app(
 
         写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的
         默认工厂每请求现解析。请求体（含 key）不进日志。
+
+        坏文件自救（change fix-model-supply-error-surfacing 决议 #3）：现有配置
+        **确证对模型供给无效**（坏 TOML / 非法段 / 字段取值不在允许范围）时以空的文件层
+        为基底继续合并本次提交并原子替换，响应显式告知覆盖事实——否则「读就抛」会把
+        「重新保存覆盖坏文件」这条唯一可由桌面用户操作的出路彻底堵死。仅因权限/IO
+        读不到文件时不覆盖（内容未知，覆盖即丢用户配置）。
         """
+        recovered = False
         try:
-            merged = apply_update(load_config(), update)
+            try:
+                current = load_config()
+            except ModelConfigFileError:
+                logger.warning(
+                    "settings write overwriting invalid config file: path=%s"
+                    " error_class=ModelConfigFileError",
+                    default_config_path(),
+                )
+                current = ModelSupplyConfig()
+                recovered = True
+            merged = apply_update(current, update)
+            # 写入边界已由两处覆盖:提交值经 `_validate_value` 逐字段校验(非法 → 422 不落盘),
+            # 存量文件层经 `load_config` 的取值校验(非法 → 本请求走「无效文件以空层为基底」分支)
             save_config(merged)
         except SettingsValidationError as exc:
             return _error_response(422, "invalid_settings", str(exc))
         except Exception as exc:
             logger.debug("API settings write failed: error_class=%s", type(exc).__name__)
-            mapping = map_domain_error(exc, api_key_env=application.state.api_key_env)
+            # 沿用既有领域映射：文件层无效 → 503 invalid_config_file，
+            # env/命令行层协议越界 → 503 invalid_settings，不可读文件 → 503 且绝不覆盖
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         cache = application.state.search_supply_cache
         if cache is not None:
             cache.invalidate()
         warnings = embedding_rebuild_warnings(merged, application.state.data_dir)
+        try:
+            payload = masked_view(
+                merged,
+                default_config_path(),
+                # 复用刚写入的层：回退判定不得再读一次文件——通道视图取 merged、
+                # 回退取重读结果就是两套事实源
+                llm_fallback=llm_env_fallback_channel(llm_supply, config=merged),
+                cli=cli_supply_layer,
+            )
+        except ModelNotAvailableError as exc:
+            # 落盘已成功，谎报「保存失败」会把自救路径变成反复重试的迷宫；但就绪判定
+            # 含 env/cli 层,而写入只写文件层——env 层的越界协议
+            # 在这里同样抛——按 GET 面同一口径给码，并把成功路径本来会携带的事实一并带回：
+            # 是否覆盖了坏文件、embedding 身份变更的重建告警。错误体只有 `{code,message}`
+            # 两个字段（既有契约），这些事实进 message 文本，不新增字段。
+            logger.debug(
+                "API settings write succeeded, view degraded: error_class=%s", type(exc).__name__
+            )
+            # 兜底是 spec 那条 MUST 的载体（「落盘后失败 SHALL NOT 返 internal_error 类 5xx」）:
+            # 文件层的非法值已在载入点被拒,这里可能剩 env/命令行层的协议越界,以及日后新增的
+            # 供给类异常——一律交回映射层给码与指引,不变 500。
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
+            status_code, code, text = mapping.status_code, mapping.code, mapping.message
+            facts = ["本次提交的配置已写入本机配置文件（免重启生效）"]
+            if recovered:
+                facts.append("原先无效的配置文件已被本次保存覆盖")
+            facts.append(text)
+            if warnings:
+                facts.extend(warnings)
+            return _error_response(status_code, code, "；".join(facts))
         return SettingsWriteResponse(
-            **masked_view(merged, default_config_path()).model_dump(), warnings=warnings
+            **payload.model_dump(),
+            warnings=warnings,
+            invalid_config_file_overwritten=recovered,
         )
 
     @application.post("/api/settings/test", response_model=SettingsTestResponse)
     def test_settings(request: SettingsTestRequest) -> SettingsTestResponse | JSONResponse:
         """对单通道发起最小连通性探测：不持久化，不回显上游错误体。"""
         started = time.perf_counter()
+        # 协议在 try 内赋值：解析失败时 except 的协议感知指引按 None 回落
+        protocol: str | None = None
         try:
-            channel, base_url, model, api_key, api_key_env = resolve_probe_target(request)
+            channel, base_url, model, api_key, api_key_env, protocol = resolve_probe_target(request)
             probe_channel(
                 channel=channel,
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
                 api_key_env=api_key_env,
+                protocol=protocol,
             )
         except SettingsValidationError as exc:
             return _error_response(422, "invalid_settings", str(exc))
         except Exception as exc:
             logger.debug("API settings test failed: error_class=%s", type(exc).__name__)
-            mapping = map_probe_error(exc, request.channel)
+            mapping = map_probe_error(exc, request.channel, protocol)
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         latency_ms = int((time.perf_counter() - started) * 1000)
         return SettingsTestResponse(ok=True, channel=request.channel, latency_ms=latency_ms)

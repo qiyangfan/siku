@@ -10,28 +10,38 @@ import pytest
 from pydantic import SecretStr
 
 from siku.model_supply import (
+    DASHSCOPE_BASE_URL,
+    DASHSCOPE_MODEL_ID,
+    LLM_PROTOCOLS,
     ChannelValues,
     ModelSupplyConfig,
+    ProtocolConfigError,
     ask_readiness,
     base_url_host,
     channel_slug,
+    llm_env_fallback_channel,
     load_config,
     resolve_embedding_channel,
     resolve_llm_channel,
     resolve_rerank_channel,
     save_config,
 )
-from siku.retrieve.errors import ModelNotAvailableError
+from siku.retrieve.errors import (
+    ModelConfigFileError,
+    ModelConfigFileUnreadableError,
+    ModelNotAvailableError,
+)
 
 SECRET = "super-secret-key"
 
 
 @pytest.fixture(autouse=True)
 def _clean_siku_supply_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """隔离宿主机上可能存在的 SIKU_* 供给环境变量，保证优先级用例确定性。"""
+    """隔离宿主机上可能存在的 SIKU_* 供给环境变量与 DASHSCOPE 回退源，保证优先级用例确定性。"""
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
 
 
 def write_toml(path: Path, content: str) -> Path:
@@ -139,6 +149,207 @@ class TestLayeredResolution:
         assert resolved.base_url == "https://api.deepseek.com"
         assert resolved.model == "deepseek-chat"
         assert resolved.api_key_env == "SIKU_LLM_API_KEY"
+
+
+class TestLlmEnvFallback:
+    """LLM 厂商环境变量回退：四字段全空且 DASHSCOPE_API_KEY 非空才整组生效。"""
+
+    def test_fallback_activates_when_all_layers_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == DASHSCOPE_BASE_URL
+        assert resolved.model == DASHSCOPE_MODEL_ID
+        assert resolved.api_key is None
+        assert resolved.api_key_env == "DASHSCOPE_API_KEY"
+
+    def test_fallback_key_resolves_from_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """回退通道的凭证走 api_key_env 惰性解析，与显式配置同一解封路径。"""
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "  sk-dashscope  ")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.resolve_api_key() == "sk-dashscope"
+
+    def test_blank_dashscope_env_treated_as_unset(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "   ")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.model == "deepseek-chat"
+
+    def test_missing_dashscope_env_keeps_legacy_defaults(self, tmp_path: Path) -> None:
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.api_key_env == "SIKU_LLM_API_KEY"
+
+    def test_explicit_toml_field_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        file = write_toml(tmp_path / "config.toml", '[llm]\napi_key_env = "MY_KEY_ENV"\n')
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        resolved = resolve_llm_channel(config_path=file)
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.model == "deepseek-chat"
+        assert resolved.api_key_env == "MY_KEY_ENV"
+
+    def test_cli_layer_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        cli = ChannelValues(base_url="http://127.0.0.1:4000/v1")
+        resolved = resolve_llm_channel(cli, config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "http://127.0.0.1:4000/v1"
+        assert resolved.model == "deepseek-chat"
+
+    def test_siku_env_layer_suppresses_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        monkeypatch.setenv("SIKU_LLM_API_KEY", "siku-key")
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.resolve_api_key() == "siku-key"
+
+    def test_ask_readiness_ready_for_llm_via_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        readiness = ask_readiness(load_config(tmp_path / "absent.toml"))
+        assert "llm.api_key" not in readiness.missing
+        assert "embedding.base_url" in readiness.missing
+        assert "embedding.model" in readiness.missing
+
+    def test_embedding_channel_never_falls_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        with pytest.raises(ModelNotAvailableError):
+            resolve_embedding_channel(config_path=tmp_path / "absent.toml")
+
+    def test_fallback_channel_helper_mirrors_resolution(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        fallback = llm_env_fallback_channel(config_path=tmp_path / "absent.toml")
+        assert fallback is not None
+        assert fallback.api_key_env == "DASHSCOPE_API_KEY"
+        # 任一 CLI 字段显式配置即未生效
+        assert (
+            llm_env_fallback_channel(ChannelValues(model="m"), config_path=tmp_path / "absent.toml")
+            is None
+        )
+
+
+class TestLlmProtocolField:
+    """协议是 LLM 通道第 5 个字段（ADR-0012）：三层合并、缺省零漂移、越界拒绝。"""
+
+    def test_default_protocol_is_openai_chat(self, tmp_path: Path) -> None:
+        resolved = resolve_llm_channel(config_path=tmp_path / "absent.toml")
+        assert resolved.protocol == "openai-chat"
+
+    def test_protocol_from_toml_layer(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "anthropic"\n')
+        assert resolve_llm_channel(config_path=file).protocol == "anthropic"
+
+    def test_protocol_cli_overrides_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "anthropic")
+        cli = ChannelValues(protocol="openai-responses")
+        resolved = resolve_llm_channel(cli, config_path=tmp_path / "absent.toml")
+        assert resolved.protocol == "openai-responses"
+
+    def test_blank_protocol_treated_as_unset(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "  "\n')
+        resolved = resolve_llm_channel(config_path=file)
+        assert resolved.protocol == "openai-chat"
+
+    def test_protocol_error_survives_copy_and_pickle(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """kind 进 args：copy/deepcopy/pickle 圆厂不因自定义 __init__ 缺参而炸。"""
+        import copy
+        import pickle
+
+        # env 层的越界协议才会走到运行期解析错误(文件层的非法值已在载入点被拒)
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        with pytest.raises(ProtocolConfigError) as excinfo:
+            resolve_llm_channel(config=ModelSupplyConfig())
+        error = excinfo.value
+        assert error.kind == "llm_enum"
+        for round_trip in (
+            copy.copy(error),
+            copy.deepcopy(error),
+            pickle.loads(pickle.dumps(error)),
+        ):
+            assert str(round_trip) == str(error)
+            assert round_trip.kind == "llm_enum"
+
+    def test_config_file_error_detail_survives_copy_and_pickle(self) -> None:
+        """detail 进 args：同上，自定义 __init__ 不得破坏基类 `__reduce__` 圆厂。"""
+        import copy
+        import pickle
+
+        error = ModelConfigFileError("bad file", "其中 [llm] protocol 取值不在允许范围")
+        for round_trip in (
+            copy.copy(error),
+            copy.deepcopy(error),
+            pickle.loads(pickle.dumps(error)),
+        ):
+            assert round_trip.detail == "其中 [llm] protocol 取值不在允许范围"
+
+    def test_illegal_llm_protocol_is_rejected_at_load_with_allowed_values(
+        self, tmp_path: Path
+    ) -> None:
+        """非法取值在载入点就被拒（运行期不存在非法状态），且指引给出合法名单。"""
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "gemini-native"\n')
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        detail = excinfo.value.detail
+        assert detail is not None
+        for name in LLM_PROTOCOLS:
+            assert name in detail
+        assert "[llm] protocol" in detail
+        assert "gemini-native" not in str(excinfo.value)  # 不回显用户原值
+
+    def test_embedding_channel_protocol_is_rejected_at_load(self, tmp_path: Path) -> None:
+        """embedding 段多出的 protocol 字段同样归入「文件无效」，并说清只有 LLM 通道用它。"""
+        file = write_toml(tmp_path / "config.toml", '[embedding]\nprotocol = "anthropic"\n')
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        detail = excinfo.value.detail
+        assert detail is not None
+        assert "[embedding] protocol" in detail
+        assert "仅 LLM 通道" in detail
+
+    def test_env_layer_illegal_protocol_still_raises_at_resolve(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """环境变量层是另一个输入源：它没有 schema 载入点，越界值在解析时拒。"""
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        with pytest.raises(ProtocolConfigError) as excinfo:
+            resolve_llm_channel(config=ModelSupplyConfig())
+        assert excinfo.value.kind == "llm_enum"
+        for name in LLM_PROTOCOLS:
+            assert name in str(excinfo.value)
+
+    def test_rerank_channel_rejects_protocol(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", '[rerank]\nprotocol = "anthropic"\n')
+        with pytest.raises(ModelNotAvailableError):
+            resolve_rerank_channel(config_path=file)
+
+    def test_lone_protocol_suppresses_dashscope_fallback(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """任一字段显式配置（含 protocol）即不回退，口径与其它字段一致。"""
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "anthropic"\n')
+        resolved = resolve_llm_channel(config_path=file)
+        assert resolved.base_url == "https://api.deepseek.com"
+        assert resolved.protocol == "anthropic"
 
 
 class TestCredentialProtection:
@@ -340,3 +551,119 @@ class TestAskReadiness:
         readiness = ask_readiness(config)
         assert SECRET not in repr(readiness)
         assert SECRET not in str(readiness.missing)
+
+
+class TestConfigFileErrorTyping:
+    """坏配置文件的分型（change fix-model-supply-error-surfacing 决议 #3）：
+    「内容不可解析」与「文件读不到」必须可区分——前者允许用户保存覆盖自救，
+    后者内容未知，覆盖即丢用户配置。"""
+
+    def test_unparseable_toml_raises_config_file_error(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", "not [valid toml")
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        assert "not valid TOML" in str(excinfo.value)
+        # 基类照样接住：settings GET/PUT 与 serve 启动面的既有捕获零回退
+        assert isinstance(excinfo.value, ModelNotAvailableError)
+
+    def test_invalid_sections_raise_config_file_error(self, tmp_path: Path) -> None:
+        file = write_toml(tmp_path / "config.toml", "[llm]\nbase_url = 12345\n")
+        with pytest.raises(ModelConfigFileError) as excinfo:
+            load_config(file)
+        assert "invalid sections" in str(excinfo.value)
+
+    def test_non_utf8_file_raises_config_file_error(self, tmp_path: Path) -> None:
+        file = tmp_path / "config.toml"
+        file.write_bytes(b"\xff\xfe\x00broken")
+        with pytest.raises(ModelConfigFileError):
+            load_config(file)
+
+    def test_unreadable_file_is_its_own_class_not_unconfigured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OSError（权限/IO 故障）内容未知：独立分型，既不是「可覆盖」的不可解析，
+        也不是「通道未配置」——文件可能配得好好的，只是读不出来。"""
+        file = write_toml(tmp_path / "config.toml", '[llm]\nmodel = "m"\n')
+
+        def refuse(*_args: object, **_kwargs: object) -> str:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "read_text", refuse)
+        with pytest.raises(ModelConfigFileUnreadableError) as excinfo:
+            load_config(file)
+        # 基类捕获必须仍然成立（serve 启动面与各 except ModelNotAvailableError 处理器零回退）
+        assert isinstance(excinfo.value, ModelNotAvailableError)
+        assert not isinstance(excinfo.value, ModelConfigFileError)
+
+
+class TestAskReadinessCliLayer:
+    """就绪判定计入 serve 的 CLI 层（决议 #4）：请求期真实可用而判定报未配置，
+    是同一函数 docstring 明令禁止的第二套事实源。"""
+
+    _CLI_EMBEDDING = ChannelValues(base_url="http://127.0.0.1:11434/v1", model="bge-m3")
+
+    def test_cli_layer_embedding_satisfies_readiness(self, tmp_path: Path) -> None:
+        config = load_config(tmp_path / "absent.toml")
+        without_cli = ask_readiness(config)
+        assert "embedding.base_url" in without_cli.missing
+
+        readiness = ask_readiness(
+            config,
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding=self._CLI_EMBEDDING,
+            ),
+        )
+        assert readiness.ready is True
+        assert readiness.missing == ()
+
+    def test_cli_layer_llm_key_satisfies_readiness(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """serve 的 --api-key-env 指向的变量参与判定：凭证只在 CLI 层给出也算就绪。"""
+        monkeypatch.setenv("SIKU_TEST_LLM_KEY", "sk-from-cli-layer")
+        config = load_config(tmp_path / "absent.toml")
+        readiness = ask_readiness(
+            config,
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key_env="SIKU_TEST_LLM_KEY"), embedding=self._CLI_EMBEDDING
+            ),
+        )
+        assert "llm.api_key" not in readiness.missing
+        assert readiness.ready is True
+
+    def test_cli_layer_partial_embedding_still_reports_missing(self, tmp_path: Path) -> None:
+        """CLI 只给 base_url 时仍报 model 缺项——计入 CLI 层不等于放宽判据。"""
+        config = load_config(tmp_path / "absent.toml")
+        readiness = ask_readiness(
+            config,
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding=ChannelValues(base_url="http://127.0.0.1:11434/v1"),
+            ),
+        )
+        assert readiness.ready is False
+        assert readiness.missing == ("embedding.model",)
+
+    def test_blank_cli_values_fall_back_to_file_layer(self, tmp_path: Path) -> None:
+        """CLI 层空白串与未设置等价：文件层有效值继续生效，判定不因空白串退化。"""
+        file = write_toml(
+            tmp_path / "config.toml",
+            '[embedding]\nbase_url = "http://127.0.0.1:11434/v1"\nmodel = "file-model"\n',
+        )
+        readiness = ask_readiness(
+            load_config(file),
+            cli=ModelSupplyConfig(
+                llm=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding=ChannelValues(base_url="   ", model="   "),
+            ),
+        )
+        assert readiness.ready is True
+
+    def test_readiness_still_rejects_embedding_protocol_from_cli_layer(self) -> None:
+        """与请求期同源：CLI 层给 embedding 塞 protocol 时判定同样抛协议错误。"""
+        with pytest.raises(ProtocolConfigError):
+            ask_readiness(
+                ModelSupplyConfig(),
+                cli=ModelSupplyConfig(embedding=ChannelValues(protocol="anthropic")),
+            )

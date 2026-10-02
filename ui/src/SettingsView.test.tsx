@@ -1,4 +1,5 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -33,6 +34,7 @@ const savedSettings = {
   ...settings,
   llm: { ...settings.llm, model: "deepseek-chat-new" },
   warnings: [] as string[],
+  invalid_config_file_overwritten: false,
 };
 
 type Call = { url: string; init?: RequestInit };
@@ -47,6 +49,21 @@ function mockFetch(calls: Call[], handlers: {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
     calls.push({ url, init });
+    if (url.endsWith("/api/health")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ status: "ok", version: "0.1.0" }),
+      } as Response);
+    }
+    if (url.includes("/api/notes")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ notes: [], total: 0, page: 1, page_size: 5 }),
+      } as Response);
+    }
+    if (url.endsWith("/api/wiki/entries")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ entries: [] }) } as Response);
+    }
     if (url.endsWith("/api/settings/test")) {
       return Promise.resolve({
         ok: handlers.testOk ?? true,
@@ -80,6 +97,7 @@ describe("设置中心", () => {
     const keyInput = within(groups[0]).getByLabelText("api_key（只写不回显）");
     expect(keyInput).toHaveValue("");
     expect(within(groups[0]).getByPlaceholderText("已设置——留空保持不变")).toBeInTheDocument();
+    expect(within(groups[0]).getByRole("radiogroup", { name: "凭证来源" })).toBeInTheDocument();
     // 已存明文 key 的通道默认停在「直接填写」
     expect(within(groups[0]).getByRole("radio", { name: "直接填写 key" })).toBeChecked();
     expect(
@@ -107,7 +125,7 @@ describe("设置中心", () => {
 
   it("切换到「引用环境变量」丢弃未保存明文，按环境变量方式保存", async () => {
     const calls: Call[] = [];
-    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [], invalid_config_file_overwritten: false } });
     const user = userEvent.setup();
     render(<SettingsView />);
 
@@ -126,9 +144,103 @@ describe("设置中心", () => {
     expect(body.llm).not.toHaveProperty("api_key");
   });
 
+  it("保存覆盖了不可解析的配置文件时显式告知,不做静默替换", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, {
+      get: settings,
+      put: { ...settings, warnings: [], invalid_config_file_overwritten: true },
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    await screen.findAllByRole("group");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    expect(await screen.findByText("原配置文件不可解析")).toBeInTheDocument();
+    expect(screen.getByText(/以空配置为基底写入了新内容并覆盖该文件/)).toBeInTheDocument();
+    // 告知是一次性的:再次正常保存必须撤下,不得滞留成常驻文案
+    mockFetch(calls, {
+      get: settings,
+      put: { ...settings, warnings: [], invalid_config_file_overwritten: false },
+    });
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() =>
+      expect(screen.queryByText("原配置文件不可解析")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("配置文件不可解析(成因码可辨)时给出覆盖自救入口,确认后按空配置出图", async () => {
+    // 回归钉子:读面曾把这张页堵成只剩「重试读取」,而 503 文案承诺「重新保存即可覆盖」;
+    // 入口必须只出现在 invalid_config_file 这一型(权限/IO 读不到时覆盖会毁掉好配置)
+    const calls: Call[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
+      calls.push({ url, init });
+      if (url.endsWith("/api/settings") && (init?.method ?? "GET") === "GET") {
+        return {
+          ok: false,
+          status: 503,
+          json: () =>
+            Promise.resolve({
+              code: "invalid_config_file",
+              message: "模型配置文件不可解析（内容已损坏）：可重新填写并保存以覆盖。",
+            }),
+        } as Response;
+      }
+      return {
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            ...settings,
+            warnings: [],
+            invalid_config_file_overwritten: true,
+          }),
+      } as Response;
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    expect(await screen.findByText("设置读取失败")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "确认以空配置覆盖本机配置文件并重新填写" }),
+    );
+
+    await screen.findByText("模型供给设置");
+    expect(screen.getByText("按空配置显示")).toBeInTheDocument();
+    // 不伪造服务端读数:路径行不出图,表单按空值渲染
+    expect(screen.queryByText(/配置写入/)).not.toBeInTheDocument();
+    const llm = within(await screen.findByRole("group", { name: "LLM 通道" }));
+    expect(llm.getByLabelText("base_url")).toHaveValue("");
+
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+    expect(calls.some((call) => call.init?.method === "PUT")).toBe(true);
+    expect(await screen.findByText("原配置文件不可解析")).toBeInTheDocument();
+  });
+
+  it("读不到文件(内容未知)时不给覆盖入口:保存无法修好它", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve({
+        ok: false,
+        status: 503,
+        json: () =>
+          Promise.resolve({
+            code: "config_file_unreadable",
+            message: "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）。",
+          }),
+      } as Response),
+    );
+    render(<SettingsView />);
+
+    expect(await screen.findByText("设置读取失败")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "确认以空配置覆盖本机配置文件并重新填写" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("模型供给设置")).not.toBeInTheDocument();
+  });
+
   it("env 模式下已存明文 key 时提示优先生效，并可直接勾选清除", async () => {
     const calls: Call[] = [];
-    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [], invalid_config_file_overwritten: false } });
     const user = userEvent.setup();
     render(<SettingsView />);
 
@@ -164,7 +276,7 @@ describe("设置中心", () => {
     expect(body.llm.model).toBe("deepseek-chat-new");
     expect(body.llm).not.toHaveProperty("api_key");
     expect(body.llm.base_url).toBe("https://api.deepseek.com");
-    expect(body.embedding).toEqual({ base_url: "", model: "", api_key_env: "" });
+    expect(body.embedding).toEqual({ base_url: "", model: "", api_key_env: "", protocol: "" });
     // 保存后表单以服务端掩码视图为准：key 输入框仍为空
     expect(within(groups[0]).getByLabelText("api_key（只写不回显）")).toHaveValue("");
   });
@@ -191,7 +303,7 @@ describe("设置中心", () => {
 
   it("显式勾选清除已保存的 key 时提交 null", async () => {
     const calls: Call[] = [];
-    mockFetch(calls, { get: settings, put: { ...settings, warnings: [] } });
+    mockFetch(calls, { get: settings, put: { ...settings, warnings: [], invalid_config_file_overwritten: false } });
     const user = userEvent.setup();
     render(<SettingsView />);
 
@@ -281,11 +393,127 @@ describe("设置中心", () => {
     const user = userEvent.setup();
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "设置" }));
+    await user.click(screen.getByRole("tab", { name: "设置" }));
 
     await waitFor(() =>
       expect(calls.some((call) => call.url.endsWith("/api/settings"))).toBe(true),
     );
     expect(await screen.findByRole("button", { name: "保存设置" })).toBeInTheDocument();
+  });
+
+  it("选择厂商预设自动填充端点与凭证模式，且仍可手改", async () => {
+    mockFetch([], { get: settings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = groups[0];
+    await user.selectOptions(
+      within(llm).getByLabelText("LLM 通道厂商预设"),
+      "通义千问（阿里云百炼）",
+    );
+
+    expect(within(llm).getByLabelText("base_url")).toHaveValue(
+      "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    );
+    expect(within(llm).getByLabelText("model")).toHaveValue("qwen-max");
+    expect(within(llm).getByLabelText("api_key_env（环境变量名）")).toHaveValue("DASHSCOPE_API_KEY");
+    expect(within(llm).getByRole("radio", { name: "引用环境变量" })).toBeChecked();
+
+    // 填充后仍可手改：直接改 model 不被预设霸占
+    await user.clear(within(llm).getByLabelText("model"));
+    await user.type(within(llm).getByLabelText("model"), "qwen-plus");
+    expect(within(llm).getByLabelText("model")).toHaveValue("qwen-plus");
+  });
+
+  it("Ollama 本地预设免凭证：回到直接填写并清空后备 env", async () => {
+    mockFetch([], { get: settings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = groups[0];
+    await user.selectOptions(
+      within(llm).getByLabelText("LLM 通道厂商预设"),
+      "Ollama 本地",
+    );
+
+    expect(within(llm).getByLabelText("base_url")).toHaveValue("http://127.0.0.1:11434/v1");
+    expect(within(llm).getByRole("radio", { name: "直接填写 key" })).toBeChecked();
+    await user.click(within(llm).getByRole("radio", { name: "引用环境变量" }));
+    expect(within(llm).getByLabelText("api_key_env（环境变量名）")).toHaveValue("");
+  });
+
+  it("切换接口协议后保存，PUT 提交携带所选协议", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, { get: settings, put: savedSettings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    await user.selectOptions(within(groups[0]).getByLabelText("LLM 通道接口协议"), "anthropic");
+    await user.click(screen.getByRole("button", { name: "保存设置" }));
+
+    await waitFor(() => expect(calls.some((call) => call.init?.method === "PUT")).toBe(true));
+    const put = calls.find((call) => call.init?.method === "PUT");
+    expect(JSON.parse(String(put?.init?.body)).llm.protocol).toBe("anthropic");
+  });
+
+  it("保存前点测试连接按表单当前协议探测", async () => {
+    const calls: Call[] = [];
+    mockFetch(calls, {
+      get: settings,
+      test: { ok: true, channel: "llm", latency_ms: 12 },
+    });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    await user.selectOptions(within(groups[0]).getByLabelText("LLM 通道接口协议"), "anthropic");
+    await user.click(within(groups[0]).getByRole("button", { name: "测试连接" }));
+
+    await waitFor(() =>
+      expect(calls.some((call) => call.url.endsWith("/api/settings/test"))).toBe(true),
+    );
+    const testCall = calls.find((call) => call.url.endsWith("/api/settings/test"));
+    expect(JSON.parse(String(testCall?.init?.body)).protocol).toBe("anthropic");
+  });
+
+  it("选择 Anthropic 分支预设同时填充端点与协议", async () => {
+    mockFetch([], { get: settings });
+    const user = userEvent.setup();
+    render(<SettingsView />);
+
+    const groups = await screen.findAllByRole("group");
+    const llm = groups[0];
+    await user.selectOptions(
+      within(llm).getByLabelText("LLM 通道厂商预设"),
+      "Kimi（Anthropic 分支）",
+    );
+    expect(within(llm).getByLabelText("base_url")).toHaveValue("https://api.moonshot.cn/anthropic");
+    expect(within(llm).getByLabelText("LLM 通道接口协议")).toHaveValue("anthropic");
+    // embedding/rerank 通道不出现协议控件
+    expect(within(groups[1]).queryByLabelText(/接口协议/)).not.toBeInTheDocument();
+  });
+
+  it("LLM 通道回退生效时展示来源说明，不误导为完全未配置", async () => {
+    mockFetch([], {
+      get: {
+        ...settings,
+        llm: { ...settings.llm, base_url: null, model: null, api_key_set: false },
+        llm_env_fallback: {
+          vendor: "dashscope",
+          base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+          model: "qwen-max",
+          api_key_env: "DASHSCOPE_API_KEY",
+        },
+      },
+    });
+    render(<SettingsView />);
+
+    const note = await screen.findByText(/未显式配置 LLM 通道：当前按环境变量/);
+    expect(note).toBeInTheDocument();
+    expect(note).toHaveTextContent("DASHSCOPE_API_KEY");
+    expect(note).toHaveTextContent("qwen-max");
   });
 });

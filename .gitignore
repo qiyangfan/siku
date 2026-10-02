@@ -19,8 +19,9 @@ htmlcov/
 node_modules/
 ui/dist/
 
-# 本地数据：知识库数据目录与数据库文件不入库
+# 本地数据：知识库数据目录与数据库文件不入库（vault/ = 默认运行时数据目录）
 data/
+vault/
 *.sqlite
 *.sqlite3
 *.db

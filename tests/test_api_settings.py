@@ -23,9 +23,13 @@ from siku.api.app import create_app
 from siku.model_supply import (
     ChannelValues,
     ModelSupplyConfig,
+    ProtocolConfigError,
     load_config,
+    resolve_embedding_channel,
+    resolve_llm_channel,
     save_config,
 )
+from siku.retrieve.errors import ModelConfigFileError
 from siku.retrieve.indexer import sync_index
 
 SECRET = "sk-test-secret-12345"
@@ -41,6 +45,7 @@ def config_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     return path
 
 
@@ -135,6 +140,196 @@ class TestGetSettings:
         payload = client.get("/api/settings").json()
         assert payload["ask_readiness"]["ready"] is True
         assert payload["ask_readiness"]["missing"] == []
+
+    def test_llm_env_fallback_exposed_when_active(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        fallback = payload["llm_env_fallback"]
+        assert fallback is not None
+        assert fallback["vendor"] == "dashscope"
+        assert fallback["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert fallback["model"] == "qwen-max"
+        assert fallback["api_key_env"] == "DASHSCOPE_API_KEY"
+        assert "sk-dashscope" not in client.get("/api/settings").text
+        # 回退生效时 llm 凭证不再进入就绪缺项
+        assert "llm.api_key" not in payload["ask_readiness"]["missing"]
+
+    def test_protocol_roundtrip_and_view(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.put(
+            "/api/settings",
+            json={
+                "llm": {"protocol": "anthropic", "base_url": "https://api.moonshot.cn/anthropic"}
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["llm"]["protocol"] == "anthropic"
+        # 落盘可回读
+        assert load_config().llm.protocol == "anthropic"
+        assert client.get("/api/settings").json()["llm"]["protocol"] == "anthropic"
+
+    def test_protocol_default_view_is_null(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        assert client.get("/api/settings").json()["llm"]["protocol"] is None
+
+    def test_invalid_protocol_returns_422(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"llm": {"protocol": "gemini-native"}})
+        assert response.status_code == 422
+        assert "openai-chat" in response.json()["message"]
+        assert load_config().llm.protocol is None
+
+    def test_embedding_protocol_rejected_with_422(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"embedding": {"protocol": "anthropic"}})
+        assert response.status_code == 422
+        assert "仅 LLM 通道" in response.json()["message"]
+
+    def test_hand_edited_invalid_protocol_is_reported_as_invalid_file(
+        self, config_path: Path
+    ) -> None:
+        """手改文件的越界 protocol 属「文件层无效」：与坏 TOML 同一个 code、同一条出路。
+
+        判据是本批的边界原则——非法值在载入点就被拒，运行期不存在「带着坏值跑」的状态，
+        所以读取面不必新增第三种成因码，页面既有的「重新保存覆盖」直接就能修它。
+        """
+        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
+        client = TestClient(create_app())
+        response = client.get("/api/settings")
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "invalid_config_file"
+        message = payload["message"]
+        assert "[llm] protocol" in message
+        assert "openai-responses" in message
+        # 双面文案红线照旧：HTTP 面不给路径与命令行教程
+        assert "config.toml" not in message
+        assert "--llm-protocol" not in message
+
+    def test_hand_edited_invalid_protocol_repaired_by_save(self, config_path: Path) -> None:
+        """坏取值下的保存走「以本次提交覆盖」：这正是 invalid_config_file 承诺的自救。"""
+        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"llm": {"protocol": "anthropic"}})
+        assert response.status_code == 200
+        assert response.json()["invalid_config_file_overwritten"] is True
+        assert response.json()["llm"]["protocol"] == "anthropic"
+        assert "gemini-native" not in config_path.read_text(encoding="utf-8")
+        assert client.get("/api/settings").status_code == 200
+
+    def test_hand_edited_embedding_protocol_reported_as_invalid_file(
+        self, config_path: Path
+    ) -> None:
+        """[embedding] 多出 protocol 也是「文件层无效」：指引点名该段，不说成通道未配置。"""
+        save_config(
+            ModelSupplyConfig(
+                embedding=ChannelValues(
+                    base_url="http://127.0.0.1:11434/v1", model="bge-m3", protocol="anthropic"
+                )
+            )
+        )
+        client = TestClient(create_app())
+        response = client.get("/api/settings")
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "invalid_config_file"
+        assert "[embedding] protocol" in payload["message"]
+        assert "仅 LLM 通道" in payload["message"]
+        # 请求期同样失败：判定与执行共用同一载入边界，不存在「坏值已进运行期」的分叉
+        with pytest.raises(ModelConfigFileError):
+            resolve_embedding_channel()
+
+    def test_env_layer_illegal_protocol_names_the_lever_not_the_page(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """环境变量层的坏协议值仍属运行期解析错误（它没有载入边界）：指引必须点名杠杆。
+
+        原口径「请在设置页重新选择协议并保存即可覆盖」在这种情形是错的——环境变量优先级
+        高于文件层，页面保存覆盖不了它，用户会反复保存同一个坏值而困惑。
+        """
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        assert payload["code"] == "invalid_settings"
+        assert "SIKU_LLM_PROTOCOL" in payload["message"]
+        assert "覆盖不了" in payload["message"]
+        with pytest.raises(ProtocolConfigError):
+            resolve_llm_channel()
+
+    def test_probe_of_illegal_env_protocol_is_not_reported_as_unconfigured(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """探测面与读取面同源：协议非法说成「检查 base_url、model」是指错杠杆。
+
+        同一故障两张面给两个 code（`model_not_available` vs `invalid_settings`）就是
+        第二套事实源；这里的探测不发出任何 HTTP 请求，故无须注入 transport。
+        """
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        response = client.post("/api/settings/test", json={"channel": "llm"})
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "invalid_settings"
+        assert "SIKU_LLM_PROTOCOL" in payload["message"]
+        # 文案不得把「端点没配好」当成因：那会引导用户去核对该通道的 base_url/model
+        assert "base_url" not in payload["message"]
+
+    def test_probe_of_illegal_file_value_names_the_field(self, config_path: Path) -> None:
+        """坏取值的探测指引点名字段：只说「内容已损坏」会把取值问题说成语法问题。"""
+        save_config(ModelSupplyConfig(llm=ChannelValues(protocol="gemini-native")))
+        client = TestClient(create_app())
+        response = client.post("/api/settings/test", json={"channel": "llm"})
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "invalid_config_file"
+        assert "[llm] protocol" in payload["message"]
+        assert "openai-responses" in payload["message"]
+
+    def test_probe_rejects_protocol_override_for_non_llm_channel(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """探测面对非 llm 通道的 protocol 覆盖显式拒绝（fail loud，不静默忽略）。"""
+        inject_transport(monkeypatch, httpx.MockTransport(lambda request: httpx.Response(200)))
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/settings/test",
+            json={"channel": "embedding", "protocol": "anthropic"},
+        )
+        assert response.status_code == 422
+        assert "仅 LLM 通道" in response.json()["message"]
+
+    def test_llm_env_fallback_null_when_inactive(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        payload = client.get("/api/settings").json()
+        assert payload["llm_env_fallback"] is None
+
+    def test_llm_env_fallback_suppressed_by_cli_supply(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLI 层显式配置优先：即便环境变量存在也不得谎报回退生效。"""
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        client = TestClient(
+            create_app(llm_supply=ChannelValues(base_url="http://127.0.0.1:4000/v1"))
+        )
+        payload = client.get("/api/settings").json()
+        assert payload["llm_env_fallback"] is None
+
+    def test_put_explicit_llm_clears_fallback(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-dashscope")
+        client = TestClient(create_app())
+        before = client.get("/api/settings").json()
+        assert before["llm_env_fallback"] is not None
+        response = client.put(
+            "/api/settings",
+            json={"llm": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"}},
+        )
+        assert response.status_code == 200
+        assert response.json()["llm_env_fallback"] is None
 
 
 class TestPutSettings:
@@ -258,13 +453,204 @@ class TestPutSettings:
         assert stored.llm.api_key is None
         assert stored.llm.api_key_env is None
 
-    def test_corrupt_existing_config_returns_503_and_keeps_file(self, config_path: Path) -> None:
+    def test_unreadable_config_is_never_overwritten_and_says_so(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """权限/IO 读不到 ≠ 内容不可解析：不得走覆盖路径（内容未知，覆盖即丢配置），
+        且文案不能把「读不出文件」说成「通道未配置」让用户去补其实配好了的字段。"""
+        config_path.write_text('[llm]\nmodel = "keep-me"\n', encoding="utf-8")
+
+        def refuse(*_args: object, **_kwargs: object) -> str:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "read_text", refuse)
+        client = TestClient(create_app())
+
+        got = client.get("/api/settings")
+        assert got.status_code == 503
+        # 成因码分道是设置页判定「这条指引能不能自救」的唯一依据，只断文案钉不住
+        assert got.json()["code"] == "config_file_unreadable"
+        message = got.json()["message"]
+        assert "无法读取" in message
+        assert "补全" not in message
+
+        put = client.put("/api/settings", json={"llm": {"model": "clobber"}})
+        assert put.status_code == 503
+        assert put.json()["code"] == "config_file_unreadable"
+        assert "无法读取" in put.json()["message"]
+
+        # 原文件必须逐字节未动（read_bytes 未被 patch，读的是真实磁盘状态）
+        assert config_path.read_bytes() == b'[llm]\nmodel = "keep-me"\n'
+
+    def test_corrupt_config_is_overwritten_by_save_and_flagged(self, config_path: Path) -> None:
+        """坏文件不得堵死自救路径（change fix-model-supply-error-surfacing 决议 #3）：
+        保存以空文件层为基底合并并原子替换，响应显式告知覆盖事实。"""
         config_path.write_text("not [valid toml", encoding="utf-8")
         client = TestClient(create_app())
+        response = client.put(
+            "/api/settings",
+            json={
+                "llm": {"base_url": "https://api.deepseek.com", "model": "deepseek-chat"},
+                "embedding": {"base_url": "http://127.0.0.1:11434/v1", "model": "bge-m3"},
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["invalid_config_file_overwritten"] is True
+        stored = load_config(config_path)
+        assert stored.llm.model == "deepseek-chat"
+        assert stored.embedding.model == "bge-m3"
+        assert "not [valid toml" not in config_path.read_text(encoding="utf-8")
+
+    def test_valid_save_does_not_flag_overwrite(self, config_path: Path) -> None:
+        client = TestClient(create_app())
         response = client.put("/api/settings", json={"llm": {"model": "m"}})
+        assert response.status_code == 200
+        assert response.json()["invalid_config_file_overwritten"] is False
+
+    def test_invalid_sections_config_is_also_recoverable(self, config_path: Path) -> None:
+        """段结构非法（类型错）同属不可解析：一样允许保存覆盖，不要求手工修文件。"""
+        config_path.write_text("[llm]\nbase_url = 12345\n", encoding="utf-8")
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"llm": {"model": "m"}})
+        assert response.status_code == 200
+        assert response.json()["invalid_config_file_overwritten"] is True
+
+    def test_settings_reads_config_file_once_per_request(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """单次设置请求只读一次配置文件(契约:同一响应内不得有两套事实源)。
+
+        视图取本次合并结果、回退判定另读一次文件时,两者可静默不一致。
+
+        两个绑定都要换:`from siku.model_supply import load_config` 让 `api.app` 与
+        `model_supply` 各持一份名字,而 `llm_env_fallback_channel` 内部解析的是
+        `model_supply` 那一份——只换 `siku.api.app.load_config` 的用例钉不住这条 MUST
+        (把调用改回不传 `config`,它照样绿)。
+        """
+        save_config(
+            ModelSupplyConfig(
+                llm=ChannelValues(
+                    base_url="https://api.deepseek.com",
+                    model="deepseek-chat",
+                    api_key=SecretStr(SECRET),
+                )
+            )
+        )
+        real = load_config
+        reads = {"n": 0}
+
+        def counted(*args: object, **kwargs: object) -> ModelSupplyConfig:
+            reads["n"] += 1
+            return real(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr("siku.api.app.load_config", counted)
+        monkeypatch.setattr("siku.model_supply.load_config", counted)
+        client = TestClient(create_app())
+
+        reads["n"] = 0
+        assert client.put("/api/settings", json={"embedding": {"model": "m"}}).status_code == 200
+        assert reads["n"] == 1, f"PUT 只应读一次配置文件,实际 {reads['n']} 次"
+
+        reads["n"] = 0
+        assert client.get("/api/settings").status_code == 200
+        assert reads["n"] == 1, f"GET 只应读一次配置文件,实际 {reads['n']} 次"
+
+    def test_corrupt_config_get_gives_overwritable_cause_code(self, config_path: Path) -> None:
+        """坏文件的读取面：503 但成因码可辨为「可覆盖」，与读不到分道。
+
+        读面刻意不做容忍式 200：请求期每请求现读该文件，容忍会让设置页的就绪状态
+        与真实请求结果分叉（误就绪比死路更糟）。自救入口由 code 精确驱动即可。
+        """
+        config_path.write_text("not [valid toml", encoding="utf-8")
+        client = TestClient(create_app())
+        response = client.get("/api/settings")
         assert response.status_code == 503
-        assert response.json()["code"] == "model_not_available"
-        assert config_path.read_text(encoding="utf-8") == "not [valid toml"
+        payload = response.json()
+        assert payload["code"] == "invalid_config_file"
+        message = payload["message"]
+        assert "不可解析" in message
+        assert "设置" in message
+        assert "删除" in message
+        # 双面文案红线：HTTP 面不出现命令行教程与配置文件路径
+        assert "--embedding-base-url" not in message
+        assert "config.toml" not in message
+        # 自救闭环：同一客户端保存即覆盖，且下一次读取恢复正常
+        saved = client.put("/api/settings", json={"llm": {"model": "m"}})
+        assert saved.status_code == 200
+        assert saved.json()["invalid_config_file_overwritten"] is True
+        assert client.get("/api/settings").status_code == 200
+
+    def test_invalid_protocol_still_blocks_write_without_overwrite(self, config_path: Path) -> None:
+        """越界 protocol 仍可写（文件本身可解析）：不得被「不可解析」分支误吞。"""
+        config_path.write_text('[llm]\nprotocol = "gemini-native"\n', encoding="utf-8")
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"llm": {"protocol": "gemini-native"}})
+        assert response.status_code == 422
+        assert config_path.read_text(encoding="utf-8") == '[llm]\nprotocol = "gemini-native"\n'
+
+    def test_put_with_invalid_env_protocol_reports_written_not_500(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """env 层的越界协议毒化响应装配：落盘是既成事实，响应既不能 500 也不能谎报保存失败。
+
+        写入前的 `validate_channel_protocols` 只管文件层，而响应里的就绪判定含 env/cli 层
+        （与 GET、请求期同源），所以「文件已写入 + 判定抛 ProtocolConfigError」是可达状态；
+        此前它落在 try 之外，由全局兜底返 500 `internal_error`。
+        """
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"embedding": {"model": "bge-m3"}})
+        assert response.status_code != 500
+        payload = response.json()
+        assert payload["code"] == "invalid_settings"
+        assert "已写入" in payload["message"]
+        assert "openai-chat" in payload["message"]
+        # 本次提交确实落盘（不是被回滚后谎报）
+        assert 'model = "bge-m3"' in config_path.read_text(encoding="utf-8")
+        # 与 GET 面同码同指引，只差「已写入」那句事实
+        again = client.get("/api/settings")
+        assert again.status_code == 503
+        assert again.json()["code"] == "invalid_settings"
+
+    def test_degraded_put_over_corrupt_file_discloses_overwrite(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """坏文件叠加 env 层协议越界：响应虽是 503，覆盖自救确实发生了——两个事实都得进文案，
+        否则用户以为自救没生效而反复重试。"""
+        config_path.write_text("not [valid toml", encoding="utf-8")
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app())
+        response = client.put("/api/settings", json={"embedding": {"model": "m"}})
+        assert response.status_code == 503
+        message = response.json()["message"]
+        assert "已写入" in message
+        assert "已被本次保存覆盖" in message
+        assert 'model = "m"' in config_path.read_text(encoding="utf-8")
+
+    def test_degraded_put_keeps_rebuild_warning(
+        self,
+        config_path: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """降级响应不得静默丢掉成功路径本该携带的重建告警：错误体只有 `{code,message}`
+        两个字段（既有契约不可扩），所以该事实进 message 文本。"""
+        write_note(tmp_path / "vault")
+        sync_index(
+            tmp_path / "vault",
+            tmp_path / "data",
+            FakeEmbeddingProvider(dimensions=4, model_id="model-a"),
+        )
+        save_config(ModelSupplyConfig(embedding=EMBED_CHANNEL_A))
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        client = TestClient(create_app(data_dir=tmp_path / "data"))
+        response = client.put("/api/settings", json={"embedding": EMBED_CHANNEL_B_VALUES})
+        assert response.status_code == 503
+        assert response.json()["code"] == "invalid_settings"
+        message = response.json()["message"]
+        assert "model-a" in message
+        assert "model-b" in message
+        assert "全量重建" in message
 
     def test_request_body_never_reaches_logs(
         self, config_path: Path, caplog: pytest.LogCaptureFixture
@@ -443,12 +829,84 @@ class TestSettingsTestEndpoint:
             }
             assert payload["latency_ms"] >= 0
 
+    def test_probe_unreadable_config_says_file_not_channel(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """探测面不得把「文件读不出」顶替成「通道配置不完整」。
+
+        同一份通道配置可能好好的,只是文件当前读不出来——文案若说「请检查该通道的
+        base_url、model 与 api_key」,用户会去改一个并不缺字段的表单。
+        """
+        config_path.write_text(
+            '[embedding]\nbase_url = "http://e.example/v1"\nmodel = "m"\n', encoding="utf-8"
+        )
+        config_path.chmod(0o000)
+        try:
+            client = TestClient(create_app())
+            response = client.post("/api/settings/test", json={"channel": "embedding"})
+        finally:
+            config_path.chmod(0o600)
+        assert response.status_code == 503
+        assert response.json()["code"] == "config_file_unreadable"
+        message = response.json()["message"]
+        assert "无法读取" in message
+        assert "检查该通道的 base_url" not in message
+
+    def test_probe_corrupt_config_gives_overwritable_cause_code(self, config_path: Path) -> None:
+        """探测面的「内容不可解析」必须给同一个成因码：分道要在所有映射点一致生效，
+        只改读取/写入两面而探测面仍落 `model_not_available` 就是第二套口径。"""
+        config_path.write_text("not [valid toml", encoding="utf-8")
+        client = TestClient(create_app())
+        response = client.post("/api/settings/test", json={"channel": "embedding"})
+        assert response.status_code == 503
+        assert response.json()["code"] == "invalid_config_file"
+        assert "重新填写并保存" in response.json()["message"]
+
     def test_probe_unconfigured_channel_returns_guidance(self, config_path: Path) -> None:
         """embedding 通道未配置（留空 = 无供给）：探测返回既有配置指引语义。"""
         client = TestClient(create_app())
         response = client.post("/api/settings/test", json={"channel": "embedding"})
         assert response.status_code == 503
         assert response.json()["code"] == "model_not_available"
+
+    def test_probe_uses_form_protocol_for_llm_before_save(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """决议 #5：保存前点测试，按表单协议探测（Anthropic 分支场景）。"""
+
+        seen: list[tuple[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((str(request.url), request.headers.get("anthropic-version", "")))
+            return httpx.Response(
+                200,
+                json={"content": [{"type": "text", "text": "ok"}]},
+            )
+
+        inject_transport(monkeypatch, httpx.MockTransport(handler))
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/settings/test",
+            json={
+                "channel": "llm",
+                "base_url": "https://api.moonshot.cn/anthropic",
+                "model": "kimi-k2",
+                "api_key": "sk-ant-test",
+                "protocol": "anthropic",
+            },
+        )
+        assert response.status_code == 200
+        assert seen[0][0].endswith("/v1/messages")
+        assert seen[0][1] == "2023-06-01"
+
+    def test_probe_rejects_invalid_form_protocol(self, config_path: Path) -> None:
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/settings/test",
+            json={"channel": "llm", "protocol": "gemini-native"},
+        )
+        assert response.status_code == 422
+        assert "openai-chat" in response.json()["message"]
 
     def test_probe_uses_effective_config_when_no_override(
         self, config_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -567,3 +1025,93 @@ class TestSettingsTestEndpoint:
         )
         assert response.status_code == 422
         assert response.json()["code"] == "invalid_settings"
+
+
+class TestReadinessCountsCliLayer:
+    """就绪判定必须计入 serve 的 CLI 层（change fix-model-supply-error-surfacing
+    决议 #4）：请求期真实可用而 GET 报未配置，是 docstring 明令禁止的第二套事实源。"""
+
+    def test_embedding_cli_layer_makes_readiness_ready(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIKU_LLM_API_KEY", "env-key")
+        client = TestClient(
+            create_app(
+                embedding_supply=ChannelValues(base_url="http://127.0.0.1:11434/v1", model="bge-m3")
+            )
+        )
+        payload = client.get("/api/settings").json()
+        assert payload["ask_readiness"] == {"ready": True, "missing": []}
+
+    def test_embedding_cli_layer_ready_on_put_response_too(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SIKU_LLM_API_KEY", "env-key")
+        client = TestClient(
+            create_app(
+                embedding_supply=ChannelValues(base_url="http://127.0.0.1:11434/v1", model="bge-m3")
+            )
+        )
+        response = client.put("/api/settings", json={"llm": {"model": "m"}})
+        assert response.status_code == 200
+        assert response.json()["ask_readiness"]["ready"] is True
+
+    def test_llm_cli_layer_removes_key_from_missing(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLI 层给 LLM 端点 + api_key_env（serve 的 --llm-base-url/--api-key-env）：
+        文件层与 env 层皆空时判定同样不得报 llm.api_key。"""
+        monkeypatch.setenv("SERVE_LLM_KEY", "sk-from-cli-env")
+        client = TestClient(
+            create_app(
+                llm_supply=ChannelValues(
+                    base_url="http://127.0.0.1:8787/v1",
+                    model="alias",
+                    api_key_env="SERVE_LLM_KEY",
+                ),
+                embedding_supply=ChannelValues(
+                    base_url="http://127.0.0.1:11434/v1", model="bge-m3"
+                ),
+            )
+        )
+        assert client.get("/api/settings").json()["ask_readiness"]["missing"] == []
+
+    def test_cli_layer_partial_embedding_still_reports_missing(self, config_path: Path) -> None:
+        client = TestClient(
+            create_app(
+                llm_supply=ChannelValues(api_key=SecretStr(SECRET)),
+                embedding_supply=ChannelValues(base_url="http://127.0.0.1:11434/v1"),
+            )
+        )
+        payload = client.get("/api/settings").json()
+        assert payload["ask_readiness"]["missing"] == ["embedding.model"]
+
+
+class TestCredentialRejectionCopyOnHttpSurface:
+    """凭证被拒在 HTTP 面不得渲染成「补全 base_url 与 model」（决议 #1 + #2）。"""
+
+    def test_probe_rejection_copy_is_about_credentials(
+        self, config_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, text="invalid api key")
+
+        inject_transport(monkeypatch, httpx.MockTransport(handler))
+        client = TestClient(create_app())
+        response = client.post(
+            "/api/settings/test",
+            json={
+                "channel": "embedding",
+                "base_url": "https://api.example.com/v1",
+                "model": "m",
+                "api_key": SECRET,
+            },
+        )
+        assert response.status_code == 503
+        payload = response.json()
+        assert payload["code"] == "model_not_available"
+        assert "凭证" in payload["message"]
+        assert "embedding" in payload["message"]
+        assert "补全" not in payload["message"]
+        assert "--embedding-base-url" not in payload["message"]
+        assert SECRET not in payload["message"]

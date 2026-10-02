@@ -1,29 +1,63 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  IconAffiliate,
+  IconBook,
+  IconDotsVertical,
+  IconFolder,
+  IconMessageCircle,
+  IconNotebook,
+} from "@tabler/icons-react";
+import { useMediaQuery } from "@mantine/hooks";
+import {
+  Alert,
+  Badge,
+  Button,
+  Container,
+  Group,
+  Loader,
+  Menu,
+  Paper,
+  Stack,
+  Tabs,
+  Textarea,
+} from "@mantine/core";
 import {
   askQuestion,
   type ApiError,
   type AskReadiness,
   type AskResponse,
   checkHealth,
+  getNote,
+  getNotes,
   getSettings,
+  getWikiEntries,
+  getWikiEntry,
 } from "./api";
 import { BrowseView } from "./BrowseView";
 import { GraphView } from "./GraphView";
 import { LibraryView } from "./LibraryView";
 import { SettingsView } from "./SettingsView";
+import { ThemeToggle } from "./ThemeToggle";
 import { WikiView } from "./WikiView";
+import { buildQuestionSuggestions, type QuestionSuggestion } from "./question-suggestions";
 import "./styles.css";
 
 type HealthState = "loading" | "ready" | "offline";
 type AskState = "idle" | "loading" | "success" | "error";
+type SuggestionState = "idle" | "loading" | "ready" | "empty" | "unavailable";
 type ViewName = "ask" | "browse" | "graph" | "wiki" | "library" | "settings";
 
-const NAV_ITEMS: Array<{ name: ViewName; label: string }> = [
-  { name: "ask", label: "问答" },
-  { name: "browse", label: "浏览" },
-  { name: "graph", label: "图谱" },
-  { name: "wiki", label: "wiki" },
-  { name: "library", label: "资料库" },
+const NAV_ITEMS: Array<{ name: ViewName; label: string; icon?: ReactNode }> = [
+  { name: "ask", label: "问答", icon: <IconMessageCircle size={22} stroke={1.8} aria-hidden="true" /> },
+  { name: "browse", label: "浏览", icon: <IconBook size={22} stroke={1.8} aria-hidden="true" /> },
+  { name: "graph", label: "图谱", icon: <IconAffiliate size={22} stroke={1.8} aria-hidden="true" /> },
+  { name: "wiki", label: "wiki", icon: <IconNotebook size={22} stroke={1.8} aria-hidden="true" /> },
+  { name: "library", label: "资料库", icon: <IconFolder size={22} stroke={1.8} aria-hidden="true" /> },
+  { name: "settings", label: "设置" },
+];
+
+// 移动端底部栏放前五个同级视图，设置走更多菜单（低频配置入口）
+const MOBILE_MORE_NAV: Array<{ name: ViewName; label: string }> = [
   { name: "settings", label: "设置" },
 ];
 
@@ -69,9 +103,14 @@ function isApiError(error: unknown): error is ApiError {
 
 function App() {
   const [view, setView] = useState<ViewName>("ask");
+  const isMobileViewport = useMediaQuery("(max-width: 40rem)", false, {
+    getInitialValueInEffect: false,
+  });
   const [question, setQuestion] = useState("");
   const [health, setHealth] = useState<HealthState>("loading");
   const [readiness, setReadiness] = useState<AskReadiness | null>(null);
+  const [questionSuggestions, setQuestionSuggestions] = useState<QuestionSuggestion[]>([]);
+  const [suggestionState, setSuggestionState] = useState<SuggestionState>("idle");
   const [askState, setAskState] = useState<AskState>("idle");
   const [answer, setAnswer] = useState<AskResponse | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -80,6 +119,11 @@ function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 问答请求序号：实体联动预填时递增，使在途旧回答作废（防旧答案挂新问题下）
   const askSeqRef = useRef(0);
+  // 知识纪元：资料库移除等使派生知识失效的操作递增，触发建议等派生缓存重取
+  const [knowledgeEpoch, setKnowledgeEpoch] = useState(0);
+  const handleKnowledgeInvalidated = useCallback(() => {
+    setKnowledgeEpoch((epoch) => epoch + 1);
+  }, []);
 
   const refreshHealth = useCallback(async () => {
     setHealth("loading");
@@ -94,6 +138,15 @@ function App() {
   useEffect(() => {
     void refreshHealth();
   }, [refreshHealth]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void checkHealth()
+        .then(() => setHealth("ready"))
+        .catch(() => setHealth("offline"));
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // 就绪判定在内核（ask_readiness），问答视图可见时拉取：覆盖初次进入与
   // 从设置页/手工编辑 config.toml 回到问答的场景。获取失败置 null → fail-open
@@ -111,7 +164,80 @@ function App() {
     if (view === "ask") {
       void refreshReadiness();
     }
-  }, [view, refreshReadiness]);
+  }, [view, refreshReadiness, knowledgeEpoch]);
+
+  useEffect(() => {
+    if (view !== "ask") {
+      return;
+    }
+    if (health !== "ready") {
+      setQuestionSuggestions([]);
+      setSuggestionState("idle");
+      return;
+    }
+
+    let current = true;
+    setQuestionSuggestions([]);
+    setSuggestionState("loading");
+
+    const loadSuggestions = async () => {
+      const [notesResult, wikiResult] = await Promise.allSettled([
+        getNotes(1, 5),
+        getWikiEntries(),
+      ]);
+      if (!current) {
+        return;
+      }
+
+      const notesPage = notesResult.status === "fulfilled" ? notesResult.value : null;
+      const notes = Array.isArray(notesPage?.notes) ? notesPage.notes : [];
+      const wikiEntries =
+        wikiResult.status === "fulfilled" && Array.isArray(wikiResult.value?.entries)
+          ? wikiResult.value.entries
+          : [];
+      const [noteDetails, wikiDetails] = await Promise.all([
+        Promise.allSettled(notes.slice(0, 2).map((note) => getNote(note.source_id))),
+        wikiEntries[0] ? Promise.allSettled([getWikiEntry(wikiEntries[0].community_id)]) : [],
+      ]);
+      if (!current) {
+        return;
+      }
+
+      const resolvedNotes = noteDetails.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      const wikiEntry = wikiDetails[0]?.status === "fulfilled" ? wikiDetails[0].value : undefined;
+      const suggestions = buildQuestionSuggestions(notes, resolvedNotes, wikiEntry);
+      const wikiNotGenerated =
+        wikiResult.status === "rejected" &&
+        isApiError(wikiResult.reason) &&
+        wikiResult.reason.code === "wiki_missing";
+      const wikiIsEmpty =
+        (wikiResult.status === "fulfilled" && wikiEntries.length === 0) || wikiNotGenerated;
+      setQuestionSuggestions(suggestions);
+      if (suggestions.length > 0) {
+        setSuggestionState("ready");
+      } else if (
+        notesResult.status === "fulfilled" &&
+        wikiIsEmpty &&
+        notesPage?.total === 0
+      ) {
+        setSuggestionState("empty");
+      } else {
+        setSuggestionState("unavailable");
+      }
+    };
+
+    void loadSuggestions().catch(() => {
+      if (current) {
+        setQuestionSuggestions([]);
+        setSuggestionState("unavailable");
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [health, view]);
 
   useEffect(() => {
     if (focusQuestion && view === "ask") {
@@ -120,8 +246,8 @@ function App() {
     }
   }, [focusQuestion, view]);
 
-  const askEntity = useCallback((name: string) => {
-    setQuestion(`请介绍「${name}」。`);
+  const prefillQuestion = useCallback((nextQuestion: string) => {
+    setQuestion(nextQuestion);
     // 预填新问题必须清掉上一轮答案与状态：旧回答卡挂在下方会被误读为新问题的答案；
     // 递增序号使在途旧回答的响应作废，防止其迟到后挂在新问题下
     askSeqRef.current += 1;
@@ -133,8 +259,21 @@ function App() {
     setFocusQuestion(true);
   }, []);
 
+  const askEntity = useCallback(
+    (name: string) => prefillQuestion(`请介绍「${name}」。`),
+    [prefillQuestion],
+  );
+
   // 未就绪门控：置灰提交 + 引导卡片；readiness 为 null（加载中/获取失败）不阻塞
   const askBlocked = readiness !== null && !readiness.ready;
+  const moreView = MOBILE_MORE_NAV.some((item) => item.name === view);
+  // 移动端可见集 = 全量导航去掉走 ⋮ 菜单的项：增删视图只改两张表，不会静默错位
+  const mobileNavItems = NAV_ITEMS.filter(
+    (item) => !MOBILE_MORE_NAV.some((more) => more.name === item.name),
+  );
+  const visibleNavItems = isMobileViewport ? mobileNavItems : NAV_ITEMS;
+  const serviceStatus = health === "ready" ? "服务正常" : health === "offline" ? "服务未连接" : "检查服务中";
+  const serviceStatusColor = health === "ready" ? "green" : health === "offline" ? "red" : "gray";
 
   const submit = async () => {
     // 置灰之外的第二道校验：拦截 Enter 键等绕过按钮的提交路径
@@ -164,10 +303,13 @@ function App() {
       if (seq !== askSeqRef.current) {
         return;
       }
+      if (!isApiError(caught) || caught.code === "connection_error") {
+        setHealth("offline");
+      }
       setError(
         isApiError(caught)
           ? caught
-          : { code: "connection_error", message: "无法连接本地内核，请确认 siku serve 已启动。" },
+          : { code: "connection_error", message: "无法连接本地服务，请确认 siku serve --with-ui 正在运行。" },
       );
       setAskState("error");
     }
@@ -183,143 +325,234 @@ function App() {
   };
 
   return (
-    <main className="app-shell">
-      <section className="workspace" aria-labelledby="page-title">
-        <header className="page-header">
-          <div>
+    <main className="app-shell" data-view={view}>
+      <Container component="section" size="md" className="workspace" aria-labelledby="page-title">
+        <Stack component="header" className="page-header" gap="sm">
+          <Group className="page-status" justify="space-between" align="center" wrap="nowrap">
             <p className="eyebrow">SIKU / LOCAL KNOWLEDGE</p>
+            <Group className="header-actions" gap="sm" wrap="nowrap">
+              <ThemeToggle />
+              <Badge
+                className="service-status"
+                color={serviceStatusColor}
+                variant="light"
+                aria-live="polite"
+              >
+                {serviceStatus}
+              </Badge>
+              <div className="mobile-more-menu">
+                <Menu position="bottom-end" offset={8} withinPortal>
+                  <Menu.Target>
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      className="mobile-more-trigger"
+                      aria-label="更多视图"
+                      aria-current={moreView ? "page" : undefined}
+                      data-active={moreView || undefined}
+                    >
+                      <IconDotsVertical size={20} stroke={1.8} aria-hidden="true" />
+                    </Button>
+                  </Menu.Target>
+                  <Menu.Dropdown className="mobile-more-dropdown" aria-label="更多视图">
+                    <Menu.Label>其他视图</Menu.Label>
+                    {MOBILE_MORE_NAV.map((item) => (
+                      <Menu.Item key={item.name} onClick={() => setView(item.name)}>
+                        {item.label}
+                      </Menu.Item>
+                    ))}
+                  </Menu.Dropdown>
+                </Menu>
+              </div>
+            </Group>
+          </Group>
+          <div className="page-intro">
             <h1 id="page-title">问问你的知识库</h1>
             <p className="subtitle">从本地事实层检索，再给出可核验的回答。</p>
           </div>
-          <div className={`health health-${health}`} aria-live="polite">
-            <span className="health-dot" aria-hidden="true" />
-            <span>
-              {health === "loading" && "正在连接内核"}
-              {health === "ready" && "内核已连接"}
-              {health === "offline" && "内核未连接"}
-            </span>
-          </div>
-        </header>
+        </Stack>
 
-        <nav className="view-nav" aria-label="视图切换">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.name}
-              type="button"
-              className={view === item.name ? "nav-tab nav-tab-active" : "nav-tab"}
-              aria-pressed={view === item.name}
-              onClick={() => setView(item.name)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        {view === "settings" && (
-          <SettingsView
-            onSaved={(settings) => setReadiness(normalizeReadiness(settings.ask_readiness))}
-          />
+        {health === "offline" && (
+          <Alert className="status-card status-warning service-offline-alert" color="yellow" role="status" title="无法连接本地服务">
+            <p>
+              浏览器页面无法启动本地进程。浏览器模式请在终端运行 <code>siku serve --with-ui</code>；桌面应用可在恢复页选择“重新启动本地服务”。
+            </p>
+            <Button type="button" className="button-secondary" variant="default" onClick={() => void refreshHealth()}>
+              检查连接
+            </Button>
+          </Alert>
         )}
 
-        {view === "library" && <LibraryView />}
+        <Tabs
+          className="view-tabs"
+          value={view}
+          variant="pills"
+          color="siku"
+          onChange={(nextView) => {
+            const selectedView = NAV_ITEMS.find((item) => item.name === nextView);
+            if (selectedView) {
+              setView(selectedView.name);
+            }
+          }}
+        >
+          <nav className="view-navigation" aria-label="视图导航">
+            <Tabs.List className="view-nav" aria-label="视图切换">
+              {visibleNavItems.map((item) => (
+                <Tabs.Tab key={item.name} className="nav-tab" value={item.name}>
+                  {item.icon && <span className="mobile-nav-icon">{item.icon}</span>}
+                  <span>{item.label}</span>
+                </Tabs.Tab>
+              ))}
+            </Tabs.List>
+          </nav>
 
-        {view === "browse" && <BrowseView />}
+          <Tabs.Panel value="settings" className="view-panel">
+            {view === "settings" && (
+              <SettingsView
+                onSaved={(settings) => setReadiness(normalizeReadiness(settings.ask_readiness))}
+              />
+            )}
+          </Tabs.Panel>
 
-        {view === "graph" && <GraphView onAskEntity={askEntity} />}
+          <Tabs.Panel value="library" className="view-panel">
+            {view === "library" && (
+              <LibraryView onKnowledgeInvalidated={handleKnowledgeInvalidated} />
+            )}
+          </Tabs.Panel>
 
-        {view === "wiki" && <WikiView />}
+          <Tabs.Panel value="browse" className="view-panel">
+            {view === "browse" && <BrowseView />}
+          </Tabs.Panel>
 
-        {view === "ask" && (
-        <>
-        <form
+          <Tabs.Panel value="graph" className="view-panel">
+            {view === "graph" && (
+              <GraphView onAskEntity={askEntity} onGoToSettings={() => setView("settings")} />
+            )}
+          </Tabs.Panel>
+
+          <Tabs.Panel value="wiki" className="view-panel">
+            {view === "wiki" && <WikiView onGoToSettings={() => setView("settings")} />}
+          </Tabs.Panel>
+
+          <Tabs.Panel value="ask" className="view-panel">
+            {view === "ask" && (
+          <Stack gap={0}>
+        <Paper
+          component="form"
           className="question-card"
+          withBorder
+          shadow="xs"
+          radius="md"
+          p="lg"
           onSubmit={(event) => {
             event.preventDefault();
             if (askState !== "loading") void submit();
           }}
         >
-          <label htmlFor="question">你的问题</label>
-          <textarea
+          <Textarea
+            label="你的问题"
             ref={inputRef}
             id="question"
             value={question}
             onChange={(event) => setQuestion(event.target.value)}
             onKeyDown={onQuestionKeyDown}
-            placeholder="例如：这个项目的本地优先边界是什么？"
+            placeholder="输入你想了解的内容"
             rows={4}
+            className="question-input"
             aria-describedby={localError ? "question-hint question-error" : "question-hint"}
             aria-invalid={localError !== null}
           />
-          <div className="question-footer">
+          {health === "ready" && (
+            <section className="question-suggestions" aria-label="基于内容的提问建议">
+              <p className="question-suggestions-title">来自你的知识库</p>
+              {(suggestionState === "idle" || suggestionState === "loading") && (
+                <Group className="suggestions-loading" role="status" aria-live="polite" gap="xs">
+                  <Loader size="xs" />
+                  <span className="hint">正在读取推荐问题…</span>
+                </Group>
+              )}
+              {suggestionState === "ready" && (
+                <div className="question-suggestion-list">
+                  {questionSuggestions.map((suggestion) => (
+                    <Button
+                      key={suggestion.question}
+                      type="button"
+                      variant="default"
+                      className="question-suggestion"
+                      aria-label={suggestion.question}
+                      title={suggestion.question}
+                      onClick={() => prefillQuestion(suggestion.question)}
+                    >
+                      {suggestion.label}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {suggestionState === "empty" && (
+                <p className="hint">导入资料或生成 wiki 后，会根据已有内容推荐问题。</p>
+              )}
+              {suggestionState === "unavailable" && (
+                <p className="hint">暂时无法读取推荐内容，你仍可以直接输入问题。</p>
+              )}
+            </section>
+          )}
+          <Group className="question-footer" justify="space-between" align="center" wrap="wrap">
             <p id="question-hint" className="hint">
               {askBlocked ? "配置模型端点后即可提问" : "Enter 提交 · Shift + Enter 换行"}
             </p>
-            <button type="submit" disabled={askState === "loading" || askBlocked}>
+            <Button type="submit" loading={askState === "loading"} disabled={askBlocked}>
               {askState === "loading" ? "检索与回答中…" : "提交问题"}
-            </button>
-          </div>
+            </Button>
+          </Group>
           {localError && (
-            <p id="question-error" className="message message-error" role="alert">
+            <Alert id="question-error" color="red" role="alert" title="无法提交">
               {localError}
-            </p>
+            </Alert>
           )}
-        </form>
+        </Paper>
 
         {askBlocked && readiness && (
-          <div className="status-card status-warning" role="status">
-            <div>
-              <strong>问答尚未就绪——模型端点未配置</strong>
-              <p>
+          <Alert className="status-card status-warning" color="yellow" role="status" title="问答尚未就绪——模型端点未配置">
+              <div>
+                <p>
                 {describeMissing(readiness.missing)}
                 配置保存后免重启生效，回到本页即可提交问题。
               </p>
-            </div>
-            <button
+              </div>
+            <Button
               type="button"
               className="button-secondary"
+              variant="default"
               onClick={() => setView("settings")}
             >
               去设置
-            </button>
-          </div>
-        )}
-
-        {health === "offline" && (
-          <div className="status-card status-warning" role="status">
-            <div>
-              <strong>本地内核暂不可用</strong>
-              <p>请先运行 <code>siku serve --with-ui</code>，然后重试连接。</p>
-            </div>
-            <button type="button" className="button-secondary" onClick={() => void refreshHealth()}>
-              重试连接
-            </button>
-          </div>
-        )}
+            </Button>
+          </Alert>
+            )}
 
         {askState === "loading" && (
-          <div className="answer-card loading-card" role="status" aria-live="polite">
-            <span className="loading-mark" aria-hidden="true" />
-            <div>
-              <strong>正在从本地知识库寻找依据</strong>
-              <p>回答只会基于本次检索到的片段。</p>
-            </div>
-          </div>
+          <Alert
+            className="answer-card loading-card"
+            role="status"
+            aria-live="polite"
+            title="正在从本地知识库寻找依据"
+            icon={<Loader size="sm" aria-hidden="true" />}
+          >
+            <p>回答只会基于本次检索到的片段。</p>
+          </Alert>
         )}
 
         {askState === "error" && error && (
-          <div className="status-card status-error" role="alert">
-            <div>
-              <span className="status-kicker">{error.code}</span>
+          <Alert className="status-card status-error" color="red" role="alert" title={error.code}>
               <strong>{error.message}</strong>
-            </div>
-            <button type="button" className="button-secondary" onClick={() => void submit()}>
+            <Button type="button" className="button-secondary" variant="default" onClick={() => void submit()}>
               重试问答
-            </button>
-          </div>
+            </Button>
+          </Alert>
         )}
 
         {askState === "success" && answer && (
-          <article className="answer-card" aria-labelledby="answer-title">
+          <Paper component="article" withBorder shadow="xs" radius="md" p="xl" className="answer-card" aria-labelledby="answer-title">
             <div className="answer-heading">
               <div>
                 <p className="eyebrow">ANSWER</p>
@@ -363,11 +596,13 @@ function App() {
                 request_id：{answer.request_id}
               </span>
             </footer>
-          </article>
+          </Paper>
         )}
-        </>
+          </Stack>
         )}
-      </section>
+          </Tabs.Panel>
+        </Tabs>
+      </Container>
     </main>
   );
 }

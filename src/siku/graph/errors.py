@@ -21,6 +21,17 @@ class LlmProviderError(GraphError):
     """LLM 服务调用失败（认证失败、服务端错误等）的基类。"""
 
 
+class LlmAuthError(LlmProviderError):
+    """LLM 端点拒绝了当前凭证（HTTP 401/403）。
+
+    与「服务端错误/响应不可解析」分型：前者的出路是核对 key 与端点是否属同一
+    厂商同一账号，后者是查协议与端点形状。文案层据子类区分，既有
+    `except LlmProviderError` 处理器行为零回退（change
+    `fix-model-supply-error-surfacing` 决议 #1）。上游响应体不回显，避免凭证片段
+    进入错误面。
+    """
+
+
 class LlmInputTooLongError(LlmProviderError):
     """输入超出模型上下文窗口，需要更小的 chunk 或更长的上下文模型。"""
 

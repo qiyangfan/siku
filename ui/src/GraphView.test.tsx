@@ -1,4 +1,5 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
+import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import React from "react";
@@ -80,6 +81,23 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const settingsReady = {
+  config_path: "/tmp/config.toml",
+  llm: { base_url: null, model: null, api_key_env: null, api_key_set: false, env_overrides: [] },
+  embedding: { base_url: null, model: null, api_key_env: null, api_key_set: false, env_overrides: [] },
+  rerank: { base_url: null, model: null, api_key_env: null, api_key_set: false, env_overrides: [] },
+  ask_readiness: { ready: true, missing: [] },
+  llm_env_fallback: null,
+};
+
+const settingsLlmKeyMissing = {
+  ...settingsReady,
+  ask_readiness: {
+    ready: false,
+    missing: ["llm.api_key", "embedding.base_url", "embedding.model"],
+  },
+};
+
 describe("图谱视图", () => {
   it("加载聚合统计与概览画布", async () => {
     mockFetchByRoutes({
@@ -87,7 +105,7 @@ describe("图谱视图", () => {
       "/api/graph/overview": () => jsonResponse(overview),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     expect(await screen.findByTestId("graph-canvas-stub")).toBeInTheDocument();
     expect(screen.getByText(/全图 2 个实体、1 条关系，1 个社区/)).toBeInTheDocument();
   });
@@ -105,7 +123,7 @@ describe("图谱视图", () => {
     });
     const user = userEvent.setup();
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     await screen.findByTestId("graph-canvas-stub");
 
     await user.type(screen.getByLabelText("搜索实体"), "alpha");
@@ -134,7 +152,7 @@ describe("图谱视图", () => {
     const onAskEntity = vi.fn();
     const user = userEvent.setup();
 
-    render(<GraphView onAskEntity={onAskEntity} />);
+    render(<GraphView onAskEntity={onAskEntity} onGoToSettings={vi.fn()} />);
     await screen.findByTestId("graph-canvas-stub");
 
     await user.type(screen.getByLabelText("搜索实体"), "alpha");
@@ -168,10 +186,11 @@ describe("图谱视图", () => {
           : jsonResponse(stats);
       },
       "/api/graph/overview": () => jsonResponse(overview),
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/graph": () => jsonResponse(buildReport),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "构建图谱" }));
@@ -213,10 +232,11 @@ describe("图谱视图", () => {
           : jsonResponse(emptyStats);
       },
       "/api/graph/overview": () => jsonResponse(emptyOverview),
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/graph": () => jsonResponse(buildReport),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "构建图谱" }));
@@ -241,7 +261,7 @@ describe("图谱视图", () => {
         ),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "构建图谱" }));
@@ -266,10 +286,11 @@ describe("图谱视图", () => {
     mockFetchByRoutes({
       "/api/graph/stats": () => jsonResponse(stats),
       "/api/graph/overview": () => jsonResponse(overview),
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/graph": () => jsonResponse(buildReport),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     await screen.findByTestId("graph-canvas-stub");
 
     await user.click(screen.getByRole("button", { name: "更新图谱" }));
@@ -290,7 +311,7 @@ describe("图谱视图", () => {
         ),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     await screen.findByTestId("graph-canvas-stub");
 
     await user.click(screen.getByRole("button", { name: "更新图谱" }));
@@ -325,7 +346,7 @@ describe("图谱视图", () => {
         }),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     await screen.findByTestId("graph-canvas-stub");
 
     await user.click(screen.getByRole("button", { name: "更新图谱" }));
@@ -358,10 +379,11 @@ describe("图谱视图", () => {
           : jsonResponse({ code: "internal_error", message: "服务内部错误。" }, false);
       },
       "/api/graph/overview": () => jsonResponse(overview),
+      "/api/settings": () => jsonResponse(settingsReady),
       "/api/graph": () => jsonResponse(buildReport),
     });
 
-    render(<GraphView onAskEntity={vi.fn()} />);
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
     expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "构建图谱" }));
@@ -371,5 +393,58 @@ describe("图谱视图", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("服务内部错误。")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试读取" })).toBeInTheDocument();
+  });
+
+  it("空态缺 LLM key 时展示缺项说明与去设置入口，且不拦截构建按钮", async () => {
+    const onGoToSettings = vi.fn();
+    const user = userEvent.setup();
+    mockFetchByRoutes({
+      "/api/graph/stats": () =>
+        jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false),
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/settings": () => jsonResponse(settingsLlmKeyMissing),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={onGoToSettings} />);
+    expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
+
+    expect(
+      await screen.findByText(/构建需要调用 LLM 通道，当前其 API key 未配置/),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "去设置" }));
+    expect(onGoToSettings).toHaveBeenCalledTimes(1);
+    // 信息层不门控：构建按钮保持可用
+    expect(screen.getByRole("button", { name: "构建图谱" })).toBeEnabled();
+  });
+
+  it("空态就绪时说明可直接构建且不出现去设置入口", async () => {
+    mockFetchByRoutes({
+      "/api/graph/stats": () =>
+        jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false),
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/settings": () => jsonResponse(settingsReady),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
+    expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
+
+    expect(await screen.findByText(/模型通道已就绪：点击下方按钮即可开始/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "去设置" })).not.toBeInTheDocument();
+  });
+
+  it("空态就绪状态读取失败时静默省略提示，不影响主行动", async () => {
+    mockFetchByRoutes({
+      "/api/graph/stats": () =>
+        jsonResponse({ code: "graph_missing", message: "图谱尚未构建。" }, false),
+      "/api/graph/overview": () => jsonResponse(overview),
+      "/api/settings": () => jsonResponse({ code: "internal_error", message: "服务内部错误。" }, false),
+    });
+
+    render(<GraphView onAskEntity={vi.fn()} onGoToSettings={vi.fn()} />);
+    expect(await screen.findByText("图谱尚未构建")).toBeInTheDocument();
+
+    expect(screen.queryByText(/模型通道已就绪/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "去设置" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "构建图谱" })).toBeEnabled();
   });
 });

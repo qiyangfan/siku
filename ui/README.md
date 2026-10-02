@@ -17,9 +17,9 @@ TypeScript + React 前端与 Tauri 2 桌面壳（`src-tauri/`）。
 
 Tauri 壳只承载窗口与 sidecar 生命周期：选择 loopback 动态端口 → 启动
 `siku-sidecar serve …`（绝对路径 + `--watch-stdin`）→ 轮询 `/api/health` →
-成功后窗口导航到 sidecar 同源提供的 UI（相对 `/api` 请求零改动）；启动失败在本地
-壳状态页展示可行动的中文提示。Rust 不实现任何业务逻辑；问答页（`http://127.0.0.1`）
-不在 capabilities 授权范围内，天然没有 IPC 通道。
+成功后窗口导航到 sidecar 同源提供的 UI（相对 `/api` 请求零改动）；启动失败或运行期
+sidecar 中断时，窗口返回本地壳状态页，由用户选择重新启动。Rust 不实现任何业务逻辑；
+问答页（`http://127.0.0.1`）不在 capabilities 授权范围内，天然没有 IPC 通道。
 
 ```bash
 # 壳开发/构建的前置：ui/dist（npm run build）与

@@ -42,6 +42,7 @@ def _clean_siku_supply_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.setattr(
         "siku.model_supply.config_file_path", lambda: Path("/nonexistent/config.toml")
     )

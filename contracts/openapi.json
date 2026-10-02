@@ -360,6 +360,45 @@
         }
       }
     },
+    "/api/library/remove": {
+      "post": {
+        "summary": "Library Remove",
+        "description": "单来源确认移除：真实来源 ID + 显式确认；请求不接受文件路径。",
+        "operationId": "library_remove_api_library_remove_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryRemoveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/library/ingest": {
       "post": {
         "summary": "Library Ingest",
@@ -1005,7 +1044,7 @@
     "/api/settings": {
       "get": {
         "summary": "Read Settings",
-        "description": "返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。",
+        "description": "返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。\n\n错误面的 `code` 按成因分道（`invalid_config_file` / `config_file_unreadable`），\n设置页据此决定是否给出「覆盖自救」入口：只有「确证不可解析」能由保存修复，\n内容未知（权限/IO）不得覆盖。读面刻意不做容忍式 200——请求期每请求现读该文件，\n容忍会让就绪状态与真实结果分叉（误就绪比死路更糟）。",
         "operationId": "read_settings_api_settings_get",
         "responses": {
           "200": {
@@ -1022,7 +1061,7 @@
       },
       "put": {
         "summary": "Write Settings",
-        "description": "校验并合并写入 config.toml（原子 0600），失效检索装配缓存后返回新视图。\n\n写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的\n默认工厂每请求现解析。请求体（含 key）不进日志。",
+        "description": "校验并合并写入 config.toml（原子 0600），失效检索装配缓存后返回新视图。\n\n写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的\n默认工厂每请求现解析。请求体（含 key）不进日志。\n\n坏文件自救（change fix-model-supply-error-surfacing 决议 #3）：现有配置\n**确证对模型供给无效**（坏 TOML / 非法段 / 字段取值不在允许范围）时以空的文件层\n为基底继续合并本次提交并原子替换，响应显式告知覆盖事实——否则「读就抛」会把\n「重新保存覆盖坏文件」这条唯一可由桌面用户操作的出路彻底堵死。仅因权限/IO\n读不到文件时不覆盖（内容未知，覆盖即丢用户配置）。",
         "operationId": "write_settings_api_settings_put",
         "requestBody": {
           "content": {
@@ -1330,6 +1369,17 @@
               }
             ],
             "title": "Api Key Env"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
           }
         },
         "type": "object",
@@ -1371,6 +1421,17 @@
             ],
             "title": "Api Key Env"
           },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
+          },
           "api_key_set": {
             "type": "boolean",
             "title": "Api Key Set"
@@ -1392,7 +1453,7 @@
           "env_overrides"
         ],
         "title": "ChannelSettingsView",
-        "description": "单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。"
+        "description": "单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。\n\n`protocol` 仅 LLM 通道消费；embedding/rerank 正常配置下为 None，\n手改文件的越界值在解析/提交校验期报错，不在视图层吞掉。"
       },
       "GraphEdgeResponse": {
         "properties": {
@@ -1845,7 +1906,8 @@
               "ingest",
               "rebuild",
               "scan",
-              "purge"
+              "purge",
+              "remove"
             ],
             "title": "Kind"
           },
@@ -1925,7 +1987,7 @@
           "error"
         ],
         "title": "LibraryJobResponse",
-        "description": "摄取/重建/扫描/清理任务的进度快照（HTTP 轮询读取）。"
+        "description": "摄取/重建/扫描/清理/移除任务的进度快照（HTTP 轮询读取）。"
       },
       "LibraryPurgeRequest": {
         "properties": {
@@ -1950,6 +2012,25 @@
         "type": "object",
         "title": "LibraryRebuildRequest",
         "description": "全量重建请求：必须显式携带确认标记。"
+      },
+      "LibraryRemoveRequest": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id"
+        ],
+        "title": "LibraryRemoveRequest",
+        "description": "单来源确认移除请求：真实来源 ID + 显式确认；不接受文件路径。"
       },
       "LibraryResponse": {
         "properties": {
@@ -2096,6 +2177,22 @@
             "type": "string",
             "title": "Source Hash"
           },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "removable": {
+            "type": "boolean",
+            "title": "Removable",
+            "default": false
+          },
           "ingest_status": {
             "type": "string",
             "enum": [
@@ -2104,7 +2201,8 @@
               "pending",
               "ignored",
               "missing",
-              "superseded"
+              "superseded",
+              "removing"
             ],
             "title": "Ingest Status"
           },
@@ -2170,6 +2268,35 @@
         ],
         "title": "LibrarySourcesResponse",
         "description": "来源目录登记清单，按路径排序。"
+      },
+      "LlmEnvFallbackView": {
+        "properties": {
+          "vendor": {
+            "type": "string",
+            "title": "Vendor"
+          },
+          "base_url": {
+            "type": "string",
+            "title": "Base Url"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "api_key_env": {
+            "type": "string",
+            "title": "Api Key Env"
+          }
+        },
+        "type": "object",
+        "required": [
+          "vendor",
+          "base_url",
+          "model",
+          "api_key_env"
+        ],
+        "title": "LlmEnvFallbackView",
+        "description": "LLM 通道厂商环境变量回退的端点描述（不含凭证明文）。\n\n`vendor` 恒为 `dashscope`（当前唯一回退名单）；四元组与请求期解析同源，\nUI 据此说明「回退生效」的落差，避免空表单被误读为完全未配置。"
       },
       "NoteDetailResponse": {
         "properties": {
@@ -2432,6 +2559,16 @@
           },
           "ask_readiness": {
             "$ref": "#/components/schemas/AskReadinessView"
+          },
+          "llm_env_fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LlmEnvFallbackView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -2501,6 +2638,17 @@
               }
             ],
             "title": "Api Key Env"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protocol"
           }
         },
         "type": "object",
@@ -2589,12 +2737,27 @@
           "ask_readiness": {
             "$ref": "#/components/schemas/AskReadinessView"
           },
+          "llm_env_fallback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LlmEnvFallbackView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "warnings": {
             "items": {
               "type": "string"
             },
             "type": "array",
             "title": "Warnings"
+          },
+          "invalid_config_file_overwritten": {
+            "type": "boolean",
+            "title": "Invalid Config File Overwritten",
+            "default": false
           }
         },
         "type": "object",
@@ -2607,7 +2770,7 @@
           "warnings"
         ],
         "title": "SettingsWriteResponse",
-        "description": "PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。"
+        "description": "PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。\n\n`invalid_config_file_overwritten=True` 表示本次保存前配置文件不可解析\n（内容损坏），系统以空的文件层为基底合并本次提交并原子替换了该文件——\n这是「坏文件自救」的显式告知，不静默丢内容（原文件既然不可解析，其可读\n配置量本就为零）。正常写入恒为 False。"
       },
       "ValidationError": {
         "properties": {

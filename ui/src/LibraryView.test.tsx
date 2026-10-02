@@ -1,4 +1,5 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LibraryView } from "./LibraryView";
@@ -57,7 +58,8 @@ describe("资料库视图", () => {
     render(<LibraryView />);
 
     expect(await screen.findByText("资料库还是空的")).toBeInTheDocument();
-    expect(screen.getByText(/支持格式：/)).toHaveTextContent("PDF、Word、PPT、Excel、EPUB、HTML、Markdown");
+    expect(screen.getByText(/支持格式：/)).toHaveTextContent("PDF（需含文字层）");
+    expect(screen.getByText(/扫描件 PDF 请先/)).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "资料库来源清单" })).not.toBeInTheDocument();
   });
 
@@ -129,10 +131,10 @@ describe("资料库视图", () => {
     await screen.findByText("资料库还是空的");
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
 
-    const dialog = screen.getByRole("dialog");
+    const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/全量重建/);
     await user.click(withinDialog(dialog, "取消"));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(
       fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/library/rebuild")),
     ).toHaveLength(0);
@@ -168,7 +170,7 @@ describe("资料库视图", () => {
 
     await screen.findByRole("list", { name: "资料库来源清单" });
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
-    await user.click(withinDialog(screen.getByRole("dialog"), "确认重建"));
+    await user.click(withinDialog(await screen.findByRole("dialog"), "确认重建"));
 
     expect(await screen.findByText("索引全量重建完成。")).toBeInTheDocument();
   });
@@ -196,7 +198,7 @@ describe("资料库视图", () => {
 
     await screen.findByText("资料库还是空的");
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
-    await user.click(withinDialog(screen.getByRole("dialog"), "确认重建"));
+    await user.click(withinDialog(await screen.findByRole("dialog"), "确认重建"));
 
     expect(
       await screen.findByText("已建索引的模型配置与当前不一致：请执行全量重建。"),
@@ -413,18 +415,298 @@ describe("来源目录同步", () => {
 
     const list = await screen.findByRole("list", { name: "资料库来源清单" });
     expect(list).toHaveTextContent("来源缺失");
-    await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
+    await user.click(screen.getByRole("button", { name: "清理失效文档（2）" }));
 
-    const dialog = screen.getByRole("dialog");
-    expect(dialog).toHaveTextContent("确认清理 2 项已标记文档？");
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("确认清理 2 项失效文档？");
     await user.click(withinDialog(dialog, "取消"));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(
       fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/library/purge"),
     ).toHaveLength(0);
 
-    await user.click(screen.getByRole("button", { name: "清理已标记文档（2）" }));
-    await user.click(withinDialog(screen.getByRole("dialog"), "确认清理"));
-    expect(await screen.findByText("清理完成：已物理移除 2 项标记文档。")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "清理失效文档（2）" }));
+    await user.click(withinDialog(await screen.findByRole("dialog"), "确认清理"));
+    expect(await screen.findByText("清理完成：已物理移除 2 项失效文档。")).toBeInTheDocument();
+  });
+
+  it("清理失效文档按钮带危险配色，可清零时禁用并有释义 tooltip", async () => {
+    mockRoutes({ "/api/library": () => listingWithMarked });
+    render(<LibraryView />);
+
+    const button = await screen.findByRole("button", { name: "清理失效文档（2）" });
+    expect(button).toHaveClass("button-danger");
+    expect(button).toHaveAccessibleDescription(/来源缺失/);
+
+    mockRoutes({ "/api/library": () => emptyListing });
+    cleanup();
+    render(<LibraryView />);
+    const idleButton = await screen.findByRole("button", { name: "清理失效文档" });
+    expect(idleButton).toBeDisabled();
+  });
+
+  it("拖拽文件到导入区按点击选择同路发起摄取", async () => {
+    const runningJob = {
+      job_id: "job-drop",
+      kind: "ingest",
+      state: "running",
+      phase: "ingesting",
+      total: 1,
+      done: 0,
+      failed: 0,
+      current: "拖入.pdf",
+      items: [],
+      error: null,
+    };
+    mockRouter([
+      () => emptyListing,
+      (url, method, init) => {
+        expect(url).toBe("/api/library/ingest");
+        expect(method).toBe("POST");
+        expect(initBodyHasFile(init)).toBe(true);
+        return runningJob;
+      },
+    ]);
+    render(<LibraryView />);
+
+    await screen.findByText("资料库还是空的");
+    const dropzone = screen.getByRole("button", { name: /导入文件：点击选择或拖入文档/ });
+    const file = new File(["pdf-bytes"], "拖入.pdf", { type: "application/pdf" });
+    fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
+
+    expect(await screen.findByText(/正在摄取/)).toBeInTheDocument();
+  });
+
+  it("导入区拖拽悬停有高亮反馈，拖离后消退", async () => {
+    mockRouter([() => emptyListing]);
+    render(<LibraryView />);
+
+    const dropzone = await screen.findByRole("button", { name: /导入文件：点击选择或拖入文档/ });
+    expect(dropzone).not.toHaveClass("library-dropzone-active");
+    fireEvent.dragOver(dropzone);
+    expect(dropzone).toHaveClass("library-dropzone-active");
+    fireEvent.dragLeave(dropzone);
+    expect(dropzone).not.toHaveClass("library-dropzone-active");
+  });
+
+  it("来源清单状态徽标带可读释义 tooltip", async () => {
+    mockRoutes({ "/api/library": () => listingWithMarked });
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    const missingBadge = within(list).getByText("来源缺失");
+    expect(missingBadge).toHaveAccessibleDescription(/原件文件已不存在/);
+    const supersededBadge = within(list).getByText("已被替代");
+    expect(supersededBadge).toHaveAccessibleDescription(/已被替代/);
+  });
+});
+
+const removableSources = {
+  sources: [
+    {
+      name: "手动笔记.md",
+      path: "attachments/manual--c1d2e3f4a5b6.md",
+      source_hash: "c".repeat(64),
+      source_id: "c1d2e3f4a5b6",
+      removable: true,
+      ingest_status: "ingested",
+      index_status: "indexed",
+      origin_path: null,
+    },
+    {
+      name: "同步文档.md",
+      path: "attachments/synced--d2e3f4a5b6c1.md",
+      source_hash: "d".repeat(64),
+      source_id: "d2e3f4a5b6c1",
+      removable: false,
+      ingest_status: "ingested",
+      index_status: "indexed",
+      origin_path: "/feed/同步文档.md",
+    },
+  ],
+};
+
+describe("单项移除", () => {
+  it("仅服务端标记可移除的手动条目提供移除操作；同步条目不误导", async () => {
+    mockRouter([() => removableSources]);
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    expect(
+      within(list).getByRole("button", { name: "从资料库移除" }),
+    ).toBeInTheDocument();
+    // 同步管理的条目（removable=false）不暴露手动移除
+    expect(
+      within(list).getAllByRole("button", { name: "从资料库移除" }),
+    ).toHaveLength(1);
+  });
+
+  it("确认框说明保留外部原件与图谱/Wiki 重建；取消不产生写入", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockRouter([() => removableSources]);
+    render(<LibraryView />);
+
+    await screen.findByRole("list", { name: "资料库来源清单" });
+    await user.click(screen.getByRole("button", { name: "从资料库移除" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/手动笔记\.md/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/外部原件不会被删除/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/图谱与 Wiki/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    // 取消后回到清单：行内操作仍在，模态随过渡关闭
+    expect(screen.getByRole("button", { name: "从资料库移除" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const calls = fetchSpy.mock.calls.filter(
+      ([input]) => String(input).includes("/api/library/remove"),
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("确认后跟踪移除任务，成功后刷新清单并通知知识缓存失效", async () => {
+    const user = userEvent.setup();
+    const invalidated = vi.fn();
+    const runningJob = {
+      job_id: "job-r",
+      kind: "remove",
+      state: "running",
+      phase: "purging",
+      total: 1,
+      done: 0,
+      failed: 0,
+      current: "c1d2e3f4a5b6",
+      items: [],
+      error: null,
+    };
+    const doneJob = {
+      ...runningJob,
+      state: "succeeded",
+      done: 1,
+      current: null,
+      items: [
+        {
+          name: "手动笔记.md",
+          path: "attachments/manual--c1d2e3f4a5b6.md",
+          status: "removed",
+          detail: null,
+        },
+      ],
+    };
+    mockRouter([
+      () => removableSources,
+      (url, method, init) => {
+        expect(url).toBe("/api/library/remove");
+        expect(method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toEqual({
+          source_id: "c1d2e3f4a5b6",
+          confirmed: true,
+        });
+        return runningJob;
+      },
+      () => doneJob,
+      () => ({ sources: [removableSources.sources[1]] }),
+    ]);
+    render(<LibraryView onKnowledgeInvalidated={invalidated} />);
+
+    await screen.findByRole("list", { name: "资料库来源清单" });
+    await user.click(screen.getByRole("button", { name: "从资料库移除" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "确认移除" }));
+
+    expect(await screen.findByText("正在从资料库移除…")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/已从资料库移除：受管副本与检索内容已清除/),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(/图谱与 Wiki 需重新构建/)).toBeInTheDocument();
+    await waitFor(() => expect(invalidated).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("list", { name: "资料库来源清单" }),
+      ).not.toHaveTextContent("手动笔记.md"),
+    );
+  });
+
+  it("移除未完成的条目呈现警示徽标与重试入口", async () => {
+    const incomplete = {
+      sources: [
+        {
+          name: "移除未完成的资料（c1d2e3f4）",
+          path: "attachments/（已删除，c1d2e3f4）",
+          source_hash: "",
+          source_id: "c1d2e3f4a5b6",
+          removable: true,
+          ingest_status: "removing",
+          index_status: "missing",
+          origin_path: null,
+        },
+      ],
+    };
+    mockRouter([() => incomplete]);
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    expect(within(list).getByText("移除未完成")).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "重试移除" })).toBeInTheDocument();
+  });
+
+  it("移除失败时保留重试状态，不把条目消失当成成功", async () => {
+    const user = userEvent.setup();
+    const failedJob = {
+      job_id: "job-f",
+      kind: "remove",
+      state: "failed",
+      phase: "purging",
+      total: 1,
+      done: 0,
+      failed: 1,
+      current: null,
+      items: [
+        {
+          name: "手动笔记.md",
+          path: "attachments/manual--c1d2e3f4a5b6.md",
+          status: "failed",
+          detail: "索引消减未完成，移除标记已保留；可按同一来源重试。",
+        },
+      ],
+      error: null,
+    };
+    const withRemovingRow = {
+      sources: [
+        { ...removableSources.sources[0], ingest_status: "removing" },
+        removableSources.sources[1],
+      ],
+    };
+    const runningJob = {
+      job_id: "job-f",
+      kind: "remove",
+      state: "running",
+      phase: "purging",
+      total: 1,
+      done: 0,
+      failed: 0,
+      current: "c1d2e3f4a5b6",
+      items: [],
+      error: null,
+    };
+    mockRouter([
+      () => removableSources,
+      () => runningJob,
+      () => failedJob,
+      () => withRemovingRow,
+    ]);
+    render(<LibraryView />);
+
+    await screen.findByRole("list", { name: "资料库来源清单" });
+    await user.click(screen.getByRole("button", { name: "从资料库移除" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "确认移除" }));
+
+    expect(
+      await screen.findByText(/索引消减未完成，移除标记已保留/),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "重试移除" })).toBeInTheDocument(),
+    );
   });
 });

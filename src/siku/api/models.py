@@ -166,11 +166,16 @@ class WikiResponse(BaseModel):
 
 
 class ChannelSettingsView(BaseModel):
-    """单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。"""
+    """单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。
+
+    `protocol` 仅 LLM 通道消费；embedding/rerank 正常配置下为 None，
+    手改文件的越界值在解析/提交校验期报错，不在视图层吞掉。
+    """
 
     base_url: str | None
     model: str | None
     api_key_env: str | None
+    protocol: str | None = None
     api_key_set: bool
     env_overrides: list[str]
 
@@ -186,6 +191,19 @@ class AskReadinessView(BaseModel):
     missing: list[str]
 
 
+class LlmEnvFallbackView(BaseModel):
+    """LLM 通道厂商环境变量回退的端点描述（不含凭证明文）。
+
+    `vendor` 恒为 `dashscope`（当前唯一回退名单）；四元组与请求期解析同源，
+    UI 据此说明「回退生效」的落差，避免空表单被误读为完全未配置。
+    """
+
+    vendor: str
+    base_url: str
+    model: str
+    api_key_env: str
+
+
 class SettingsResponse(BaseModel):
     """三通道文件层掩码视图 + 问答就绪状态（GET /api/settings 响应）。"""
 
@@ -194,6 +212,7 @@ class SettingsResponse(BaseModel):
     embedding: ChannelSettingsView
     rerank: ChannelSettingsView
     ask_readiness: AskReadinessView
+    llm_env_fallback: LlmEnvFallbackView | None = None
 
 
 class ChannelSettingsUpdate(BaseModel):
@@ -206,6 +225,7 @@ class ChannelSettingsUpdate(BaseModel):
     model: str | None = None
     api_key: SecretStr | None = None
     api_key_env: str | None = None
+    protocol: str | None = None
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -217,9 +237,16 @@ class SettingsUpdateRequest(BaseModel):
 
 
 class SettingsWriteResponse(SettingsResponse):
-    """PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。"""
+    """PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。
+
+    `invalid_config_file_overwritten=True` 表示本次保存前配置文件不可解析
+    （内容损坏），系统以空的文件层为基底合并本次提交并原子替换了该文件——
+    这是「坏文件自救」的显式告知，不静默丢内容（原文件既然不可解析，其可读
+    配置量本就为零）。正常写入恒为 False。
+    """
 
     warnings: list[str]
+    invalid_config_file_overwritten: bool = False
 
 
 class SettingsTestRequest(BaseModel):
@@ -230,6 +257,8 @@ class SettingsTestRequest(BaseModel):
     model: str | None = None
     api_key: SecretStr | None = None
     api_key_env: str | None = None
+    # 表单当前协议（仅 llm 通道消费）：保存前即可按所选协议探测（决议 #5）
+    protocol: str | None = None
 
 
 class SettingsTestResponse(BaseModel):
@@ -246,7 +275,19 @@ class LibrarySourceResponse(BaseModel):
     name: str
     path: str
     source_hash: str
-    ingest_status: Literal["ingested", "stale", "pending", "ignored", "missing", "superseded"]
+    # 真实库域来源身份（清单删除/移除入口的定位键）；无法推导时为 null
+    source_id: str | None = None
+    # 服务端判定：仅无同步登记引用的手动来源为 true；客户端不得从路径推断
+    removable: bool = False
+    ingest_status: Literal[
+        "ingested",
+        "stale",
+        "pending",
+        "ignored",
+        "missing",
+        "superseded",
+        "removing",
+    ]
     index_status: Literal["indexed", "stale", "missing"]
     # 来源目录登记的上游路径；手动导入条目为 null（决议 #4）
     origin_path: str | None = None
@@ -268,10 +309,10 @@ class LibraryJobItemResponse(BaseModel):
 
 
 class LibraryJobResponse(BaseModel):
-    """摄取/重建/扫描/清理任务的进度快照（HTTP 轮询读取）。"""
+    """摄取/重建/扫描/清理/移除任务的进度快照（HTTP 轮询读取）。"""
 
     job_id: str
-    kind: Literal["ingest", "rebuild", "scan", "purge"]
+    kind: Literal["ingest", "rebuild", "scan", "purge", "remove"]
     state: Literal["running", "succeeded", "failed", "cancelled"]
     phase: Literal["scanning", "ingesting", "purging", "indexing"]
     total: int
@@ -345,6 +386,13 @@ class LibraryPurgeRequest(BaseModel):
     """清理请求：必须显式携带确认标记（唯一物理删除路径）。"""
 
     confirm: bool = False
+
+
+class LibraryRemoveRequest(BaseModel):
+    """单来源确认移除请求：真实来源 ID + 显式确认；不接受文件路径。"""
+
+    source_id: str
+    confirmed: bool = False
 
 
 class NoteSummaryResponse(BaseModel):

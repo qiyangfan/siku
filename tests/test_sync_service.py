@@ -48,6 +48,7 @@ def make_service(tmp_path: Path) -> tuple[SyncService, SyncRegistry, Path]:
     service = SyncService(
         registry,
         vault=vault,
+        data_dir=tmp_path / "data",
         ingest_handler=ingest_path,
         whitelist=set(extractor_registry()),
     )

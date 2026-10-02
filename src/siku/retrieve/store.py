@@ -207,6 +207,11 @@ class SqliteIndex:
         ).fetchall()
         return {str(key): str(value) for key, value in rows}
 
+    def meta_items(self) -> dict[str, str]:
+        """全部索引元数据键值（消减复用旧元数据时逐键保真复制）。"""
+        rows = self._connection.execute("SELECT key, value FROM index_meta").fetchall()
+        return {str(key): str(value) for key, value in rows}
+
     # ---------- 文档与检索块写入 ----------
 
     def upsert_document(self, document: DocumentRecord) -> None:
@@ -332,6 +337,10 @@ class SqliteIndex:
 
     def chunk_count(self) -> int:
         row = self._connection.execute("SELECT COUNT(*) FROM chunks").fetchone()
+        return int(row[0])
+
+    def document_count(self) -> int:
+        row = self._connection.execute("SELECT COUNT(*) FROM documents").fetchone()
         return int(row[0])
 
     def fts_count(self) -> int:

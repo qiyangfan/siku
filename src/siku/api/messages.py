@@ -3,11 +3,18 @@
 只读读取面（浏览/图谱/wiki 清单与单条）的错误无 CLI 对应路径，但同样集中在
 本模块（map_read_error）成文：全部错误码与文案保持单一映射来源，端点禁止
 内联字面量。错误语义边界见 api/reading.py 模块 docstring。
+
+双面文案（change `fix-model-supply-error-surfacing` 决议 #2）：映射来源仍是同一个
+函数，但按调用面（`surface`）分别成文——HTTP 面的消费者是桌面/WebUI，没有命令行
+语境，指引一律指向「设置」页并说明保存后免重启生效，MUST NOT 出现配置文件路径与
+CLI 参数教程；CLI 面保留文件与参数级指引（缺省 `surface="cli"`，既有文案零漂移）。
+状态码与错误码两面一致，差异只在话术。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from siku.api.reading import (
     GraphEntityNotFoundError,
@@ -22,6 +29,7 @@ from siku.graph.errors import (
     GraphError,
     GraphExtractionError,
     GraphStoreCorruptError,
+    LlmAuthError,
     LlmConnectionError,
     LlmEmptyResponseError,
     LlmInputTooLongError,
@@ -29,8 +37,15 @@ from siku.graph.errors import (
     LlmProviderError,
     LlmRateLimitError,
 )
-from siku.ingest import IngestError
-from siku.model_supply import config_file_path
+from siku.ingest import (
+    ConverterUnavailableIngestError,
+    CorruptDocumentIngestError,
+    EncryptedDocumentIngestError,
+    IngestError,
+    LegacyOfficeFormatError,
+    ScannedPdfIngestError,
+)
+from siku.model_supply import ProtocolConfigError, config_file_path
 from siku.retrieve.errors import (
     BaselineExistsError,
     EvaluationError,
@@ -41,13 +56,26 @@ from siku.retrieve.errors import (
     IndexCorruptError,
     IndexUnavailableError,
     InvalidQueryError,
+    ModelConfigFileError,
+    ModelConfigFileUnreadableError,
     ModelConfigMismatchError,
+    ModelCredentialError,
     ModelNotAvailableError,
     NoteParseError,
     NotesDirMissingError,
     ProviderError,
     RetrievalError,
 )
+
+# 文案面：命令行（有文件与参数语境）/ HTTP（只有「设置」页语境）
+ErrorSurface = Literal["cli", "http"]
+
+# 通道 token → 中文面标签（结构化字段驱动文案，不解析英文 message）
+_CHANNEL_LABELS: dict[str, str] = {"llm": "LLM", "embedding": "embedding", "rerank": "rerank"}
+
+
+def _channel_label(channel: str) -> str:
+    return _CHANNEL_LABELS.get(channel, channel or "模型")
 
 
 @dataclass(frozen=True)
@@ -68,6 +96,14 @@ def map_ask_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             f"未配置 LLM API key：请在「设置」页为 LLM 通道填写 base_url、model 与"
             f" api_key，保存后立即生效；也可设置环境变量 {api_key_env}。完成后重试问答。",
         )
+    if isinstance(exc, LlmAuthError):
+        return ErrorMapping(
+            503,
+            "llm_provider_error",
+            "LLM 端点拒绝了当前凭证：请到「设置」页核对 LLM 通道的 api_key 与 base_url "
+            "是否成套（同一厂商同一账号；不同厂商的 key 不能跨端点使用），"
+            "保存后免重启生效，再回到问答重试。",
+        )
     if isinstance(exc, LlmInputTooLongError):
         return ErrorMapping(
             503,
@@ -87,31 +123,134 @@ def map_ask_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             "LLM 未返回可验证的问答结果：请检查配置后重试。",
         )
     if isinstance(exc, ModelNotAvailableError):
-        # HTTP 面专属文案：桌面用户没有 CLI 语境，指引「设置」页而非
-        # config.toml 路径与命令行参数；CLI 仍走 map_domain_error 的既有指引。
-        # 措辞保留「或不可用」对冲：该错误类同时承载配置缺失与凭证被拒
-        # （401/403），断言式「未配置」对后者会误导（既有分型缺陷，另行立项）。
+        # 问答面的模型端点错误一律走 HTTP 文案（指向「设置」页）：凭证被拒、
+        # 配置文件不可解析与未配置三种语义在 map_domain_error 内已分型分文，
+        # 这里不再自行拼一份口径，避免第二套事实源。
+        return map_domain_error(exc, api_key_env=api_key_env, surface="http")
+    return map_domain_error(exc, api_key_env=api_key_env, surface="http")
+
+
+def protocol_error_mapping(exc: ProtocolConfigError, *, surface: ErrorSurface) -> ErrorMapping:
+    """运行期协议越界的单一映射：HTTP 读取面、连通性探测面与 CLI 面共用。
+
+    状态码与错误码三面一致（`503` / `invalid_settings`），差异只在话术（模块 docstring
+    的双面口径）。文案点名的杠杆必须只有真正能触发它的那一个：文件层的非法取值已在
+    `load_config` 载入点被拒（归 `invalid_config_file`）、`--llm-protocol` 是枚举参数
+    （非法值在解析阶段就被拒）、embedding/rerank 的环境变量层没有 protocol 字段——所以
+    这里只剩「LLM 通道 + `SIKU_LLM_PROTOCOL`」与「程序传入的通道配置」两种来源。指错杠杆
+    等于让用户去改一个没坏的地方：原先的「在设置页重新保存即可覆盖」正是这样把环境变量层
+    的坏值说成了页面能修，而页面保存覆盖不了优先级更高的那一层。
+    """
+    if exc.kind == "channel_unsupported":
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "invalid_settings",
+                "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）：该字段由启动服务时"
+                "传入的通道配置携带，优先级高于本机配置文件，在「设置」页保存覆盖不了它——"
+                "请修正启动服务的那个来源后重启服务。",
+            )
         return ErrorMapping(
             503,
-            "model_not_available",
-            "问答所需的模型端点未配置或不可用：请到「设置」页检查 embedding 通道的 "
-            "base_url 与 model、LLM 通道的 API key，保存后免重启生效，再回到问答重试。",
+            "invalid_settings",
+            "embedding/rerank 通道不支持 protocol 字段（仅 LLM 通道可用）：该字段由程序传入的"
+            f"通道配置携带，请从调用处删除它；{config_file_path()} 的同名字段在读取时即被拒绝，"
+            "不是本条错误的原因。",
         )
-    return map_domain_error(exc, api_key_env=api_key_env)
+    if surface == "http":
+        return ErrorMapping(
+            503,
+            "invalid_settings",
+            "LLM 通道的接口协议（protocol）取值非法：仅支持 openai-chat / anthropic / "
+            "openai-responses。该值来自环境变量 SIKU_LLM_PROTOCOL，优先级高于本机配置文件，"
+            "在「设置」页保存覆盖不了它——请在启动服务的那个环境里取消或修正该变量后重启服务。",
+        )
+    return ErrorMapping(
+        503,
+        "invalid_settings",
+        "LLM 通道的接口协议（protocol）取值非法：仅支持 openai-chat / anthropic / "
+        "openai-responses。该值来自环境变量 SIKU_LLM_PROTOCOL，优先级高于 "
+        f"{config_file_path()} 的 [llm] protocol——请取消或修正该变量后重新执行本命令。",
+    )
 
 
-def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
-    """将领域错误映射为稳定状态码、错误码和中文文案。"""
+def map_domain_error(
+    exc: Exception, *, api_key_env: str, surface: ErrorSurface = "cli"
+) -> ErrorMapping:
+    """将领域错误映射为稳定状态码、错误码和中文文案。
+
+    `surface` 决定话术面向哪张用户面（缺省 `"cli"` 保持既有命令行文案零漂移）：
+    `"http"` 一律指向「设置」页并说明保存后免重启生效，MUST NOT 出现配置文件路径
+    与 CLI 参数教程。分型分支（凭证被拒 / 配置文件不可解析）MUST 排在通用类之前——
+    它们是通用类的子类，`isinstance` 首个命中即返回，顺序即优先级。
+    """
+    if isinstance(exc, ScannedPdfIngestError):
+        return ErrorMapping(
+            422,
+            "scanned_pdf_no_text",
+            "该 PDF 没有可提取的文字（很可能是扫描件或纯图片 PDF）：请先用 OCR 工具"
+            "（或系统自带的识别功能）把它转换为含文字层的 PDF，再重新导入。",
+        )
+    if isinstance(exc, LegacyOfficeFormatError):
+        return ErrorMapping(
+            422,
+            "legacy_office_format",
+            "旧版二进制 Office 格式（.doc/.ppt/.xls）不受支持：请在 Office 或 WPS 中"
+            "把文档另存为对应的现代格式（.docx/.pptx/.xlsx）后再导入。",
+        )
+    if isinstance(exc, EncryptedDocumentIngestError):
+        return ErrorMapping(
+            422,
+            "encrypted_document",
+            "该文档已加密，无法读取：请先解除密码保护后重新导入。",
+        )
+    if isinstance(exc, CorruptDocumentIngestError):
+        return ErrorMapping(
+            422,
+            "corrupt_document",
+            "该文件不是可解析的文档（可能已损坏，或扩展名与实际内容不符）："
+            "请确认能正常打开后重试，或更换导出的源文件。",
+        )
+    if isinstance(exc, ConverterUnavailableIngestError):
+        return ErrorMapping(
+            503,
+            "converter_unavailable",
+            "文档转换工具不可用：桌面安装包应随包携带该工具，请重新安装应用；"
+            "开发/命令行环境请安装 pandoc（https://pandoc.org/installing.html）后重试。",
+        )
     if isinstance(exc, IngestError):
         return ErrorMapping(
             422, "ingest_error", "摄取失败：请检查源路径与文档格式；技术详情见日志。"
         )
     if isinstance(exc, LlmNotConfiguredError):
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "llm_not_configured",
+                "未配置 LLM API key：请到「设置」页为 LLM 通道填写 api_key"
+                "（或 api_key_env），保存后免重启生效，再重试。",
+            )
         return ErrorMapping(
             503,
             "llm_not_configured",
             f"未配置 LLM API key：请先设置环境变量 {api_key_env} 为你的 openai 兼容服务 "
             "API key（如 DeepSeek），再重新执行本命令。",
+        )
+    if isinstance(exc, LlmAuthError):
+        # 凭证被拒先于通用 LLM 服务失败：出路与「响应不可解析」完全不同
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "llm_provider_error",
+                "LLM 端点拒绝了当前凭证：请到「设置」页核对 LLM 通道的 api_key 与 base_url 是否成套"
+                "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），保存后免重启生效，再重试。",
+            )
+        return ErrorMapping(
+            503,
+            "llm_provider_error",
+            "LLM 端点拒绝了当前凭证：请核对 api_key / api_key_env 与 base_url 是否成套"
+            f"（同一厂商同一账号；不同厂商的 key 不能跨端点使用）；配置见 {config_file_path()} 的 "
+            "[llm] 段，或用 --llm-base-url / --api-key-env 指定后重试。",
         )
     if isinstance(exc, LlmInputTooLongError):
         return ErrorMapping(
@@ -134,6 +273,13 @@ def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             503, "llm_empty_response", "LLM 返回了空内容：请重试；若反复出现请更换模型。"
         )
     if isinstance(exc, LlmProviderError):
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "llm_provider_error",
+                "LLM 服务调用失败：请到「设置」页检查 LLM 通道的 base_url、model 与"
+                "接口协议是否匹配该端点，保存后免重启生效再重试；技术详情见日志。",
+            )
         return ErrorMapping(
             503,
             "llm_provider_error",
@@ -163,7 +309,79 @@ def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
         return ErrorMapping(
             409, "graph_artifacts_stale", "图谱产物与当前摘要配置不一致：请重新执行 siku graph。"
         )
+    if isinstance(exc, ModelCredentialError):
+        # 子类分支 MUST 在 ModelNotAvailableError 之前，否则被通用文案吞掉
+        label = _channel_label(exc.channel)
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "model_not_available",
+                f"{label} 端点拒绝了当前凭证：请到「设置」页核对该通道的 api_key 与 base_url "
+                "是否成套（同一厂商同一账号；不同厂商的 key 不能跨端点使用），"
+                "保存后免重启生效，再重试。",
+            )
+        return ErrorMapping(
+            503,
+            "model_not_available",
+            f"{label} 端点拒绝了当前凭证：请核对该通道的 api_key / api_key_env 与 base_url 是否成套"
+            "（同一厂商同一账号；不同厂商的 key 不能跨端点使用）；配置见 "
+            f"{config_file_path()} 的 [{exc.channel}] 段，"
+            f"或用 --{exc.channel}-api-key-env 指定后重试。",
+        )
+    if isinstance(exc, ModelConfigFileUnreadableError):
+        # 与「不可解析」分家：这里文件内容未知，覆盖会毁掉可能完好的配置，
+        # 而「未配置」文案会让用户去补一个其实配好了的通道
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "config_file_unreadable",
+                "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）：请修复该文件"
+                "的可读性后重试。为避免毁掉可能完好的配置，本次不会由保存覆盖它；"
+                "若确认不再保留其中的配置，可删除该文件后重新配置——删除只影响模型配置，"
+                "不影响已导入的资料与索引。",
+            )
+        return ErrorMapping(
+            503,
+            "config_file_unreadable",
+            f"模型配置文件当前无法读取：{config_file_path()} 因权限或 IO 故障打不开"
+            "（内容未知，不是格式问题）。请修复该文件的可读性后重试；"
+            "确认不再需要其中的配置时可删除该文件——删除只影响模型配置，"
+            "不影响已摄取语料与索引。",
+        )
+    if isinstance(exc, ModelConfigFileError):
+        # 本类现在覆盖「文件层无效」的两种形态:内容不可解析,以及字段取值不在允许范围
+        # （非法值在载入点就被拒,见 model_supply._reject_invalid_file_protocols）。
+        # 两者出路相同:重新保存覆盖,或删除后重配。`detail` 是服务端自撰的字段级补充。
+        hint = f"{exc.detail}。" if exc.detail else ""
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "invalid_config_file",
+                "模型配置文件对模型供给无效（内容不可解析，或字段取值非法）："
+                + hint
+                + "可在「设置」页重新填写并保存，本次保存会覆盖该文件并免重启生效；"
+                "也可删除本机配置文件后重新配置——删除只影响模型配置，"
+                "不影响已导入的资料与索引。",
+            )
+        return ErrorMapping(
+            503,
+            "invalid_config_file",
+            f"模型配置文件对模型供给无效：{config_file_path()} 无法作为配置读取"
+            "（内容不是合法 TOML、段类型不符，或字段取值不在允许范围）。"
+            + hint
+            + "请修正或删除该文件后重试——删除只影响模型配置，"
+            "不影响已摄取语料与索引；修复前任何通道配置都无法生效。",
+        )
+    if isinstance(exc, ProtocolConfigError):
+        return protocol_error_mapping(exc, surface=surface)
     if isinstance(exc, ModelNotAvailableError):
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "model_not_available",
+                "模型端点未配置或不可用：请到「设置」页补全对应通道的 base_url 与 model"
+                "（LLM 通道另需 API key），保存后免重启生效，再重试。",
+            )
         return ErrorMapping(
             503,
             "model_not_available",
@@ -181,6 +399,13 @@ def map_domain_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             "请更换为启用 SQLITE_ENABLE_FTS5 的 Python 构建后重试。",
         )
     if isinstance(exc, ProviderError):
+        if surface == "http":
+            return ErrorMapping(
+                503,
+                "provider_error",
+                "模型端点调用失败：请到「设置」页核对该通道的端点可达性、凭证与模型名称，"
+                "或先用「测试连接」验证后再重试；技术详情见日志。",
+            )
         return ErrorMapping(
             503,
             "provider_error",
@@ -265,7 +490,8 @@ def map_read_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
     错误码与文案只在本函数成文，端点禁止内联字面量。读上下文对同一领域错误
     的语义可与写路径不同并在此显式成文——GraphArtifactsMissingError 对读请求
     是 404 资源未生成，对写请求才是 409 状态前置；其余领域错误回落
-    map_domain_error（含 409 graph_store_corrupt / 422 note_parse_error）。
+    map_domain_error 的 HTTP 面（含 409 graph_store_corrupt / 422 note_parse_error；
+    读取面只有 HTTP 消费者，故固定 surface="http"）。
     """
     if isinstance(exc, NoteNotFoundError):
         return ErrorMapping(404, "note_not_found", "请求的笔记不存在：可能已被移除或重新摄取。")
@@ -292,7 +518,7 @@ def map_read_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
         return ErrorMapping(404, "wiki_missing", "wiki 尚未生成：请先构建图谱并执行 siku wiki。")
     if isinstance(exc, GraphArtifactsMissingError):
         return ErrorMapping(404, "graph_missing", "图谱尚未构建：请先执行 siku graph 构建图谱。")
-    return map_domain_error(exc, api_key_env=api_key_env)
+    return map_domain_error(exc, api_key_env=api_key_env, surface="http")
 
 
 def retrieval_error_message(exc: RetrievalError) -> str:

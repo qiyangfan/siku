@@ -20,15 +20,24 @@ dependencies = [
     # LanceDB 向量存储（ADR-0003 三件套；ADR-0009 后模型经 BYOK 端点供给，
     # 内核不再含任何 torch 系重依赖）
     "lancedb>=0.20",
+    # 默认格式摄取运行时（ADR-0013）：轻量解析库进核心，不含 torch 系依赖。
+    # PDF 用 pypdf 公开文本提取；PPTX/XLSX 用 python-pptx/openpyxl
+    "pypdf>=5.1",
+    "python-pptx>=1.0",
+    "openpyxl>=3.1",
+    # 同库写入跨进程互斥（change remove-manual-library-document）：成熟平台文件锁，
+    # 覆盖 HTTP/CLI 不同进程；锁文件在 vault/.siku/ 非语料位置
+    "filelock>=3.16",
 ]
 
 [project.scripts]
 siku = "siku.cli:app"
 
 [project.optional-dependencies]
-# 重依赖抽取引擎一律放 extras，保持核心安装轻量（架构红线 #4）
+# 重依赖抽取引擎一律放 extras，保持核心安装轻量（架构红线 #4）。
+# ADR-0013 后默认 PDF 走核心 pypdf；docling 重引擎保留为可选安装，
+# 供未来需要复杂版面还原时评估，默认与桌面构建均不安装。
 ingest-pdf = ["docling>=2.0"]
-ingest-office = ["python-pptx>=1.0", "openpyxl>=3.1"]
 
 [dependency-groups]
 dev = [
@@ -39,6 +48,8 @@ dev = [
     "pre-commit>=4.0",
     # 桌面 sidecar 打包（Phase 5）：仅构建期需要，运行时零影响
     "pyinstaller>=6.10",
+    # 测试专用 PDF 夹具生成（含中文 CID 字体）；不进运行时依赖
+    "reportlab>=4.0",
 ]
 
 [build-system]
@@ -75,6 +86,7 @@ select = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.mypy]

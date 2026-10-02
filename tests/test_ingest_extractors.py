@@ -1,13 +1,23 @@
-"""格式适配器测试。"""
+"""格式适配器测试（默认轻量运行时，ADR-0013）。"""
 
+import shutil
 import sys
 import types
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any
 
 import pytest
+from tests.document_fixtures import (
+    make_corrupt_pdf,
+    make_docx,
+    make_encrypted_pdf,
+    make_pptx,
+    make_text_pdf,
+    make_textless_pdf,
+    make_xlsx,
+)
 
 from siku.extractors import (
     ExcelExtractor,
@@ -15,6 +25,11 @@ from siku.extractors import (
     PdfExtractor,
     PowerPointExtractor,
     WordExtractor,
+)
+from siku.extractors.models import (
+    CorruptDocumentError,
+    EncryptedDocumentError,
+    ScannedPdfError,
 )
 
 
@@ -48,10 +63,67 @@ def test_html_extractor_ignores_empty_heading_and_keeps_body(tmp_path: Path) -> 
     assert document.blocks[0].text == "正文"
 
 
-def test_word_extractor_uses_external_pandoc(
+# ---- PDF（默认 pypdf 适配器，无需可选依赖） ----
+
+
+def test_pdf_extractor_reads_mixed_language_text_with_page_anchors(tmp_path: Path) -> None:
+    source = make_text_pdf(
+        tmp_path / "报告.pdf",
+        ["第一页：中文与 English 混排", "Page two: plain text"],
+    )
+
+    document = PdfExtractor().extract(source)
+
+    assert [block.anchor for block in document.blocks] == ["page:1", "page:2"]
+    assert "中文" in document.blocks[0].text
+    assert "English" in document.blocks[0].text
+    assert "Page two" in document.blocks[1].text
+
+
+def test_pdf_extractor_keeps_original_page_numbers_across_blank_pages(
+    tmp_path: Path,
+) -> None:
+    source = make_text_pdf(
+        tmp_path / "空白中页.pdf",
+        ["第一页正文", None, "第三页正文"],
+    )
+
+    document = PdfExtractor().extract(source)
+
+    # 空白中间页不产生块，也不得让后续页重编号
+    assert [block.anchor for block in document.blocks] == ["page:1", "page:3"]
+
+
+def test_pdf_extractor_without_text_fails_actionably(tmp_path: Path) -> None:
+    source = make_textless_pdf(tmp_path / "扫描件.pdf")
+
+    with pytest.raises(ScannedPdfError) as excinfo:
+        PdfExtractor().extract(source)
+
+    assert "OCR" in str(excinfo.value)
+
+
+def test_pdf_extractor_rejects_corrupt_file(tmp_path: Path) -> None:
+    source = make_corrupt_pdf(tmp_path / "损坏.pdf")
+
+    with pytest.raises(CorruptDocumentError):
+        PdfExtractor().extract(source)
+
+
+def test_pdf_extractor_rejects_encrypted_file(tmp_path: Path) -> None:
+    source = make_encrypted_pdf(tmp_path / "加密.pdf", "机密内容", "s3cret")
+
+    with pytest.raises(EncryptedDocumentError):
+        PdfExtractor().extract(source)
+
+
+# ---- Word（pandoc 经统一运行时定位） ----
+
+
+def test_word_extractor_uses_resolved_pandoc_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    source = tmp_path / "report.docx"
+    source = tmp_path / "报告.docx"
     source.write_bytes(b"docx")
     calls: list[list[str]] = []
 
@@ -59,51 +131,61 @@ def test_word_extractor_uses_external_pandoc(
         calls.append(command)
         return types.SimpleNamespace(returncode=0, stdout="# 标题\n\n正文", stderr="")
 
+    monkeypatch.setattr("siku.extractors.pandoc_runtime.bundled_pandoc_path", lambda: None)
+    monkeypatch.setattr(
+        "siku.extractors.pandoc_runtime.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
     monkeypatch.setattr("siku.extractors.word.subprocess.run", fake_run)
 
     document = WordExtractor().extract(source)
 
-    assert calls[0][:3] == ["pandoc", str(source), "-t"]
+    assert calls[0][0] == "/usr/bin/pandoc"
+    assert calls[0][1:] == [str(source), "-t", "gfm", "--wrap=none"]
     assert document.blocks[0].text.startswith("# 标题")
 
 
-def test_pdf_extractor_loads_docling_lazily(
+def test_word_extractor_prefers_bundled_pandoc(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    source = tmp_path / "report.pdf"
-    source.write_bytes(b"pdf")
+    """冻结形态：随包资源优先于系统 PATH，绝对路径不经 shell。"""
+    bundled = tmp_path / "resources" / "pandoc" / "bin" / "pandoc"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"#!/bin/sh\n")
+    calls: list[list[str]] = []
 
-    class FakeDocument:
-        pages: ClassVar[dict[int, object]] = {1: object()}
+    def fake_run(command: list[str], **kwargs: Any) -> types.SimpleNamespace:
+        calls.append(command)
+        return types.SimpleNamespace(returncode=0, stdout="正文", stderr="")
 
-        def export_to_markdown(self, page_no: int | None = None) -> str:
-            return "# PDF\n\n正文"
+    monkeypatch.setenv("SIKU_TEST_PANDOC_ROOT", str(tmp_path / "resources"))
+    monkeypatch.setattr(
+        "siku.extractors.pandoc_runtime.shutil.which",
+        lambda name: pytest.fail("must not consult PATH when bundled resource exists"),
+    )
+    monkeypatch.setattr("siku.extractors.word.subprocess.run", fake_run)
 
-    class FakeConverter:
-        def __init__(self, **kwargs: Any) -> None:
-            assert "format_options" in kwargs
+    document = WordExtractor().extract(tmp_path / "doc.docx")
 
-        def convert(self, path: str) -> types.SimpleNamespace:
-            assert path == str(source)
-            return types.SimpleNamespace(document=FakeDocument())
+    assert calls[0][0] == str(bundled)
+    assert document.blocks[0].text == "正文"
 
-    parent = types.ModuleType("docling")
-    datamodel = types.ModuleType("docling.datamodel")
-    pipeline_options = types.ModuleType("docling.datamodel.pipeline_options")
-    module = types.ModuleType("docling.document_converter")
-    pipeline_options.__dict__["PdfPipelineOptions"] = lambda **kwargs: kwargs
-    module.__dict__["DocumentConverter"] = FakeConverter
-    module.__dict__["InputFormat"] = types.SimpleNamespace(PDF="pdf")
-    module.__dict__["PdfFormatOption"] = lambda **kwargs: kwargs
-    monkeypatch.setitem(sys.modules, "docling", parent)
-    monkeypatch.setitem(sys.modules, "docling.datamodel", datamodel)
-    monkeypatch.setitem(sys.modules, "docling.datamodel.pipeline_options", pipeline_options)
-    monkeypatch.setitem(sys.modules, "docling.document_converter", module)
 
-    document = PdfExtractor().extract(source)
+def test_word_extractor_requires_docx_suffix_only() -> None:
+    """旧二进制 .doc 不在适配器范围：pandoc 不承诺读取该格式。"""
+    assert WordExtractor.suffixes == (".docx",)
 
-    assert document.blocks[0].anchor == "page:1"
-    assert "PDF" in document.blocks[0].text
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc not on PATH")
+def test_word_extractor_converts_real_docx(tmp_path: Path) -> None:
+    source = make_docx(tmp_path / "真实.docx", "# 标题\n\n正文段落")
+
+    document = WordExtractor().extract(source)
+
+    assert document.title == "标题"
+    assert "正文段落" in document.blocks[0].text
+
+
+# ---- PPTX / XLSX / XLSM（核心运行时结构夹具） ----
 
 
 def test_powerpoint_extractor_emits_slide_anchors(
@@ -131,6 +213,15 @@ def test_powerpoint_extractor_emits_slide_anchors(
     assert document.blocks[0].text == "第一张"
 
 
+def test_powerpoint_extractor_reads_real_pptx(tmp_path: Path) -> None:
+    source = make_pptx(tmp_path / "演示.pptx", ["第一张要点", "", "第三张要点"])
+
+    document = PowerPointExtractor().extract(source)
+
+    assert [block.anchor for block in document.blocks] == ["slide:1", "slide:3"]
+    assert document.blocks[0].text == "第一张要点"
+
+
 def test_excel_extractor_emits_sheet_anchors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -156,6 +247,28 @@ def test_excel_extractor_emits_sheet_anchors(
 
     assert document.blocks[0].anchor == "sheet:数据"
     assert "| 列一 | 列二 |" in document.blocks[0].text
+
+
+def test_excel_extractor_reads_real_multisheet_workbook(tmp_path: Path) -> None:
+    source = make_xlsx(
+        tmp_path / "工作簿.xlsx",
+        {"数据": [["列一", "列二"], ["值", 2]], "汇总": [["合计", 3]]},
+    )
+
+    document = ExcelExtractor().extract(source)
+
+    assert [block.anchor for block in document.blocks] == ["sheet:数据", "sheet:汇总"]
+    assert "| 值 | 2 |" in document.blocks[0].text
+
+
+def test_excel_extractor_reads_xlsm_without_executing_macros(tmp_path: Path) -> None:
+    """XLSM 可读表格支持保持；宏不存在也不被执行（ADR-0013 边界）。"""
+    source = make_xlsx(tmp_path / "宏表.xlsm", {"数据": [["列一"], ["值"]]})
+
+    document = ExcelExtractor().extract(source)
+
+    assert document.blocks[0].anchor == "sheet:数据"
+    assert "值" in document.blocks[0].text
 
 
 def test_epub_extractor_reads_html_members(tmp_path: Path) -> None:
