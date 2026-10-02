@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { handleMarkdownClick, renderMarkdown } from "./markdown";
 import { LlmReadinessHint } from "./LlmReadinessHint";
+import { formatDateTime } from "./datetime";
 
 function isApiError(error: unknown): error is ApiError {
   return (
@@ -29,12 +30,9 @@ function connectionFallback(caught: unknown): string {
     : "无法连接本地服务，请确认 siku serve --with-ui 正在运行。";
 }
 
+// 非法输入由 datetime 单源按原样回退,本包装保持既有签名语义
 function formatGeneratedAt(iso: string): string {
-  const moment = new Date(iso);
-  if (Number.isNaN(moment.getTime())) {
-    return iso;
-  }
-  return moment.toLocaleString();
+  return formatDateTime(iso);
 }
 
 // 图谱产物缺失的稳定错误码（HTTP 层归一）：生成请求实测发现后切换为构建引导

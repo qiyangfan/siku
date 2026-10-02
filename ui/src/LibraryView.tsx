@@ -38,6 +38,7 @@ import {
   type LibrarySource,
   type LibrarySyncSource,
 } from "./api";
+import { formatDateTime } from "./datetime";
 
 const POLL_INTERVAL_MS = 500;
 
@@ -613,7 +614,7 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
                   <span className="library-sync-time">
                     {source.last_scan_at === null
                       ? "从未扫描"
-                      : `上次扫描 ${new Date(source.last_scan_at).toLocaleString()}`}
+                      : `上次扫描 ${formatDateTime(source.last_scan_at)}`}
                   </span>
                   <Button variant="default"
                     type="button"

@@ -47,7 +47,17 @@
 
 ## 既有待办与外部边界
 
-- 「siku 走查发现 2026-09」剩余清单不在仓内；余项未核销。
+- 「siku 走查发现 2026-09」清单已找回(2026-10-02,存于 siku 会话记忆
+  `siku-ui-audit-2026-09.md`,P2×3+P3×6 共 9 项),逐条对码核销:
+  ①ink-faint 对比度(现值 #545f6e,守卫 design-system.test.ts)②跨视图文件名溢出
+  (browse/library 统一 overflow-wrap:anywhere+2 行钳制)⑤graph-chip 触控高度
+  (min-height: var(--control-height))⑥破坏性确认 danger 色(button-danger/-solid)
+  ⑨边框 token 卫生(0.0625rem/1px 混写零残留)——5 项已核销;
+  ④日期裸 toLocaleString 随宿主 locale 漂移——2026-10-02 已修,单源
+  `ui/src/datetime.ts` 固定 zh-CN(LibraryView/WikiView 改走);
+  ⑦「总目」判误报(wiki 模块正式用语,与 WikiView 两处一致,非笔误);
+  剩余 2 项待实机走查复核:③375px 资料库文件名列挤行 ⑧fieldset legend 骑边框
+  ——需起 serve/桌面壳目检,随下次 UI 批次销项。
 - GUI 进程读不到 shell env；sidecar 注入不是当前目标。
 - Phase 6 签名/自动更新：**owner 2026-10-02 终态裁决，无限期缓滞**——证书到位且
   owner 明确指令双条件齐备才重启；期间不作为待办、不反复评审。
