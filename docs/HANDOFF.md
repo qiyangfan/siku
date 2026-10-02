@@ -48,20 +48,24 @@
 ## 既有待办与外部边界
 
 - 「siku 走查发现 2026-09」清单已找回(2026-10-02,存于 siku 会话记忆
-  `siku-ui-audit-2026-09.md`,P2×3+P3×6 共 9 项),逐条对码核销:
+  `siku-ui-audit-2026-09.md`,P2×3+P3×6 共 9 项),**9/9 全部销项(2026-10-02)**:
   ①ink-faint 对比度(现值 #545f6e,守卫 design-system.test.ts)②跨视图文件名溢出
   (browse/library 统一 overflow-wrap:anywhere+2 行钳制)⑤graph-chip 触控高度
   (min-height: var(--control-height))⑥破坏性确认 danger 色(button-danger/-solid)
-  ⑨边框 token 卫生(0.0625rem/1px 混写零残留)——5 项已核销;
-  ④日期裸 toLocaleString 随宿主 locale 漂移——2026-10-02 已修,单源
-  `ui/src/datetime.ts` 固定 zh-CN(LibraryView/WikiView 改走);
-  ⑦「总目」判误报(wiki 模块正式用语,与 WikiView 两处一致,非笔误);
-  剩余 2 项待实机走查复核:③375px 资料库文件名列挤行 ⑧fieldset legend 骑边框
-  ——需起 serve/桌面壳目检,随下次 UI 批次销项。
+  ⑨边框 token 卫生(0.0625rem/1px 混写零残留);④日期裸 toLocaleString——单源
+  `ui/src/datetime.ts` 固定 zh-CN(LibraryView/WikiView 改走);⑦「总目」判误报
+  (wiki 正式用语);③375px 资料库长文件名——**实机目检销项**(scratch serve 8200,
+  375 档长名两行钳制省略+已摄取/未索引徽章独占行,无挤压);⑧fieldset legend——
+  **实机目检销项**(实测 legendFloatsOnBorder=false,legend 完全在边框内侧,
+  圆角 8px 无咬合)。
+- **分支已合入 main(2026-10-02,PR #5,owner 指令「正常合入」)**:CI 7/7 绿
+  (三平台 sidecar 产物门禁首跑通过+双 Python 矩阵+前端+桌面壳);随批修通两处
+  CI 端环境差异:①pytest 二进制入口 `tests.` 包导入(pyproject pythonpath=["."],
+  原本地 python -m pytest 掩盖);②CLI 用例写死 macOS 配置路径(改与应用同源
+  config_file_path(),Linux/XDG 语义一致)。main 后续 CI 由 push 触发常态运行。
 - GUI 进程读不到 shell env；sidecar 注入不是当前目标。
 - Phase 6 签名/自动更新：**owner 2026-10-02 终态裁决，无限期缓滞**——证书到位且
   owner 明确指令双条件齐备才重启；期间不作为待办、不反复评审。
-- CI 三平台 sidecar 作业与 release 门禁未在本地跑过（需推送后由 Actions 实跑）。
 - Windows/Linux 实机安装冒烟维持 2026-09-19 豁免，发布解禁时按 `docs/desktop.md` 回填。
 
 ## 本机执行口径
