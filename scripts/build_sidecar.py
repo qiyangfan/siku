@@ -1,6 +1,6 @@
 """构建 siku 桌面 sidecar：PyInstaller onedir（BYOK 瘦身版，不含任何模型）。
 
-用法（核心依赖即可，无需 extras）：
+用法（核心依赖即可，无需重型 extras）：
 
     uv run python scripts/build_sidecar.py    # 当前平台默认 target
 
@@ -8,6 +8,8 @@
 
 ADR-0009 后 sidecar 不内置任何模型：LLM/embedding/rerank 一律经用户端点供给，
 体积从 7.3 GiB（torch + bge 权重）降至数百 MB 量级。
+ADR-0013 后随包携带固定版本 pandoc（构建期 SHA-256 校验，运行时零下载），
+默认 PDF/Office 解析库走核心依赖，随 PyInstaller 常规收集。
 """
 
 from __future__ import annotations
@@ -24,6 +26,9 @@ import time
 from importlib import metadata
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pandoc_resources
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = REPO_ROOT / "ui" / "src-tauri" / "binaries"
 
@@ -35,6 +40,9 @@ RECORDED_PACKAGES = (
     "uvicorn",
     "pydantic",
     "httpx",
+    "pypdf",
+    "python-pptx",
+    "openpyxl",
 )
 
 
@@ -110,10 +118,45 @@ def _importable_pkg(name: str) -> bool:
     return True
 
 
+def collect_pandoc(target_dir: Path, target_triple: str) -> None:
+    """把固定版本 pandoc 与许可证收集进冻结产物的资源目录（ADR-0013）。
+
+    PyInstaller onedir 布局下运行时 ``sys._MEIPASS`` 指向 ``_internal/``，
+    资源相对布局 ``pandoc/bin/<pandoc>`` 与
+    ``siku.extractors.pandoc_runtime`` 的定位约定保持一致。
+    """
+    targets = pandoc_resources.load_targets()
+    target = targets.get(target_triple)
+    if target is None:
+        raise SystemExit(
+            f"pandoc manifest has no entry for target {target_triple};"
+            " extend scripts/resources/pandoc.json first."
+        )
+    binary = pandoc_resources.fetch_binary(target)
+    pandoc_resources.check_binary_arch(binary, target.arch)
+    resource_dir = target_dir / "_internal" / "pandoc"
+    bin_dir = resource_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(binary, bin_dir / binary.name)
+    if platform.system() != "Windows":
+        (bin_dir / binary.name).chmod(0o755)
+    shutil.copy2(pandoc_resources.license_text_path(), resource_dir / "COPYRIGHT.txt")
+    print(
+        f"[build] bundled pandoc {pandoc_resources.manifest_version()}"
+        f" ({target_triple}, sha256 verified)",
+        flush=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", default=default_target_triple(), help="目标 triple（仅记录用）")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="产物根目录")
+    parser.add_argument(
+        "--skip-pandoc",
+        action="store_true",
+        help="跳过 pandoc 收集（仅本地联调；正式构建不得使用）。",
+    )
     args = parser.parse_args()
 
     assert_runtime_env()
@@ -145,6 +188,9 @@ def main() -> None:
             raise SystemExit(f"PyInstaller 产物缺少可执行文件: {built}")
         print(f"[build] assembling {target_dir}", flush=True)
         shutil.move(str(built), str(target_dir))
+
+    if not args.skip_pandoc:
+        collect_pandoc(target_dir, args.target)
 
     write_build_info(target_dir, args.target)
 

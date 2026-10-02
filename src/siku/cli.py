@@ -7,7 +7,8 @@ import logging
 import os
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 from enum import StrEnum
 from pathlib import Path
@@ -66,7 +67,13 @@ from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import SearchOptions
 from siku.retrieve.providers import EmbeddingProvider, RerankerProvider
 from siku.retrieve.service import SearchService
+from siku.sync.locking import LibraryWriteBusyError, library_write_lock
 from siku.sync.registry import SyncRegistry, library_db_path
+from siku.sync.removal import (
+    SourceNotFoundError,
+    SourceSyncManagedError,
+    ensure_library_writable,
+)
 from siku.sync.service import ScanOpResult, SyncService
 from siku.wiki.service import generate_wiki
 from siku.wiki.summarizer import CommunitySummarizer
@@ -269,6 +276,22 @@ def _close_quietly(resource: object) -> None:
         close()
 
 
+# CLI 写入口的同库互斥等待：平滑正常交接，真冲突快速如实报忙（spec：同库写入任务互斥）
+_CLI_WRITE_LOCK_TIMEOUT_SECS = 2.0
+
+
+@contextmanager
+def _library_write_guard(vault: Path, data_dir: Path | None) -> Iterator[None]:
+    """CLI 写命令的统一前置：跨进程文件锁 + 已确认消减发布恢复。"""
+    try:
+        with library_write_lock(vault, timeout=_CLI_WRITE_LOCK_TIMEOUT_SECS):
+            if data_dir is not None:
+                ensure_library_writable(data_dir, SyncRegistry(library_db_path(data_dir)))
+            yield
+    except LibraryWriteBusyError as exc:
+        _fail("另一个 siku 进程正在写入该资料库，请等待其完成后再重试本命令。", exc)
+
+
 @app.callback()
 def main() -> None:
     """siku 命令行入口。"""
@@ -330,7 +353,8 @@ def ingest(
 ) -> None:
     """将文档摄取为本地 Markdown 事实层。"""
     try:
-        report = ingest_path(source, vault)
+        with _library_write_guard(vault, None):
+            report = ingest_path(source, vault)
     except IngestError as exc:
         _fail(ingest_error_message(exc), exc)
     typer.echo(
@@ -362,7 +386,8 @@ def index(
             _embedding_cli_values(embedding_base_url, embedding_model, embedding_api_key_env),
             embedding_dimensions,
         )
-        report = sync_index(vault, data_dir, embedding, rebuild=rebuild)
+        with _library_write_guard(vault, data_dir):
+            report = sync_index(vault, data_dir, embedding, rebuild=rebuild)
     except RetrievalError as exc:
         _fail(f"索引失败: {_retrieval_error_message(exc)}", exc)
     finally:
@@ -445,9 +470,8 @@ def scan(
     """一次性扫描全部已登记来源目录：变更幂等入库并衔接增量索引。
 
     常驻自动扫描由 `siku serve` 内置；本命令供脚本或偏好 OS 定时器的高级用户。
-    注意：不要与运行中的 `siku serve` 并发执行（两者的索引同步共享临时目录，
-    并发互踩风险与既有 `siku index` 相同）。来源目录经 Web 资料库登记
-    （Non-goals：CLI 不做来源 CRUD）。
+    扫描写入与索引衔接持同库写锁，与 serve/移除任务跨进程互斥。来源目录经
+    Web 资料库登记（Non-goals：CLI 不做来源 CRUD）。
     """
     registry = SyncRegistry(library_db_path(data_dir))
     enabled_sources = [source for source in registry.list_sources() if source.enabled]
@@ -457,40 +481,111 @@ def scan(
     service = SyncService(
         registry,
         vault=vault,
+        data_dir=data_dir,
         ingest_handler=ingest_path,
         whitelist=set(extractor_registry()),
     )
     observer = _CliScanObserver()
     label = f"开始扫描 {len(enabled_sources)} 个来源目录"
     typer.echo(label + ("（全量哈希校验）" if full else "…"))
+    # 扫描写入与衔接索引都在同一写锁内：锁外构建会清掉另一进程（如 serve
+    # 移除任务）刚形成的可恢复消减暂存对，也是普通双构建互踩窗口的复活
+    embedding: EmbeddingProvider | None = None
+    scan_completed = False
     try:
-        service.run_scan_cycle(full=full, observer=observer)
+        with _library_write_guard(vault, data_dir):
+            service.run_scan_cycle(full=full, observer=observer)
+            scan_completed = True
+            # 有实际入库/清理变更才衔接索引（与 serve 任务口径一致；决议 #5：
+            # 无变更不重算）；失败项存在时同样不衔接，非零退出交由下方摘要
+            if observer.had_changes and not observer.had_failures:
+                _channel, embedding = _embedding_component(
+                    _embedding_cli_values(
+                        embedding_base_url, embedding_model, embedding_api_key_env
+                    ),
+                    embedding_dimensions,
+                )
+                report = sync_index(vault, data_dir, embedding, rebuild=False)
+    except typer.Exit:
+        # 锁忙等用户面退出（_fail 已成文）不得被通用分支吞掉后二次误报
+        raise
     except Exception as exc:
+        if scan_completed:
+            _fail(f"扫描已完成，但索引同步失败: {_retrieval_error_message(exc)}", exc)
         _fail(f"扫描执行失败: {exc}", exc)
+    finally:
+        if embedding is not None:
+            _close_quietly(embedding)
     typer.echo(f"扫描完成（{observer.count} 项动作）。")
     if observer.had_failures:
         # 失败项存在时非零退出：脚本/cron 场景需要可靠感知（评审建议）
         typer.echo("部分条目处理失败，请检查上方输出后重试。")
         raise typer.Exit(code=1)
-    if not observer.had_changes:
-        return
-    # 有实际入库/清理变更才衔接索引（与 serve 任务口径一致；决议 #5：无变更不重算）
-    embedding: EmbeddingProvider | None = None
-    try:
-        _channel, embedding = _embedding_component(
-            _embedding_cli_values(embedding_base_url, embedding_model, embedding_api_key_env),
-            embedding_dimensions,
+    if observer.had_changes and embedding is not None:
+        typer.echo(
+            f"索引已增量同步: created={report.created} updated={report.updated} "
+            f"skipped={report.skipped} removed={report.removed} chunks={report.total_chunks}"
         )
-        report = sync_index(vault, data_dir, embedding, rebuild=False)
-    except RetrievalError as exc:
-        _fail(f"扫描已完成，但索引同步失败: {_retrieval_error_message(exc)}", exc)
-    finally:
-        if embedding is not None:
-            _close_quietly(embedding)
-    typer.echo(
-        f"索引已增量同步: created={report.created} updated={report.updated} "
-        f"skipped={report.skipped} removed={report.removed} chunks={report.total_chunks}"
+
+
+@app.command()
+def remove(
+    source_id: Annotated[str, typer.Argument(..., help="清单中的真实来源 ID（source_id）。")],
+    vault: Annotated[Path, typer.Option("--vault", help="事实层 vault 目录。")] = DEFAULT_VAULT,
+    data_dir: Annotated[
+        Path, typer.Option("--data-dir", help="派生索引数据目录。")
+    ] = DEFAULT_DATA_DIR,
+    confirm: Annotated[
+        bool,
+        typer.Option("--confirm", help="显式确认移除：清除受管副本与派生知识，外部原件保留。"),
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="输出机器可读 JSON。")] = False,
+) -> None:
+    """从资料库移除一个手动导入文档（确认后执行；同步管理的来源不适用）。
+
+    只清除受管副本、检索索引与旧图谱/Wiki 快照；外部原件与来源目录不受影响。
+    与 HTTP 入口共用同一清理内核，失败可按同一来源 ID 重试。
+    """
+    if not confirm:
+        typer.echo("移除需要显式确认：请携带 --confirm 重试（外部原件保留，不受影响）。")
+        raise typer.Exit(code=1)
+    registry = SyncRegistry(library_db_path(data_dir))
+    service = SyncService(
+        registry,
+        vault=vault,
+        data_dir=data_dir,
+        ingest_handler=ingest_path,
+        whitelist=set(extractor_registry()),
     )
+    observer = _CliScanObserver()
+    try:
+        with _library_write_guard(vault, data_dir):
+            completed = service.run_removal(source_id, observer)
+    except SourceNotFoundError as exc:
+        _fail(f"目标资料不存在：{source_id}（可能已被移除；可在资料库清单核对 source_id）。", exc)
+    except SourceSyncManagedError as exc:
+        _fail(
+            "该资料由来源目录同步管理，不能手动移除：请经来源目录的停用/解除登记"
+            "与既有清理流程处理。",
+            exc,
+        )
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "source_id": source_id,
+                    "completed": completed,
+                    "actions": len(observer.ops),
+                    "failures": observer.had_failures,
+                },
+                ensure_ascii=False,
+            )
+        )
+    elif completed:
+        typer.echo("移除完成：受管副本与检索内容已清除；图谱与 Wiki 需显式重建（外部原件保留）。")
+    else:
+        typer.echo("移除未完成：标记已保留，可按同一来源 ID 重试。")
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -808,26 +903,27 @@ def graph(
     )
     summarizer: CommunitySummarizer | None = None
     try:
-        result = build_graph(
-            vault,
-            data_dir,
-            extractor,
-            rebuild=rebuild,
-            summary_identity=SummaryIdentity(model_id=llm.model),
-        )
-        if result.empty_corpus:
-            # spec：空语料产出空图谱与空 wiki——零社区不产生任何 LLM 调用，
-            # 因此缺 key 也能完成空总目生成
-            summarizer = CommunitySummarizer(
-                provider=HttpxLlmProvider(
-                    base_url=llm.base_url,
-                    model_id=llm.model,
-                    api_key_env=resolved_key_env,
-                    api_key=llm.api_key.get_secret_value() if llm.api_key else None,
-                    protocol=llm.protocol,
-                )
+        with _library_write_guard(vault, data_dir):
+            result = build_graph(
+                vault,
+                data_dir,
+                extractor,
+                rebuild=rebuild,
+                summary_identity=SummaryIdentity(model_id=llm.model),
             )
-            generate_wiki(data_dir, summarizer)
+            if result.empty_corpus:
+                # spec：空语料产出空图谱与空 wiki——零社区不产生任何 LLM 调用，
+                # 因此缺 key 也能完成空总目生成
+                summarizer = CommunitySummarizer(
+                    provider=HttpxLlmProvider(
+                        base_url=llm.base_url,
+                        model_id=llm.model,
+                        api_key_env=resolved_key_env,
+                        api_key=llm.api_key.get_secret_value() if llm.api_key else None,
+                        protocol=llm.protocol,
+                    )
+                )
+                generate_wiki(data_dir, summarizer)
     except (GraphError, RetrievalError) as exc:
         if isinstance(exc, RetrievalError):
             _fail(f"图谱构建失败: {_retrieval_error_message(exc)}", exc)
@@ -921,7 +1017,8 @@ def wiki(
         )
     )
     try:
-        result = generate_wiki(data_dir, summarizer)
+        with _library_write_guard(DEFAULT_VAULT, data_dir):
+            result = generate_wiki(data_dir, summarizer)
     except (GraphError, RetrievalError) as exc:
         if isinstance(exc, RetrievalError):
             _fail(f"wiki 生成失败: {_retrieval_error_message(exc)}", exc)

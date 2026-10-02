@@ -106,3 +106,39 @@ jobs:
 
       - name: Rust 测试（含无孤儿进程组回收测试）
         run: cargo test --manifest-path ui/src-tauri/Cargo.toml
+
+  # 桌面 sidecar 产物检查（ADR-0013）：三平台真实构建 + 资源/架构/无 torch 门禁。
+  # Release 仍禁用；本作业只验证产物形态，不发布任何工件。
+  sidecar-artifacts:
+    name: 桌面 sidecar 产物检查（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            probe: "--probe"
+          - os: ubuntu-22.04
+            probe: "--probe"
+          # Windows 冻结进程以空 PATH 探针的 DLL 解析行为不做假设，仅结构检查
+          - os: windows-latest
+            probe: ""
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 同步依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: 构建 sidecar（含 pandoc 随包收集与 SHA-256 校验）
+        run: uv run python scripts/build_sidecar.py --output dist-check
+
+      - name: 产物清单与二进制检查
+        run: >
+          uv run python scripts/check_sidecar_artifacts.py dist-check/siku-sidecar
+          ${{ matrix.probe }}

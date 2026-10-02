@@ -118,6 +118,11 @@ function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // 问答请求序号：实体联动预填时递增，使在途旧回答作废（防旧答案挂新问题下）
   const askSeqRef = useRef(0);
+  // 知识纪元：资料库移除等使派生知识失效的操作递增，触发建议等派生缓存重取
+  const [knowledgeEpoch, setKnowledgeEpoch] = useState(0);
+  const handleKnowledgeInvalidated = useCallback(() => {
+    setKnowledgeEpoch((epoch) => epoch + 1);
+  }, []);
 
   const refreshHealth = useCallback(async () => {
     setHealth("loading");
@@ -158,7 +163,7 @@ function App() {
     if (view === "ask") {
       void refreshReadiness();
     }
-  }, [view, refreshReadiness]);
+  }, [view, refreshReadiness, knowledgeEpoch]);
 
   useEffect(() => {
     if (view !== "ask") {
@@ -408,7 +413,9 @@ function App() {
           </Tabs.Panel>
 
           <Tabs.Panel value="library" className="view-panel">
-            {view === "library" && <LibraryView />}
+            {view === "library" && (
+              <LibraryView onKnowledgeInvalidated={handleKnowledgeInvalidated} />
+            )}
           </Tabs.Panel>
 
           <Tabs.Panel value="browse" className="view-panel">

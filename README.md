@@ -33,8 +33,29 @@ siku 取意《四库全书》——历史上最大规模的"汇总天下文献 �
 | 界面 | TypeScript / React（Sigma.js + graphology 图视图），终态 Tauri 壳 |
 | 存储 | SQLite（元数据 + FTS5）+ LanceDB（向量）+ 内存图 + parquet（图谱） |
 | 事实层 | Obsidian vault 兼容 Markdown，原件留存 `attachments/` |
-| 摄取 | PDF：Docling / MinerU · Word：pandoc · PPT：python-pptx · Excel：openpyxl |
+| 摄取 | PDF：pypdf（默认轻量，ADR-0013）· Word：pandoc（桌面随包）· PPT：python-pptx · Excel：openpyxl |
 | 检索质量 | BM25 + 向量混合召回 + 可选 rerank 端点重排（`reranker=none` 为一等公民）+ 通道化 golden set 回归 |
+
+## 支持格式与转换指引
+
+默认安装（含桌面包）开箱可摄取：**含文字层的 PDF、DOCX、PPTX、XLSX/XLSM、EPUB、HTML、Markdown**。
+解析与投影在本地完成，不需要模型端点，也不联网下载任何依赖（ADR-0013）。
+
+两类文件需要先转换：
+
+- **扫描/纯图片 PDF**（没有可复制文字）：先用 OCR 工具（或系统自带识别）转成
+  含文字层的 PDF，再导入；导入时报 `scanned_pdf_no_text` 即此情形。
+- **旧版二进制 Office（.doc/.ppt/.xls）**：在 Office/WPS 中另存为 .docx/.pptx/.xlsx
+  后再导入；报 `legacy_office_format` 即此情形。
+
+加密文档请先解除密码；损坏或扩展名不符的文件会按 `corrupt_document` 如实报错，
+不会被当成空文档"成功"导入。
+
+命令行摄取 Word 依赖系统 pandoc（`brew install pandoc` 等）；桌面包内置固定版本
+pandoc，无需系统安装。**同一文件的既有投影不会因更换默认解析器而自动重抽**：
+投影按 `source_hash` 幂等，内容未变即跳过；`siku index --rebuild` 只重建派生索引，
+不重新摄取文档。需要用新解析器重生成某个 PDF 的投影时，先从资料库移除该文档，
+再从保留的外部原件重新导入。
 
 ## 快速开始
 

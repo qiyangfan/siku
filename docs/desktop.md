@@ -97,8 +97,23 @@ api_key_env = "SILICONFLOW_API_KEY"
 | 恢复页提示本地服务停止或启动后立即退出 | 点击“重新启动本地服务”；若再次失败，查 `sidecar.log` 的最后几行，常见原因为磁盘空间不足或权限问题 |
 | 检索/问答报"模型端点未配置" | 按 BYOK 指引配置 `config.toml`（本地 Ollama 或云端端点），见上文模板 |
 | 问答报 LLM/key 错误 | 确认端点配置与 API key 在应用可见的环境中已设置 |
+| 导入 PDF 报 `scanned_pdf_no_text` | 该 PDF 无文字层（扫描件）：先用 OCR 转成含文字的 PDF 再导入（ADR-0013，不做内置 OCR） |
+| 导入 .doc/.ppt/.xls 报 `legacy_office_format` | 旧二进制格式不受支持：在 Office/WPS 另存为 .docx/.pptx/.xlsx 后再导入 |
+| 导入报 `corrupt_document` / `encrypted_document` | 文件损坏或加密：确认能正常打开、解除密码后重试 |
 | 关闭应用后端口仍被占用 | 不应发生（关闭时先优雅退出、超时强制回收整个进程组）；若出现请附带 `sidecar.log` 反馈 |
 | 双实例同时运行 | 单实例隔离：第二次启动只会聚焦已有窗口 |
+
+## 随包格式运行时（ADR-0013）
+
+桌面包携带常用格式摄取所需的全部非模型运行时：pypdf（PDF 文本）、python-pptx、
+openpyxl 与固定版本 pandoc（DOCX 转换）。pandoc 版本、下载 URL 与 SHA-256 固定在
+`scripts/resources/pandoc.json`，构建期下载校验后收集到
+`ui/src-tauri/binaries/siku-sidecar/_internal/pandoc/`（附上游版权说明），运行时
+**零下载、不查系统 PATH**；开发/命令行环境则回退系统 pandoc。
+
+- 产物完整性由 `scripts/check_sidecar_artifacts.py` 在 CI 各平台构建后检查：
+  资源齐备、二进制架构相符、无 torch/模型权重。
+- 支持范围与转换指引（扫描件 PDF、旧二进制 Office）见 README「支持格式与转换指引」。
 
 ## 从源码构建桌面应用
 

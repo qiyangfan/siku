@@ -19,11 +19,15 @@ vault/
 
 | 格式 | 方案 | 协议 | 要点 |
 |---|---|---|---|
-| PDF | Docling（主力）+ MinerU（中文/扫描插件） | MIT / AGPL-3.0 | 唯一真难题；MinerU 子进程隔离接入，禁止 pip 依赖 |
-| Word | pandoc（外部二进制） | GPL-2+（外部进程无传染） | 标题/表格/脚注/图片全收 |
+| PDF | pypdf（默认，ADR-0013）/ Docling + MinerU（可选重型） | BSD / MIT / AGPL-3.0 | 默认轻量文本抽取；扫描件给 OCR 转换指引，不内置模型 |
+| Word | pandoc（外部二进制，桌面随包固定版本） | GPL-2+（外部进程无传染） | 标题/表格/脚注/图片全收；旧 .doc 给现代格式转换指引 |
 | PPT | python-pptx | MIT | 按 slide 切块 |
 | Excel | openpyxl | MIT | sheet → Markdown 表格块；超长表截断取样+行数注记 |
-| EPUB/HTML | pandoc / trafilatura | — | 零边际成本 |
+| EPUB/HTML | 内置解析器 | — | 零边际成本 |
+
+> 修订（2026-10-02，ADR-0013）：默认 PDF 方案由 Docling 改为 pypdf 公开文本提取
+> ——默认安装与桌面包不携带 torch 系重依赖，扫描件与旧二进制 Office 以稳定
+> 错误码给出可行动转换指引；Docling 保留为可选 extras 供复杂版面需求评估。
 
 三条工程红线：
 

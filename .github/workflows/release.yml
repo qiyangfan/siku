@@ -105,8 +105,14 @@ jobs:
       - name: 同步 Python 运行时（锁定 uv.lock；BYOK 后无 extras）
         run: uv sync --locked
 
-      - name: 构建 sidecar（PyInstaller onedir，BYOK 瘦身版）
+      - name: 构建 sidecar（PyInstaller onedir，BYOK 瘦身版；ADR-0013 随包 pandoc）
         run: uv run python scripts/build_sidecar.py --target ${{ matrix.target }}
+
+      # 产物门禁（desktop-shell spec）：缺解析模块/转换工具或架构不符不得进入发布
+      - name: sidecar 产物清单与二进制检查
+        run: >
+          uv run python scripts/check_sidecar_artifacts.py
+          ui/src-tauri/binaries/siku-sidecar --target ${{ matrix.target }} --probe
 
       - name: 安装 Rust target
         if: matrix.target == 'x86_64-apple-darwin'

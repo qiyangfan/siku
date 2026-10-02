@@ -21,7 +21,17 @@ from typing import Protocol
 from uuid import uuid4
 
 from siku.ingest import IngestError, IngestReport
+from siku.retrieve.reduction import (
+    publish_staged_reduction,
+    remove_staged_reduction,
+    stage_index_reduction,
+)
 from siku.sync.registry import SyncEntry, SyncRegistry
+from siku.sync.removal import (
+    USER_REMOVED_REASON,
+    invalidate_derived_snapshots,
+    removal_eligibility,
+)
 from siku.sync.scanner import PlannedIngest, SourcePlan, plan_source
 
 logger = logging.getLogger(__name__)
@@ -143,11 +153,13 @@ class SyncService:
         registry: SyncRegistry,
         *,
         vault: Path,
+        data_dir: Path,
         ingest_handler: IngestHandler,
         whitelist: set[str],
     ) -> None:
         self._registry = registry
         self._vault = vault
+        self._data_dir = data_dir
         self._ingest_handler = ingest_handler
         self._whitelist = whitelist
 
@@ -194,12 +206,29 @@ class SyncService:
         """在任务槽内执行既有计划；动作粒度向观察者回报。
 
         对账（补移中断的检疫移位）是 vault 变更，必须在本槽内先于计划执行。
+        槽外形成的计划不是执行授权：进入本方法即重验来源登记（须仍登记且
+        启用），已解除登记/停用来源的陈旧计划整组丢弃，顺延到下一轮重新检测。
         """
         self._reconcile_superseded()
+        plans = self._drop_stale_plans(plans)
         observer.set_total(self._count_ops(plans))
         for plan in plans:
             if not self._run_plan(plan, observer):
                 return
+
+    def _drop_stale_plans(self, plans: list[SourcePlan]) -> list[SourcePlan]:
+        """锁后重验：来源已解除登记或停用的计划不得执行（change 决议 D4）。"""
+        registered = {source.id: source.enabled for source in self._registry.list_sources()}
+        kept: list[SourcePlan] = []
+        for plan in plans:
+            if registered.get(plan.source_id, False):
+                kept.append(plan)
+            else:
+                logger.info(
+                    "dropping stale scan plan made outside the write lock: source_id=%s",
+                    plan.source_id,
+                )
+        return kept
 
     def run_scan_cycle(self, *, full: bool = False, observer: ScanObserver) -> None:
         """计划 + 执行一体的便利路径（手动扫描任务体使用）。"""
@@ -474,18 +503,35 @@ class SyncService:
                 logger.warning("quarantine move failed: path=%s source_id=%s", path, doc_source_id)
         return moved
 
-    def run_purge(self, observer: ScanObserver) -> int:
-        """物理删除全部已标记文档；唯一删除路径，须经确认由显式触发进入。
+    def run_purge(
+        self,
+        observer: ScanObserver,
+        *,
+        source_ids: set[str] | None = None,
+    ) -> int:
+        """物理删除已标记文档；唯一删除路径，须经确认由显式触发进入。
 
+        ``source_ids=None`` 处理全部已标记来源（既有全量契约）；传入集合时只
+        处理选定的来源（单项移除入口），不扩大为全量清理。``user_removed``
+        标记无论经哪个入口到达，都必须走同一完整收尾管线（文件 + 索引消减 +
+        快照失效）后才清除标记；missing/superseded 保持既有文件删除口径。
         某文档有文件删除失败时**保留其 tombstone**：若照常清除标记，滞留的检疫
         文件将永远失去清理入口（评审 A3）。部分成功的文档计 failed，不计入删除数。
         """
         tombstones = self._registry.list_tombstones()
-        observer.set_total(len(tombstones))
+        if source_ids is None:
+            targets = tombstones
+        else:
+            targets = {sid: ts for sid, ts in tombstones.items() if sid in source_ids}
+        observer.set_total(len(targets))
         removed = 0
-        for source_id, tombstone in tombstones.items():
+        for source_id, tombstone in targets.items():
             if observer.is_cancelled():
                 break
+            if tombstone.reason == USER_REMOVED_REASON:
+                if self._complete_user_removal(source_id, observer):
+                    removed += 1
+                continue
             observer.op_started(source_id)
             # 检疫文件与原位文件都在候选之列：tombstone 先于移位写入时可能两者并存
             paths = [
@@ -526,6 +572,115 @@ class SyncService:
                 )
             )
         return removed
+
+    # ---- 手动移除（change remove-manual-library-document） ----
+
+    def run_removal(self, source_id: str, observer: ScanObserver) -> bool:
+        """确认移除一个手动来源；完整收尾后才清除标记，失败保留可重试状态。
+
+        必须在持有同库写锁时调用（锁由任务/命令入口统一获取）。取消只作用于
+        物理删除开始之前：本次新增的确认标记与未发布暂存产物一并撤销；此前
+        已部分执行的重试确认状态不撤销（design D5）。
+        """
+        removal_eligibility(self._registry, self._vault, self._data_dir, source_id)
+        tombstone = self._registry.list_tombstones().get(source_id)
+        marker_existed = tombstone is not None
+        if observer.is_cancelled():
+            return False
+        self._registry.add_tombstone(doc_source_id=source_id, reason=USER_REMOVED_REASON)
+        if observer.is_cancelled():
+            if not marker_existed:
+                self._registry.delete_tombstones([source_id])
+                remove_staged_reduction(self._data_dir)
+            return False
+        return self._complete_user_removal(source_id, observer)
+
+    def _complete_user_removal(self, source_id: str, observer: ScanObserver) -> bool:
+        """user_removed 的完整收尾：文件 → 索引消减 → 快照失效 → 清除标记。
+
+        进入本方法即不再响应取消（不可逆删除已开始）：完成安全收尾，或保留
+        可重试的失败状态；绝不把半途状态报告为成功。
+        """
+        observer.op_started(source_id)
+        paths = [
+            *_quarantine_files(self._vault, source_id),
+            *_doc_files(self._vault, source_id),
+        ]
+        vault_root = self._vault.resolve()
+        delete_failed = False
+        rel_path = source_id
+        for path in paths:
+            try:
+                # 定位结果必须仍在受管根内（符号链接越界防御，双层校验）：
+                # 两侧都 resolve 后比较——vault 可能是相对路径（CLI 默认布局），
+                # 未解析路径与绝对根的 is_relative_to 恒为 False 会误拒一切文件
+                if path.is_symlink() or not path.resolve().is_relative_to(vault_root):
+                    logger.warning("refusing removal outside managed roots: %s", path)
+                    delete_failed = True
+                    continue
+                path.unlink(missing_ok=True)
+            except OSError:
+                delete_failed = True
+                logger.warning("removal unlink failed: path=%s", path)
+        if paths:
+            rel_path = paths[0].relative_to(self._vault).as_posix()
+        if delete_failed:
+            observer.op_finished(
+                ScanOpResult(
+                    name=Path(rel_path).name,
+                    path=rel_path,
+                    status="failed",
+                    detail="部分受管文件删除失败，移除未完成；可按同一来源重试。",
+                )
+            )
+            return False
+        try:
+            staged = stage_index_reduction(self._data_dir, {source_id})
+            if staged is not None:
+                publish_staged_reduction(self._data_dir, staged)
+        except Exception as exc:
+            logger.warning(
+                "removal index reduction failed: source_id=%s error_class=%s",
+                source_id,
+                type(exc).__name__,
+            )
+            observer.op_finished(
+                ScanOpResult(
+                    name=Path(rel_path).name,
+                    path=rel_path,
+                    status="failed",
+                    detail="索引消减未完成，移除标记已保留；可按同一来源重试。",
+                )
+            )
+            return False
+        try:
+            invalidate_derived_snapshots(self._data_dir)
+        except OSError as exc:
+            logger.warning(
+                "removal snapshot invalidation failed: source_id=%s detail=%s",
+                source_id,
+                exc,
+            )
+            observer.op_finished(
+                ScanOpResult(
+                    name=Path(rel_path).name,
+                    path=rel_path,
+                    status="failed",
+                    detail="图谱/Wiki 失效未完成，移除标记已保留；可按同一来源重试。",
+                )
+            )
+            return False
+        self._registry.remove_entries_for_doc(source_id)
+        self._registry.delete_tombstones([source_id])
+        observer.op_finished(
+            ScanOpResult(
+                name=Path(rel_path).name,
+                path=rel_path,
+                status="removed",
+                detail="已从资料库移除；检索索引已消减，图谱与 Wiki 需显式重建。",
+            )
+        )
+        return True
 
     # ---- 内部工具 ----
 

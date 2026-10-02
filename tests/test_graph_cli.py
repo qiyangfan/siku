@@ -75,6 +75,24 @@ class StubSummarizer:
         """与 CommunitySummarizer 接口对齐。"""
 
 
+@pytest.fixture(autouse=True)
+def _hermetic_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔离宿主环境的 LLM 通道回退：图/wiki 身份测试不允许被 ambient 端点改写。
+
+    宿主机若导出了 DASHSCOPE_API_KEY 等变量，resolve_llm_channel 会整组回退到
+    通义端点，使建图摘要身份（model_id）偏离 fake 预期的 deepseek-chat，测试
+    随身份校验失败而假红。全部用例自管 LLM 环境，进入本模块即清空回退源。
+    """
+    for name in (
+        "SIKU_LLM_BASE_URL",
+        "SIKU_LLM_MODEL",
+        "SIKU_LLM_API_KEY",
+        "SIKU_LLM_PROTOCOL",
+        "DASHSCOPE_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 def patched_extractor() -> FakeGraphExtractor:
     """身份字段与真实 LlmGraphExtractor 完全一致的 fake（缓存键才能对上）。"""
     return FakeGraphExtractor(

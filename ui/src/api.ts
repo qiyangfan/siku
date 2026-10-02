@@ -102,7 +102,8 @@ export type LibraryIngestStatus =
   | "pending"
   | "ignored"
   | "missing"
-  | "superseded";
+  | "superseded"
+  | "removing";
 
 export type LibraryIndexStatus = "indexed" | "stale" | "missing";
 
@@ -110,6 +111,10 @@ export type LibrarySource = {
   name: string;
   path: string;
   source_hash: string;
+  /** 真实库域来源身份（服务端给出）；无法推导时为 null */
+  source_id: string | null;
+  /** 服务端判定：仅无同步登记引用的手动来源可单项移除；不从路径推断 */
+  removable: boolean;
   ingest_status: LibraryIngestStatus;
   index_status: LibraryIndexStatus;
   origin_path: string | null;
@@ -134,7 +139,7 @@ export type LibraryJobItem = {
   detail: string | null;
 };
 
-export type LibraryJobKind = "ingest" | "rebuild" | "scan" | "purge";
+export type LibraryJobKind = "ingest" | "rebuild" | "scan" | "purge" | "remove";
 
 export type LibraryJobState = "running" | "succeeded" | "failed" | "cancelled";
 
@@ -435,6 +440,17 @@ export async function purgeLibrary(): Promise<LibraryJob> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ confirm: true }),
+    }),
+  );
+}
+
+// 单来源确认移除：服务端先行资格判定，进度沿既有 LibraryJobs 契约轮询
+export async function removeLibraryDocument(sourceId: string): Promise<LibraryJob> {
+  return parseResponse<LibraryJob>(
+    await fetch("/api/library/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: sourceId, confirmed: true }),
     }),
   );
 }

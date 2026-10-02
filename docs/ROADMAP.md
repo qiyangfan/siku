@@ -25,11 +25,26 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 5+ | 模型供给 BYOK 端点化（发布前瘦身打磨） | 删除进程内模型（torch/权重），LLM/embedding/rerank 全走用户端点；分层 config.toml；sidecar 305MiB；通道化基线 | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-byok-model-supply`；model-supply spec 入主 specs；双通道基线实测由用户裁决豁免，可随时按 benchmarks/README.md 补录） |
 | 5++ | 桌面上手补齐（配模型 → 进资料 → 看知识） | 设置中心 / 资料管理 / 浏览·图谱·wiki 视图 | ✅ 已完成（2026-09-19，归档 `2026-09-19-add-ui-settings-center` 三端点 + 免重启生效 + React 设置视图；归档 `2026-09-19-add-desktop-library` 五端点 + 进程内单任务槽 + React 资料库视图；归档 `2026-09-19-add-browse-graph-wiki-views` 八个只读端点 + Sigma.js 图谱画布 + 浏览/wiki 视图 + 实体联动问答，http-api/web-ui spec 增量均已入主 specs）——上手链路（配模型 → 进资料 → 看知识）闭环 |
 | 5++⁺ | 来源目录同步（进资料自动化延伸） | 受管喂养 + 定时扫描 + 标记式删除 | ✅ 已完成（2026-09-24，归档 `2026-09-24-add-directory-sync`：`siku.sync` 内核 + `library.sqlite3` 库域状态 + serve 轮询调度 + 来源/扫描/间隔/清理端点 + `siku scan` + 资料库来源目录区；library-sync spec 入主 specs；ADR-0010；取消收尾衔接索引修订 desktop-library 决议 #3；评审循环四轮 + 追加裁决） |
+| 5++⁺⁺ | 桌面格式补齐与单文档移除 | 轻量默认摄取运行时 + 手动文档确认移除 | ✅ 已完成（2026-10-02，归档 `2026-10-02-complete-desktop-format-ingest` 与 `2026-10-02-remove-manual-library-document`：pypdf/Office 进核心、pandoc 随包 + 三平台产物门禁、稳定格式错误码；`source_id`/`removable` 清单、`POST /api/library/remove` + `siku remove`、无模型索引消减与暂存对恢复、图谱/Wiki 快照失效、filelock 跨进程写互斥；ADR-0013 接受、ADR-0004/0010 回写；ingest/desktop-shell/library-sync/http-api/web-ui/graph-wiki 六主规格增量入档） |
 | 6 | 签名与更新（阶段三） | Apple 公证 + Windows 签名 + 自动更新 | 更新链路灰度可用 |
 
 ## 当前排序队列
 
-当前没有待处理的已立项队列项。最近完成并归档：
+2026-10-02 两项提案已实施并通过验收归档：
+
+1. ~~complete-desktop-format-ingest~~ ✅（2026-10-02，归档
+   `2026-10-02-complete-desktop-format-ingest`）：pypdf 默认 PDF + Office 库进核心
+   依赖 + pandoc 3.11 随包（SHA-256 锁定、三平台产物门禁入 CI/release）+ 扫描件/
+   旧二进制格式稳定错误码；ADR-0013 已接受，ADR-0004 同步修订；冻结 sidecar
+   干净环境冒烟通过（615 MiB，无 torch）；Release 禁用与实机豁免保持。
+2. ~~remove-manual-library-document~~ ✅（2026-10-02，归档
+   `2026-10-02-remove-manual-library-document`）：手动文档按 `source_id` 确认移除
+   （`POST /api/library/remove` / `siku remove`）、`removable` 服务端资格、无模型
+   索引消减与暂存对恢复、旧图谱/Wiki 快照失效、`user_removed` 完整收尾入全量
+   清理、filelock 跨进程同库写互斥 + 扫描锁后重验；UI 行内移除/重试与知识缓存
+   失效通知；ADR-0010 清理边界已回写。
+
+收款继续 Mock，不另开支付方案。最近完成并归档：
 
 1. **模型供给错误分型与双面文案**：归档 `2026-10-01-fix-model-supply-error-surfacing`——401/403 凭证
    被拒不再与「未配置」同型；config.toml 不可解析时 PUT 可覆盖自救 + serve 可启动，且设置页给出

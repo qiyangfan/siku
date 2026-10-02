@@ -37,7 +37,14 @@ from siku.graph.errors import (
     LlmProviderError,
     LlmRateLimitError,
 )
-from siku.ingest import IngestError
+from siku.ingest import (
+    ConverterUnavailableIngestError,
+    CorruptDocumentIngestError,
+    EncryptedDocumentIngestError,
+    IngestError,
+    LegacyOfficeFormatError,
+    ScannedPdfIngestError,
+)
 from siku.model_supply import ProtocolConfigError, config_file_path
 from siku.retrieve.errors import (
     BaselineExistsError,
@@ -177,6 +184,40 @@ def map_domain_error(
     与 CLI 参数教程。分型分支（凭证被拒 / 配置文件不可解析）MUST 排在通用类之前——
     它们是通用类的子类，`isinstance` 首个命中即返回，顺序即优先级。
     """
+    if isinstance(exc, ScannedPdfIngestError):
+        return ErrorMapping(
+            422,
+            "scanned_pdf_no_text",
+            "该 PDF 没有可提取的文字（很可能是扫描件或纯图片 PDF）：请先用 OCR 工具"
+            "（或系统自带的识别功能）把它转换为含文字层的 PDF，再重新导入。",
+        )
+    if isinstance(exc, LegacyOfficeFormatError):
+        return ErrorMapping(
+            422,
+            "legacy_office_format",
+            "旧版二进制 Office 格式（.doc/.ppt/.xls）不受支持：请在 Office 或 WPS 中"
+            "把文档另存为对应的现代格式（.docx/.pptx/.xlsx）后再导入。",
+        )
+    if isinstance(exc, EncryptedDocumentIngestError):
+        return ErrorMapping(
+            422,
+            "encrypted_document",
+            "该文档已加密，无法读取：请先解除密码保护后重新导入。",
+        )
+    if isinstance(exc, CorruptDocumentIngestError):
+        return ErrorMapping(
+            422,
+            "corrupt_document",
+            "该文件不是可解析的文档（可能已损坏，或扩展名与实际内容不符）："
+            "请确认能正常打开后重试，或更换导出的源文件。",
+        )
+    if isinstance(exc, ConverterUnavailableIngestError):
+        return ErrorMapping(
+            503,
+            "converter_unavailable",
+            "文档转换工具不可用：桌面安装包应随包携带该工具，请重新安装应用；"
+            "开发/命令行环境请安装 pandoc（https://pandoc.org/installing.html）后重试。",
+        )
     if isinstance(exc, IngestError):
         return ErrorMapping(
             422, "ingest_error", "摄取失败：请检查源路径与文档格式；技术详情见日志。"

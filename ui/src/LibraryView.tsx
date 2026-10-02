@@ -25,6 +25,7 @@ import {
   ingestFiles,
   purgeLibrary,
   rebuildIndex,
+  removeLibraryDocument,
   removeLibrarySource,
   scanLibrarySources,
   setLibrarySourceEnabled,
@@ -47,6 +48,7 @@ const INGEST_STATUS_LABEL: Record<LibraryIngestStatus, string> = {
   ignored: "已忽略",
   missing: "来源缺失",
   superseded: "已被替代",
+  removing: "移除未完成",
 };
 
 // 徽标 title 释义：状态词本身是内部语，悬停给可读解释（清单密集场景的轻量说明）
@@ -57,6 +59,7 @@ const INGEST_STATUS_HINT: Record<LibraryIngestStatus, string> = {
   ignored: "格式不支持或被规则忽略",
   missing: "原件文件已不存在，可清理或重新导入",
   superseded: "来源目录扫描发现同名新版本，此件已被替代",
+  removing: "移除在收尾阶段失败或被中断；可按同一来源重试",
 };
 
 const INDEX_STATUS_LABEL: Record<LibraryIndexStatus, string> = {
@@ -80,7 +83,12 @@ const ITEM_STATUS_LABEL: Record<LibraryJobItemStatus, string> = {
   removed: "已清理",
 };
 
-const SUPPORTED_FORMATS = "PDF、Word、PPT、Excel、EPUB、HTML、Markdown";
+const SUPPORTED_FORMATS = "PDF（需含文字层）、Word、PPT、Excel 现代格式，及 EPUB、HTML、Markdown";
+
+// 文件选择器过滤与后端注册表同口径（ADR-0013）：旧二进制 Office 与扫描件不在
+// 直接支持范围，选择阶段就引导转换，而不是提交后报错
+const ACCEPTED_SUFFIXES =
+  ".pdf,.docx,.pptx,.xlsx,.xlsm,.epub,.html,.htm,.md,.markdown";
 
 function isApiError(error: unknown): error is ApiError {
   return (
@@ -112,6 +120,12 @@ function jobOutcome(job: LibraryJob): { tone: "ok" | "error"; text: string } | n
   if (job.kind === "rebuild") {
     return { tone: "ok", text: "索引全量重建完成。" };
   }
+  if (job.kind === "remove") {
+    return {
+      tone: "ok",
+      text: "已从资料库移除：受管副本与检索内容已清除，图谱与 Wiki 需重新构建（外部原件保留）。",
+    };
+  }
   if (job.kind === "purge") {
     const removed = job.items.filter((item) => item.status === "removed").length;
     return { tone: "ok", text: `清理完成：已物理移除 ${removed} 项失效文档。` };
@@ -128,7 +142,12 @@ function jobOutcome(job: LibraryJob): { tone: "ok" | "error"; text: string } | n
   return { tone: "ok", text: `导入完成：${succeeded} 个文件成功${failedText}。` };
 }
 
-export function LibraryView() {
+type LibraryViewProps = {
+  /** 资料移除成功后派生知识（图谱/Wiki/建议缓存）已失效的向上通知 */
+  onKnowledgeInvalidated?: () => void;
+};
+
+export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
   const [sources, setSources] = useState<LibrarySource[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [job, setJob] = useState<LibraryJob | null>(null);
@@ -156,6 +175,23 @@ export function LibraryView() {
       setLoadError(connectionFallback(caught));
     }
   }, []);
+
+  // 单项移除确认框：仅服务端标记 removable（或移除未完成待重试）的条目进入
+  const [removalTarget, setRemovalTarget] = useState<LibrarySource | null>(null);
+
+  const startRemoval = async (source: LibrarySource) => {
+    if (source.source_id === null) {
+      return;
+    }
+    setRemovalTarget(null);
+    setActionError(null);
+    setJob(null);
+    try {
+      setJob(await removeLibraryDocument(source.source_id));
+    } catch (caught: unknown) {
+      setActionError(connectionFallback(caught));
+    }
+  };
 
   const refreshSyncSources = useCallback(async () => {
     try {
@@ -198,9 +234,17 @@ export function LibraryView() {
         setJob(snapshot);
         if (snapshot.state !== "running") {
           void refreshListing();
-          // 扫描/清理任务可能改变了来源登记的 last_scan 等状态
-          if (snapshot.kind === "scan" || snapshot.kind === "purge") {
+          // 扫描/清理/移除任务可能改变来源登记与派生知识状态
+          if (
+            snapshot.kind === "scan" ||
+            snapshot.kind === "purge" ||
+            snapshot.kind === "remove"
+          ) {
             void refreshSyncSources();
+          }
+          if (snapshot.kind === "remove" && snapshot.state === "succeeded") {
+            // 旧图谱/Wiki/建议缓存已随移除失效：通知上层清理派生缓存
+            onKnowledgeInvalidated?.();
           }
         }
       } catch (caught: unknown) {
@@ -208,7 +252,7 @@ export function LibraryView() {
         setActionError(connectionFallback(caught));
       }
     },
-    [refreshListing, refreshSyncSources],
+    [refreshListing, refreshSyncSources, onKnowledgeInvalidated],
   );
 
   useEffect(() => {
@@ -364,7 +408,7 @@ export function LibraryView() {
     (source) => source.ingest_status === "missing" || source.ingest_status === "superseded",
   ).length;
   const cancellable =
-    running && (job.kind === "ingest" || job.kind === "scan" || job.kind === "purge");
+    running && (job.kind === "ingest" || job.kind === "scan" || job.kind === "purge" || job.kind === "remove");
 
   return (
     <Stack component="section" className="library-view" gap="lg" aria-labelledby="library-title">
@@ -409,13 +453,17 @@ export function LibraryView() {
             }}
           >
             <strong className="library-dropzone-title">点击选择文件，或把文档拖到这里</strong>
-            <span className="hint">{SUPPORTED_FORMATS}，可多选；导入即摄取，原文件保持不变。</span>
+            <span className="hint">
+              {SUPPORTED_FORMATS}，可多选；导入即摄取，原文件保持不变。扫描件 PDF 请先
+              OCR 为含文字版，旧 .doc/.ppt/.xls 请另存为现代格式。
+            </span>
           </div>
           <input
             ref={fileInputRef}
             className="library-drop-input"
             type="file"
             multiple
+            accept={ACCEPTED_SUFFIXES}
             tabIndex={-1}
             aria-label="选择要导入的文件"
             disabled={running}
@@ -596,7 +644,9 @@ export function LibraryView() {
                     ? `正在扫描（${job.done}/${job.total}）`
                     : job.kind === "purge"
                       ? `正在清理（${job.done}/${job.total}）`
-                      : `正在摄取（${job.done}/${job.total}）`}
+                      : job.kind === "remove"
+                        ? "正在从资料库移除…"
+                        : `正在摄取（${job.done}/${job.total}）`}
             </strong>
             {indexing === false && job.current !== null && (
               <p className="library-current-file">{job.current}</p>
@@ -671,10 +721,60 @@ export function LibraryView() {
               >
                 {INDEX_STATUS_LABEL[source.index_status]}
               </span>
+              {source.removable && source.source_id !== null && (
+                <Button
+                  variant="default"
+                  type="button"
+                  className="button-danger library-remove-action"
+                  disabled={running}
+                  title={
+                    source.ingest_status === "removing"
+                      ? "上一次移除未完成：重试将接续清理该来源"
+                      : "从资料库移除该文档的受管副本与派生知识；外部原件保留"
+                  }
+                  onClick={() => setRemovalTarget(source)}
+                >
+                  {source.ingest_status === "removing" ? "重试移除" : "从资料库移除"}
+                </Button>
+              )}
             </li>
           ))}
         </Paper>
       )}
+
+      <Modal
+        opened={removalTarget !== null}
+        onClose={() => setRemovalTarget(null)}
+        title={`确认从资料库移除「${removalTarget?.name ?? ""}」？`}
+        centered
+      >
+        <p>
+          将清除该文档在资料库中的受管副本、投影与检索内容，并使图谱与 Wiki
+          失效（需重新构建）。你选择导入时的外部原件不会被删除，可随时重新导入。
+        </p>
+        <p className="hint">
+          {removalTarget?.ingest_status === "removing"
+            ? "该来源上一次移除未完成，本次为接续重试。"
+            : "此操作不可撤销；来源目录同步管理的文档不提供该操作。"}
+        </p>
+        <Group className="library-dialog-actions" justify="flex-end">
+          <Button type="button" variant="default" onClick={() => setRemovalTarget(null)}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            className="button-danger-solid"
+            disabled={removalTarget === null}
+            onClick={() => {
+              if (removalTarget !== null) {
+                void startRemoval(removalTarget);
+              }
+            }}
+          >
+            确认移除
+          </Button>
+        </Group>
+      </Modal>
 
       <Modal
         opened={confirmingRebuild}

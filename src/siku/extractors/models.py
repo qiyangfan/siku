@@ -25,6 +25,22 @@ class ExtractorError(RuntimeError):
     """格式适配器无法完成抽取时抛出的领域错误。"""
 
 
+class ScannedPdfError(ExtractorError):
+    """整份 PDF 没有可抽取文本（典型为扫描件），需要先 OCR 或转换。"""
+
+
+class EncryptedDocumentError(ExtractorError):
+    """文档已加密，无法在不知口令的情况下打开。"""
+
+
+class CorruptDocumentError(ExtractorError):
+    """文件不是声称格式的可解析文档（损坏或伪装扩展名）。"""
+
+
+class ConverterUnavailableError(ExtractorError):
+    """外部转换工具（如 pandoc）不可用：随包资源缺失且系统 PATH 无该工具。"""
+
+
 @runtime_checkable
 class Extractor(Protocol):
     """每个源格式必须实现的最小抽取协议。"""

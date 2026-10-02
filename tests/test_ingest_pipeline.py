@@ -121,3 +121,86 @@ def test_directory_ingest_ignores_unknown_suffixes(tmp_path: Path) -> None:
     assert report.created == 1
     assert report.ignored == 1
     assert report.ignored_paths == (ignored,)
+
+
+# ---- 旧二进制 Office 格式的可行动拒绝（ADR-0013） ----
+
+
+def test_single_file_ingest_rejects_legacy_office_with_conversion_hint(
+    tmp_path: Path,
+) -> None:
+    from siku.ingest.pipeline import LegacyOfficeFormatError
+
+    source = tmp_path / "旧文档.doc"
+    source.write_bytes(b"legacy binary")
+
+    with pytest.raises(LegacyOfficeFormatError) as excinfo:
+        ingest_path(source, tmp_path / "vault", {".txt": FakeTextExtractor()})
+
+    assert ".docx" in str(excinfo.value)
+
+
+def test_directory_ingest_treats_legacy_office_as_ignored(tmp_path: Path) -> None:
+    """目录模式维持既有「不认识即忽略」口径：批量场景不因单个旧文件中断。"""
+    legacy = tmp_path / "旧文档.xls"
+    legacy.write_bytes(b"legacy binary")
+
+    report = ingest_path(tmp_path, tmp_path / "vault", {".txt": FakeTextExtractor()})
+
+    assert report.ignored == 1
+    assert report.ignored_paths == (legacy,)
+
+
+# ---- 适配器类型化错误翻译为摄取层类型化错误 ----
+
+
+@pytest.mark.parametrize(
+    ("extractor_error", "ingest_error"),
+    [
+        ("siku.extractors.models.ScannedPdfError", "ScannedPdfIngestError"),
+        ("siku.extractors.models.EncryptedDocumentError", "EncryptedDocumentIngestError"),
+        ("siku.extractors.models.CorruptDocumentError", "CorruptDocumentIngestError"),
+        (
+            "siku.extractors.models.ConverterUnavailableError",
+            "ConverterUnavailableIngestError",
+        ),
+    ],
+)
+def test_typed_extractor_errors_keep_their_class_through_the_pipeline(
+    tmp_path: Path, extractor_error: str, ingest_error: str
+) -> None:
+    import importlib
+
+    from siku.extractors.models import ExtractorError
+
+    module_path, _, class_name = extractor_error.rpartition(".")
+    raised = getattr(importlib.import_module(module_path), class_name)
+    expected = getattr(importlib.import_module("siku.ingest.pipeline"), ingest_error)
+
+    class RaisingExtractor:
+        suffixes: tuple[str, ...] = (".txt",)
+
+        def extract(self, source_path: Path) -> ExtractedDocument:
+            raise raised("boom")
+
+    source = tmp_path / "file.txt"
+    source.write_text("内容", encoding="utf-8")
+
+    with pytest.raises(expected):
+        ingest_path(source, tmp_path / "vault", {".txt": RaisingExtractor()})
+    assert issubclass(expected, IngestError)
+    assert issubclass(raised, ExtractorError)
+
+
+def test_default_pdf_pipeline_roundtrip_keeps_page_anchors(tmp_path: Path) -> None:
+    """默认注册表下的 PDF 真实端到端：投影含 page 锚点与 frontmatter。"""
+    from tests.document_fixtures import make_text_pdf
+
+    source = make_text_pdf(tmp_path / "报告.pdf", ["第一页", None, "第三页"])
+
+    report = ingest_path(source, tmp_path / "vault")
+
+    note_text = report.items[0].note_path.read_text(encoding="utf-8")
+    assert "## page:1" in note_text
+    assert "## page:3" in note_text
+    assert "page:2" not in note_text

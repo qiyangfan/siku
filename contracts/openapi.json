@@ -360,6 +360,45 @@
         }
       }
     },
+    "/api/library/remove": {
+      "post": {
+        "summary": "Library Remove",
+        "description": "单来源确认移除：真实来源 ID + 显式确认；请求不接受文件路径。",
+        "operationId": "library_remove_api_library_remove_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryRemoveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryJobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/library/ingest": {
       "post": {
         "summary": "Library Ingest",
@@ -1867,7 +1906,8 @@
               "ingest",
               "rebuild",
               "scan",
-              "purge"
+              "purge",
+              "remove"
             ],
             "title": "Kind"
           },
@@ -1947,7 +1987,7 @@
           "error"
         ],
         "title": "LibraryJobResponse",
-        "description": "摄取/重建/扫描/清理任务的进度快照（HTTP 轮询读取）。"
+        "description": "摄取/重建/扫描/清理/移除任务的进度快照（HTTP 轮询读取）。"
       },
       "LibraryPurgeRequest": {
         "properties": {
@@ -1972,6 +2012,25 @@
         "type": "object",
         "title": "LibraryRebuildRequest",
         "description": "全量重建请求：必须显式携带确认标记。"
+      },
+      "LibraryRemoveRequest": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "confirmed": {
+            "type": "boolean",
+            "title": "Confirmed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id"
+        ],
+        "title": "LibraryRemoveRequest",
+        "description": "单来源确认移除请求：真实来源 ID + 显式确认；不接受文件路径。"
       },
       "LibraryResponse": {
         "properties": {
@@ -2118,6 +2177,22 @@
             "type": "string",
             "title": "Source Hash"
           },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "removable": {
+            "type": "boolean",
+            "title": "Removable",
+            "default": false
+          },
           "ingest_status": {
             "type": "string",
             "enum": [
@@ -2126,7 +2201,8 @@
               "pending",
               "ignored",
               "missing",
-              "superseded"
+              "superseded",
+              "removing"
             ],
             "title": "Ingest Status"
           },

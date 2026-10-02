@@ -47,6 +47,12 @@ summary:focus-visible {
   align-items: center;
 }
 
+/* label 触达面积放大后，track 必须随 body 垂直居中，否则 20px 轨道顶贴 44px 行 */
+.mantine-Checkbox-body,
+.mantine-Switch-body {
+  align-items: center;
+}
+
 .mantine-Badge-root.service-status {
   min-height: var(--siku-service-badge-height);
   padding-inline: var(--space-2);
@@ -811,6 +817,21 @@ code {
   border-color: var(--color-warning-border);
   background: var(--color-warning-wash);
   color: var(--color-warning);
+}
+
+/* 移除未完成：警示态（可按同一来源重试），区别于正常在库状态 */
+.library-badge-ingest-removing {
+  border-color: var(--color-warning-border);
+  background: var(--color-warning-wash);
+  color: var(--color-warning);
+}
+
+/* 行内移除操作：紧凑尺寸，不与徽标争夺视觉重心；窄屏换行后按内容宽收缩 */
+.library-remove-action {
+  flex-shrink: 0;
+  width: fit-content;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-caption);
 }
 
 .library-origin {

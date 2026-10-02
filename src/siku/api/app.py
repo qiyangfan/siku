@@ -51,6 +51,7 @@ from siku.api.models import (
     LibraryJobResponse,
     LibraryPurgeRequest,
     LibraryRebuildRequest,
+    LibraryRemoveRequest,
     LibraryResponse,
     LibraryScanRequest,
     LibraryScanSettingsResponse,
@@ -126,7 +127,14 @@ from siku.retrieve.errors import InvalidQueryError, ModelNotAvailableError
 from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import IndexReport, SearchOptions
 from siku.retrieve.service import SearchService
+from siku.sync.locking import LibraryWriteBusyError, library_write_lock
 from siku.sync.registry import SourceAlreadyRegisteredError, SyncRegistry, library_db_path
+from siku.sync.removal import (
+    SourceNotFoundError,
+    SourceSyncManagedError,
+    ensure_library_writable,
+    removal_eligibility,
+)
 from siku.sync.scanner import SourcePlan
 from siku.sync.service import ScanObserver, SyncService
 from siku.wiki.service import WikiResult, generate_wiki
@@ -138,6 +146,13 @@ DEFAULT_VAULT = Path("vault")
 DEFAULT_DATA_DIR = Path("data")
 ALLOWED_CORS_ORIGINS = ("http://127.0.0.1:5173", "http://localhost:5173")
 SNAPSHOT_GENERATOR = "uv run python -m siku.api.contract --refresh"
+# 同库写入口的锁等待：平滑同进程正常交接，真冲突快速如实报忙
+_WRITE_LOCK_TIMEOUT_SECS = 1.0
+_LIBRARY_BUSY_RESPONSE = (
+    409,
+    "library_job_busy",
+    "另一个 siku 进程正在写入该资料库，请等待其完成后再试。",
+)
 
 IngestHandler = Callable[[Path, Path], IngestReport]
 SearchServiceFactory = Callable[[Path], SearchService]
@@ -322,6 +337,7 @@ def create_app(
     sync_service = SyncService(
         sync_registry,
         vault=vault,
+        data_dir=data_dir,
         ingest_handler=ingest_handler,
         whitelist=set(extractor_registry()),
     )
@@ -335,12 +351,15 @@ def create_app(
 
     library_jobs = LibraryJobManager(
         vault=vault,
+        data_dir=data_dir,
+        registry=sync_registry,
         ingest_handler=ingest_handler,
         index_runner=index_runner
         or _supply_index_runner(vault, data_dir, embedding_supply, embedding_dimensions),
         api_key_env=api_key_env,
         scan_runner=_scan_job_body,
         purge_runner=sync_service.run_purge,
+        remove_runner=sync_service.run_removal,
     )
     sync_scheduler = SyncScheduler(
         sync_registry,
@@ -421,7 +440,14 @@ def create_app(
     def ingest(request: IngestRequest) -> IngestResponse | JSONResponse:
         target_vault = request.vault or application.state.vault
         try:
-            report = application.state.ingest_handler(request.source, target_vault)
+            # 原始摄取也是同库写入：与资料库任务/移除共享跨进程互斥（spec）；
+            # 仅当写入应用自身 vault 时才做消减恢复（自定义 vault 无对应库域登记）
+            with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                if target_vault == application.state.vault:
+                    ensure_library_writable(application.state.data_dir, sync_registry)
+                report = application.state.ingest_handler(request.source, target_vault)
+        except LibraryWriteBusyError:
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         except Exception as exc:
             logger.debug(
                 "API ingest failed: error_class=%s error_detail=%s",
@@ -524,7 +550,12 @@ def create_app(
         source_id: str, request: LibrarySourceUpdateRequest
     ) -> LibrarySourceInfo | JSONResponse:
         """启停来源目录：停用后扫描跳过该目录，登记与文档不受影响。"""
-        source = sync_registry.set_source_enabled(source_id, request.enabled)
+        # 启停改变同步归属：与移除/扫描共享同库写锁（锁后重验的前提）
+        try:
+            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                source = sync_registry.set_source_enabled(source_id, request.enabled)
+        except LibraryWriteBusyError:
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         if source is None:
             return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
         return LibrarySourceInfo(
@@ -540,7 +571,12 @@ def create_app(
     )
     def library_sources_delete(source_id: str) -> LibrarySourceRemovedResponse | JSONResponse:
         """移除登记与检测缓存；已入库文档与既有标记不受影响。"""
-        if not sync_registry.remove_source(source_id):
+        try:
+            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                removed = sync_registry.remove_source(source_id)
+        except LibraryWriteBusyError:
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
+        if not removed:
             return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
         return LibrarySourceRemovedResponse(removed=True)
 
@@ -582,6 +618,41 @@ def create_app(
             )
         try:
             return library_jobs.start_purge()
+        except LibraryJobBusyError:
+            return _error_response(
+                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
+            )
+
+    @application.post("/api/library/remove", response_model=LibraryJobResponse)
+    def library_remove(request: LibraryRemoveRequest) -> LibraryJobResponse | JSONResponse:
+        """单来源确认移除：真实来源 ID + 显式确认；请求不接受文件路径。"""
+        if not request.confirmed:
+            return _error_response(
+                422,
+                "remove_confirm_required",
+                "移除需要显式确认：请在请求中携带 confirmed=true。",
+            )
+        # 资格判定先行（请求面如实分型）；执行体内取得写锁后再次核对同步登记
+        try:
+            removal_eligibility(
+                sync_registry,
+                application.state.vault,
+                application.state.data_dir,
+                request.source_id,
+            )
+        except SourceNotFoundError:
+            return _error_response(
+                404, "source_not_found", "目标资料不存在，可能已被移除；请刷新清单后重试。"
+            )
+        except SourceSyncManagedError:
+            return _error_response(
+                409,
+                "source_sync_managed",
+                "该资料由来源目录同步管理：请经来源目录的停用/解除登记与既有清理流程处理，"
+                "不能手动单项移除。",
+            )
+        try:
+            return library_jobs.start_remove(request.source_id)
         except LibraryJobBusyError:
             return _error_response(
                 409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
@@ -761,13 +832,22 @@ def create_app(
         extractor: GraphExtractor | None = None
         try:
             extractor = application.state.graph_extractor_factory()
-            result = application.state.graph_builder(
-                target_vault,
-                target_data_dir,
-                extractor,
-                rebuild=request.rebuild,
-                summary_identity=SummaryIdentity(model_id=extractor.model_id),
-            )
+            # 图谱构建是同库写入：与移除/摄取互斥，且构建结果不得发布已移除内容
+            with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                if target_vault == application.state.vault:
+                    ensure_library_writable(application.state.data_dir, sync_registry)
+                result = application.state.graph_builder(
+                    target_vault,
+                    target_data_dir,
+                    extractor,
+                    rebuild=request.rebuild,
+                    summary_identity=SummaryIdentity(model_id=extractor.model_id),
+                )
+        except LibraryWriteBusyError:
+            if extractor is not None:
+                _close_if_supported(extractor)
+                extractor = None
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         except Exception as exc:
             logger.debug(
                 "API graph failed: error_class=%s error_detail=%s",
@@ -871,7 +951,15 @@ def create_app(
         summarizer: Summarizer | None = None
         try:
             summarizer = application.state.summarizer_factory()
-            result = application.state.wiki_generator(target_data_dir, summarizer)
+            # wiki 写盘同样是同库写入：与移除互斥，不复活已移除内容
+            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                ensure_library_writable(application.state.data_dir, sync_registry)
+                result = application.state.wiki_generator(target_data_dir, summarizer)
+        except LibraryWriteBusyError:
+            if summarizer is not None:
+                _close_if_supported(summarizer)
+                summarizer = None
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
         except Exception as exc:
             logger.debug(
                 "API wiki failed: error_class=%s error_detail=%s",

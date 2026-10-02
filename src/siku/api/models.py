@@ -275,7 +275,19 @@ class LibrarySourceResponse(BaseModel):
     name: str
     path: str
     source_hash: str
-    ingest_status: Literal["ingested", "stale", "pending", "ignored", "missing", "superseded"]
+    # 真实库域来源身份（清单删除/移除入口的定位键）；无法推导时为 null
+    source_id: str | None = None
+    # 服务端判定：仅无同步登记引用的手动来源为 true；客户端不得从路径推断
+    removable: bool = False
+    ingest_status: Literal[
+        "ingested",
+        "stale",
+        "pending",
+        "ignored",
+        "missing",
+        "superseded",
+        "removing",
+    ]
     index_status: Literal["indexed", "stale", "missing"]
     # 来源目录登记的上游路径；手动导入条目为 null（决议 #4）
     origin_path: str | None = None
@@ -297,10 +309,10 @@ class LibraryJobItemResponse(BaseModel):
 
 
 class LibraryJobResponse(BaseModel):
-    """摄取/重建/扫描/清理任务的进度快照（HTTP 轮询读取）。"""
+    """摄取/重建/扫描/清理/移除任务的进度快照（HTTP 轮询读取）。"""
 
     job_id: str
-    kind: Literal["ingest", "rebuild", "scan", "purge"]
+    kind: Literal["ingest", "rebuild", "scan", "purge", "remove"]
     state: Literal["running", "succeeded", "failed", "cancelled"]
     phase: Literal["scanning", "ingesting", "purging", "indexing"]
     total: int
@@ -374,6 +386,13 @@ class LibraryPurgeRequest(BaseModel):
     """清理请求：必须显式携带确认标记（唯一物理删除路径）。"""
 
     confirm: bool = False
+
+
+class LibraryRemoveRequest(BaseModel):
+    """单来源确认移除请求：真实来源 ID + 显式确认；不接受文件路径。"""
+
+    source_id: str
+    confirmed: bool = False
 
 
 class NoteSummaryResponse(BaseModel):

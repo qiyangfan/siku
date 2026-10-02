@@ -58,7 +58,8 @@ describe("资料库视图", () => {
     render(<LibraryView />);
 
     expect(await screen.findByText("资料库还是空的")).toBeInTheDocument();
-    expect(screen.getByText(/支持格式：/)).toHaveTextContent("PDF、Word、PPT、Excel、EPUB、HTML、Markdown");
+    expect(screen.getByText(/支持格式：/)).toHaveTextContent("PDF（需含文字层）");
+    expect(screen.getByText(/扫描件 PDF 请先/)).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "资料库来源清单" })).not.toBeInTheDocument();
   });
 
@@ -497,5 +498,215 @@ describe("来源目录同步", () => {
     expect(missingBadge).toHaveAccessibleDescription(/原件文件已不存在/);
     const supersededBadge = within(list).getByText("已被替代");
     expect(supersededBadge).toHaveAccessibleDescription(/已被替代/);
+  });
+});
+
+const removableSources = {
+  sources: [
+    {
+      name: "手动笔记.md",
+      path: "attachments/manual--c1d2e3f4a5b6.md",
+      source_hash: "c".repeat(64),
+      source_id: "c1d2e3f4a5b6",
+      removable: true,
+      ingest_status: "ingested",
+      index_status: "indexed",
+      origin_path: null,
+    },
+    {
+      name: "同步文档.md",
+      path: "attachments/synced--d2e3f4a5b6c1.md",
+      source_hash: "d".repeat(64),
+      source_id: "d2e3f4a5b6c1",
+      removable: false,
+      ingest_status: "ingested",
+      index_status: "indexed",
+      origin_path: "/feed/同步文档.md",
+    },
+  ],
+};
+
+describe("单项移除", () => {
+  it("仅服务端标记可移除的手动条目提供移除操作；同步条目不误导", async () => {
+    mockRouter([() => removableSources]);
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    expect(
+      within(list).getByRole("button", { name: "从资料库移除" }),
+    ).toBeInTheDocument();
+    // 同步管理的条目（removable=false）不暴露手动移除
+    expect(
+      within(list).getAllByRole("button", { name: "从资料库移除" }),
+    ).toHaveLength(1);
+  });
+
+  it("确认框说明保留外部原件与图谱/Wiki 重建；取消不产生写入", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockRouter([() => removableSources]);
+    render(<LibraryView />);
+
+    await screen.findByRole("list", { name: "资料库来源清单" });
+    await user.click(screen.getByRole("button", { name: "从资料库移除" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/手动笔记\.md/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/外部原件不会被删除/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/图谱与 Wiki/)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: "取消" }));
+    // 取消后回到清单：行内操作仍在，模态随过渡关闭
+    expect(screen.getByRole("button", { name: "从资料库移除" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    const calls = fetchSpy.mock.calls.filter(
+      ([input]) => String(input).includes("/api/library/remove"),
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("确认后跟踪移除任务，成功后刷新清单并通知知识缓存失效", async () => {
+    const user = userEvent.setup();
+    const invalidated = vi.fn();
+    const runningJob = {
+      job_id: "job-r",
+      kind: "remove",
+      state: "running",
+      phase: "purging",
+      total: 1,
+      done: 0,
+      failed: 0,
+      current: "c1d2e3f4a5b6",
+      items: [],
+      error: null,
+    };
+    const doneJob = {
+      ...runningJob,
+      state: "succeeded",
+      done: 1,
+      current: null,
+      items: [
+        {
+          name: "手动笔记.md",
+          path: "attachments/manual--c1d2e3f4a5b6.md",
+          status: "removed",
+          detail: null,
+        },
+      ],
+    };
+    mockRouter([
+      () => removableSources,
+      (url, method, init) => {
+        expect(url).toBe("/api/library/remove");
+        expect(method).toBe("POST");
+        expect(JSON.parse(String(init?.body))).toEqual({
+          source_id: "c1d2e3f4a5b6",
+          confirmed: true,
+        });
+        return runningJob;
+      },
+      () => doneJob,
+      () => ({ sources: [removableSources.sources[1]] }),
+    ]);
+    render(<LibraryView onKnowledgeInvalidated={invalidated} />);
+
+    await screen.findByRole("list", { name: "资料库来源清单" });
+    await user.click(screen.getByRole("button", { name: "从资料库移除" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "确认移除" }));
+
+    expect(await screen.findByText("正在从资料库移除…")).toBeInTheDocument();
+    expect(
+      await screen.findByText(/已从资料库移除：受管副本与检索内容已清除/),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(/图谱与 Wiki 需重新构建/)).toBeInTheDocument();
+    await waitFor(() => expect(invalidated).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("list", { name: "资料库来源清单" }),
+      ).not.toHaveTextContent("手动笔记.md"),
+    );
+  });
+
+  it("移除未完成的条目呈现警示徽标与重试入口", async () => {
+    const incomplete = {
+      sources: [
+        {
+          name: "移除未完成的资料（c1d2e3f4）",
+          path: "attachments/（已删除，c1d2e3f4）",
+          source_hash: "",
+          source_id: "c1d2e3f4a5b6",
+          removable: true,
+          ingest_status: "removing",
+          index_status: "missing",
+          origin_path: null,
+        },
+      ],
+    };
+    mockRouter([() => incomplete]);
+    render(<LibraryView />);
+
+    const list = await screen.findByRole("list", { name: "资料库来源清单" });
+    expect(within(list).getByText("移除未完成")).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "重试移除" })).toBeInTheDocument();
+  });
+
+  it("移除失败时保留重试状态，不把条目消失当成成功", async () => {
+    const user = userEvent.setup();
+    const failedJob = {
+      job_id: "job-f",
+      kind: "remove",
+      state: "failed",
+      phase: "purging",
+      total: 1,
+      done: 0,
+      failed: 1,
+      current: null,
+      items: [
+        {
+          name: "手动笔记.md",
+          path: "attachments/manual--c1d2e3f4a5b6.md",
+          status: "failed",
+          detail: "索引消减未完成，移除标记已保留；可按同一来源重试。",
+        },
+      ],
+      error: null,
+    };
+    const withRemovingRow = {
+      sources: [
+        { ...removableSources.sources[0], ingest_status: "removing" },
+        removableSources.sources[1],
+      ],
+    };
+    const runningJob = {
+      job_id: "job-f",
+      kind: "remove",
+      state: "running",
+      phase: "purging",
+      total: 1,
+      done: 0,
+      failed: 0,
+      current: "c1d2e3f4a5b6",
+      items: [],
+      error: null,
+    };
+    mockRouter([
+      () => removableSources,
+      () => runningJob,
+      () => failedJob,
+      () => withRemovingRow,
+    ]);
+    render(<LibraryView />);
+
+    await screen.findByRole("list", { name: "资料库来源清单" });
+    await user.click(screen.getByRole("button", { name: "从资料库移除" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "确认移除" }));
+
+    expect(
+      await screen.findByText(/索引消减未完成，移除标记已保留/),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "重试移除" })).toBeInTheDocument(),
+    );
   });
 });

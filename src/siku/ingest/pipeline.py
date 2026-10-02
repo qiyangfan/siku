@@ -12,13 +12,56 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from siku.extractors import ExtractedDocument, Extractor, ExtractorError, extractor_registry
+from siku.extractors import (
+    ConverterUnavailableError,
+    CorruptDocumentError,
+    EncryptedDocumentError,
+    ExtractedDocument,
+    Extractor,
+    ExtractorError,
+    ScannedPdfError,
+    extractor_registry,
+    legacy_office_target,
+)
 
 Status = Literal["created", "updated", "skipped"]
 
 
 class IngestError(RuntimeError):
     """摄取失败的用户可读错误。"""
+
+
+class ScannedPdfIngestError(IngestError):
+    """整份 PDF 无可抽取文本（扫描件），需要先转换/OCR。"""
+
+
+class EncryptedDocumentIngestError(IngestError):
+    """文档加密，无法打开。"""
+
+
+class CorruptDocumentIngestError(IngestError):
+    """文件不是可解析的目标格式文档。"""
+
+
+class ConverterUnavailableIngestError(IngestError):
+    """外部转换工具不可用（随包资源缺失且系统 PATH 无该工具）。"""
+
+
+class LegacyOfficeFormatError(IngestError):
+    """旧二进制 Office 格式不受支持，需要先转换为现代格式。"""
+
+
+def _translate_extraction_error(exc: ExtractorError) -> IngestError:
+    """把适配器层类型化错误翻译为同语义的摄取层错误（保留可行动分类）。"""
+    if isinstance(exc, ScannedPdfError):
+        return ScannedPdfIngestError(str(exc))
+    if isinstance(exc, EncryptedDocumentError):
+        return EncryptedDocumentIngestError(str(exc))
+    if isinstance(exc, CorruptDocumentError):
+        return CorruptDocumentIngestError(str(exc))
+    if isinstance(exc, ConverterUnavailableError):
+        return ConverterUnavailableIngestError(str(exc))
+    return IngestError(str(exc))
 
 
 @dataclass(frozen=True)
@@ -179,6 +222,13 @@ def ingest_path(
     for path in files:
         extractor = registry.get(path.suffix.lower())
         if extractor is None:
+            legacy_target = legacy_office_target(path.suffix.lower())
+            if legacy_target is not None:
+                # 旧二进制 Office 格式：给出转换指引而非静默忽略/伪失败
+                raise LegacyOfficeFormatError(
+                    f"The legacy binary format {path.suffix} is not supported;"
+                    f" convert {path.name} to {legacy_target} and import it again."
+                )
             ignored = (*ignored, path)
             continue
         try:
@@ -208,7 +258,7 @@ def ingest_path(
         try:
             document = extractor.extract(path)
         except ExtractorError as exc:
-            raise IngestError(str(exc)) from exc
+            raise _translate_extraction_error(exc) from exc
         except Exception as exc:
             raise IngestError(f"Failed to extract {path.name}: {exc}") from exc
         previous = note_path.exists()
