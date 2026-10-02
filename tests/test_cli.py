@@ -7,7 +7,12 @@ from typer.testing import CliRunner
 
 from siku import __version__
 from siku.cli import LlmProtocol, _announce_supply_channels, app
-from siku.model_supply import LLM_PROTOCOLS, ChannelValues, ResolvedChannel
+from siku.model_supply import (
+    LLM_PROTOCOLS,
+    ChannelValues,
+    ResolvedChannel,
+    config_file_path,
+)
 from siku.retrieve.errors import ModelConfigFileError
 
 runner = CliRunner()
@@ -33,9 +38,11 @@ def test_serve_fails_fast_on_unreadable_config_with_accurate_copy(
     横幅——所以断言落在退出文案上，不去测那条走不到的横幅分支）。
     """
     home = tmp_path / "home"
-    cfg_dir = home / "Library" / "Application Support" / "siku"
-    cfg_dir.mkdir(parents=True)
-    cfg = cfg_dir / "config.toml"
+    # 与应用同源解析配置路径(平台分叉:Linux/XDG vs macOS),先切 HOME 再取
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    cfg = config_file_path()
+    cfg.parent.mkdir(parents=True)
     cfg.write_text('[llm]\nmodel = "m"\n', encoding="utf-8")
     cfg.chmod(0o000)
     # 护栏:真跑到起服就当场失败,绝不让用例把端口绑起来挂住整轮
@@ -81,9 +88,12 @@ def test_serve_startup_warning_names_the_invalid_field(
     用户在启动输出里看不出该改哪一行，也不知道这次的成因是取值而不是语法。
     """
     home = tmp_path / "home"
-    cfg_dir = home / "Library" / "Application Support" / "siku"
-    cfg_dir.mkdir(parents=True)
-    (cfg_dir / "config.toml").write_text('[llm]\nprotocol = "gemini-native"\n', encoding="utf-8")
+    # 与应用同源解析配置路径(平台分叉:Linux/XDG vs macOS),先切 HOME 再取
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    cfg = config_file_path()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text('[llm]\nprotocol = "gemini-native"\n', encoding="utf-8")
     monkeypatch.setattr("siku.cli.uvicorn.run", lambda *_a, **_k: None)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("DASHSCOPE_API_KEY", "")  # 关掉厂商回退，逼出文件层解析
@@ -104,9 +114,12 @@ def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     ModelConfigFileError` 的体内,ProtocolConfigError 直接穿出 `serve`。
     """
     home = tmp_path / "home"
-    cfg_dir = home / "Library" / "Application Support" / "siku"
-    cfg_dir.mkdir(parents=True)
-    (cfg_dir / "config.toml").write_text("not [valid toml", encoding="utf-8")
+    # 与应用同源解析配置路径(平台分叉:Linux/XDG vs macOS),先切 HOME 再取
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    cfg = config_file_path()
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("not [valid toml", encoding="utf-8")
     monkeypatch.setattr(
         "siku.cli.uvicorn.run",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("serve 不应走到起服")),
