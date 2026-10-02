@@ -30,7 +30,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 
 ## 当前排序队列
 
-2026-10-02 两项提案已实施并通过验收归档：
+2026-10-02 三项提案已实施并通过验收归档：
 
 1. ~~complete-desktop-format-ingest~~ ✅（2026-10-02，归档
    `2026-10-02-complete-desktop-format-ingest`）：pypdf 默认 PDF + Office 库进核心
@@ -43,6 +43,13 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
    索引消减与暂存对恢复、旧图谱/Wiki 快照失效、`user_removed` 完整收尾入全量
    清理、filelock 跨进程同库写互斥 + 扫描锁后重验；UI 行内移除/重试与知识缓存
    失效通知；ADR-0010 清理边界已回写。
+3. ~~dark-theme~~ ✅（2026-10-02，归档 `2026-10-02-dark-theme`）：暗色三态主题——
+   Mantine 内建 auto 初值 + 库默认键持久化、resolver light/dark 分流取值（暗色
+   对比度逐族标定并守卫钉住 ≥4.5:1）、两处 HTML 接 ColorSchemeScript 同源初始化
+   脚本（防首帧闪烁 + 防漂移测试）、壳页暗色块同源、header 两态切换入口、图谱
+   边线/标签色随主题；web-ui 主规格新增「主题三态与两态对比度」需求。
+
+排序队列已清空，下一项待 owner 对齐排序。
 
 收款继续 Mock，不另开支付方案。最近完成并归档：
 
@@ -85,6 +92,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 商业化决策 | 商标全类目清查（SIKU 玩具品牌） | ADR-0007 |
 | 发布解禁（Release 重启 / Phase 6 启动） | 执行 Windows/Linux 实机安装冒烟并回填（清单见 docs/desktop.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell` |
 | 有 Ollama / 云端 key 的环境 | 补录双通道基线（复现路径见 benchmarks/README.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-byok-model-supply` |
+| Phase 6（代码签名 + 自动更新）重启 | 证书到位且 owner 明确指令双条件齐备才启动；期间不作为待办、不反复评审 | 用户裁决 2026-10-02 |
 | 有真实 BYOK 端点环境 | 设置中心/资料库/浏览·图谱·wiki 三视图 Tauri 壳内手工冒烟（serve 级全链路冒烟已记账于各归档 change review.md） | 归档 `2026-09-19-add-ui-settings-center` 及后续桌面上手 change |
 
 ## Backlog（明确不进当前阶段，防 scope creep）

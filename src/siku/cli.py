@@ -340,8 +340,9 @@ def _config_file_error_message(exc: ModelConfigFileError) -> str:
 
 def _fail(message: str, exc: Exception) -> NoReturn:
     # stderr 即 CLI 的用户面：技术细节降为 DEBUG 日志（SIKU_LOG_LEVEL=DEBUG 可见），
-    # 用户面只呈现归一化的中文文案
-    logger.debug("command failed: error_class=%s detail=%s", type(exc).__name__, exc, exc_info=True)
+    # 用户面只呈现归一化的中文文案；异常文本由 exc_info 的 traceback 携带，
+    # 日志行只记错误类名（与 serve 启动面日志同口径）
+    logger.debug("command failed: error_class=%s", type(exc).__name__, exc_info=True)
     typer.echo(message, err=True)
     raise typer.Exit(code=1) from exc
 

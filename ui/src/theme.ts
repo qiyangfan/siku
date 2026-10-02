@@ -74,6 +74,16 @@ const SEMANTIC_RED = "#a43d3d";
 const INK = "#182230";
 const CANVAS = "#f6f8fb";
 
+// 暗色取值（design D3）：亮色值的明度反转、同族色相，经对比度实测标定
+// （守卫见 design-system.test.ts「暗色取值对比度守卫」），不在两态间另起色相。
+const DARK_INK = "#e6ecf3";
+const DARK_CANVAS = "#10161d";
+const DARK_SURFACE = "#182230";
+const DARK_INK_SOFT = "#a7b3c2";
+const DARK_INK_FAINT = "#8b98a8";
+const DARK_BORDER = "#2a3644";
+const DARK_BORDER_STRONG = "#3a4a5c";
+
 /**
  * 覆盖 Mantine 默认 green/yellow/red 色阶：Alert/Badge 的 color 属性与下方
  * CSS 语义 token 从此同源，杜绝「Mantine 默认鲜亮板」与「siku muted 语义色」
@@ -134,8 +144,16 @@ export const GRAPH_COMMUNITY_COLORS = [
 ] as const;
 export const GRAPH_UNASSIGNED_COLOR = "#7b8798";
 
-/** 画布边线色：ink 的透明派生（canvas 绘制读不到 CSS 变量，只能常量化）。 */
-export const GRAPH_EDGE_COLOR = rgba(INK, 0.18);
+/**
+ * 画布绘制读不到 CSS 变量的常量例外（共两处，登记防漏改）：
+ * ①社区分类色板与未分配灰——本就随 community_id 常量化，暗底可读性另立；
+ * ②边线与节点标签色——随主题取亮暗两值，经本函数单点供给。
+ */
+export function graphCanvasThemeColors(colorScheme: "light" | "dark"): { edge: string; label: string } {
+  return colorScheme === "dark"
+    ? { edge: rgba(DARK_INK, 0.18), label: DARK_INK }
+    : { edge: rgba(INK, 0.18), label: INK };
+}
 
 const primary: MantineColorsTuple = [
   "#edf2ff",
@@ -182,28 +200,9 @@ export const theme = createTheme({
 });
 
 export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
+  // 两态共用块只留度量与排印刻度；方案相关 token（色彩/投影）分流进 light/dark，
+  // 否则暗色只能整体覆盖、无法两态并存（design D2）
   variables: {
-    "--color-ink": INK,
-    // 辅助字对比度达标口径（≥4.5:1，UI 闸门硬底线）：曾在浅灰画布上仅 3.1–3.9:1
-    "--color-ink-soft": "#47525f",
-    "--color-ink-faint": "#545f6e",
-    "--color-canvas": CANVAS,
-    "--color-surface": "#ffffff",
-    "--color-border": "#dce3ec",
-    "--color-border-strong": "#c5cfdd",
-    "--color-accent": currentTheme.colors.siku[6],
-    "--color-accent-strong": currentTheme.colors.siku[7],
-    "--color-accent-wash": currentTheme.colors.siku[0],
-    // 语义色一律取自上方被覆盖的 Mantine 色阶（阶位口径见 ramp 注释），
-    // 与组件 color="green|yellow|red" 天然同色；design-system.test.ts 守卫同源性
-    "--color-success": currentTheme.colors.green[6],
-    "--color-warning": currentTheme.colors.yellow[6],
-    "--color-warning-wash": currentTheme.colors.yellow[1],
-    "--color-warning-border": currentTheme.colors.yellow[2],
-    "--color-danger": currentTheme.colors.red[6],
-    "--color-danger-strong": currentTheme.colors.red[7],
-    "--color-danger-wash": currentTheme.colors.red[1],
-    "--color-danger-border": currentTheme.colors.red[2],
     "--font-display": FONT_DISPLAY,
     "--font-caption": FONT_SIZE_SCALE.xs,
     "--font-small": FONT_SIZE_SCALE.sm,
@@ -237,7 +236,6 @@ export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
     "--border-width-strong": COMPONENT_METRICS.borderWidthStrong,
     "--focus-outline-width": COMPONENT_METRICS.focusOutlineWidth,
     "--focus-outline-offset": COMPONENT_METRICS.focusOutlineOffset,
-    "--shadow-card": "0 0.75rem 2rem rgb(24 34 48 / 0.06)",
     "--control-height": COMPONENT_METRICS.controlHeight,
     "--control-height-mobile-nav": COMPONENT_METRICS.mobileNavHeight,
     "--button-padding-inline": COMPONENT_METRICS.buttonPaddingInline,
@@ -246,8 +244,58 @@ export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
     "--content-max": COMPONENT_METRICS.contentMax,
   },
   light: {
+    "--color-ink": INK,
+    // 辅助字对比度达标口径（≥4.5:1，UI 闸门硬底线）：曾在浅灰画布上仅 3.1–3.9:1
+    "--color-ink-soft": "#47525f",
+    "--color-ink-faint": "#545f6e",
+    "--color-canvas": CANVAS,
+    "--color-surface": "#ffffff",
+    "--color-border": "#dce3ec",
+    "--color-border-strong": "#c5cfdd",
+    "--color-accent": currentTheme.colors.siku[6],
+    "--color-accent-strong": currentTheme.colors.siku[7],
+    "--color-accent-wash": currentTheme.colors.siku[0],
+    // 语义色一律取自上方被覆盖的 Mantine 色阶（阶位口径见 ramp 注释），
+    // 与组件 color="green|yellow|red" 天然同色；design-system.test.ts 守卫同源性
+    "--color-success": currentTheme.colors.green[6],
+    "--color-warning": currentTheme.colors.yellow[6],
+    "--color-warning-wash": currentTheme.colors.yellow[1],
+    "--color-warning-border": currentTheme.colors.yellow[2],
+    "--color-danger": currentTheme.colors.red[6],
+    "--color-danger-strong": currentTheme.colors.red[7],
+    "--color-danger-wash": currentTheme.colors.red[1],
+    "--color-danger-border": currentTheme.colors.red[2],
+    "--shadow-card": "0 0.75rem 2rem rgb(24 34 48 / 0.06)",
     "--mantine-color-body": CANVAS,
     "--mantine-color-text": INK,
   },
-  dark: {},
+  // 暗色取值经对比度逐族标定（design D3，守卫见 design-system.test.ts）：
+  // 核心语义色取各自 ramp 亮色阶位（success 4 / warning 3 / danger 3），
+  // 红 3 阶是 wash 文字达标线（4 阶仅 3.84:1），不能用统一阶位通吃。
+  // 余量最薄配对：accent 对 accent-wash 仅 4.6:1（评审实测 4.597），调 siku
+  // ramp 时这条最先破线——动 ramp 前先看对比度守卫
+  dark: {
+    "--color-ink": DARK_INK,
+    "--color-ink-soft": DARK_INK_SOFT,
+    "--color-ink-faint": DARK_INK_FAINT,
+    "--color-canvas": DARK_CANVAS,
+    "--color-surface": DARK_SURFACE,
+    "--color-border": DARK_BORDER,
+    "--color-border-strong": DARK_BORDER_STRONG,
+    "--color-accent": currentTheme.colors.siku[4],
+    "--color-accent-strong": currentTheme.colors.siku[3],
+    "--color-accent-wash": currentTheme.colors.siku[9],
+    "--color-success": currentTheme.colors.green[4],
+    "--color-warning": currentTheme.colors.yellow[3],
+    "--color-warning-wash": currentTheme.colors.yellow[9],
+    "--color-warning-border": currentTheme.colors.yellow[5],
+    "--color-danger": currentTheme.colors.red[3],
+    "--color-danger-strong": currentTheme.colors.red[4],
+    "--color-danger-wash": currentTheme.colors.red[9],
+    "--color-danger-border": currentTheme.colors.red[5],
+    // 暗色投影加深：亮色 ink 投影在暗底不可见
+    "--shadow-card": "0 0.75rem 2rem rgb(0 0 0 / 0.35)",
+    "--mantine-color-body": DARK_CANVAS,
+    "--mantine-color-text": DARK_INK,
+  },
 });

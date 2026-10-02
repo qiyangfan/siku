@@ -525,9 +525,22 @@ code {
 }
 
 .mantine-Tabs-tab.nav-tab:focus-visible,
-.mantine-Button-root.mobile-more-trigger:focus-visible {
+.mantine-Button-root.mobile-more-trigger:focus-visible,
+.mantine-ActionIcon-root.theme-toggle:focus-visible {
   outline: var(--focus-outline-width) solid var(--color-accent);
   outline-offset: var(--focus-outline-offset);
+}
+
+/* 主题切换入口：与 header 既有控件同一 control-height 刻度，色随两态 token */
+.mantine-ActionIcon-root.theme-toggle {
+  width: var(--control-height);
+  height: var(--control-height);
+  color: var(--color-ink-soft);
+}
+
+.mantine-ActionIcon-root.theme-toggle:hover:not(:disabled) {
+  background: var(--color-accent-wash);
+  color: var(--color-accent-strong);
 }
 
 .settings-loading {

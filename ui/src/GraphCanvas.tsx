@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma from "sigma";
+import { useComputedColorScheme } from "@mantine/core";
 import type { GraphEdge, GraphNode } from "./api";
-import { GRAPH_COMMUNITY_COLORS, GRAPH_EDGE_COLOR, GRAPH_UNASSIGNED_COLOR } from "./theme";
+import { GRAPH_COMMUNITY_COLORS, GRAPH_UNASSIGNED_COLOR, graphCanvasThemeColors } from "./theme";
 
 /** 画布数据边界：永远只渲染服务端有界查询的返回集合。 */
 export type GraphCanvasProps = {
@@ -35,6 +36,11 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
   const selectedRef = useRef<string | null>(null);
   const nodesByIdRef = useRef<Map<string, GraphNode>>(new Map());
   const onSelectRef = useRef(onSelect);
+  // 画布绘制的边线/标签色读不到 CSS 变量（theme.ts 登记的第二处 canvas 例外），
+  // 按解析后的主题取值；经 ref 中转避免把主题变更接进数据重建（重建会重掷布局坐标）
+  const colorScheme = useComputedColorScheme("light", { getInitialValueInEffect: false });
+  const colorSchemeRef = useRef(colorScheme);
+  colorSchemeRef.current = colorScheme;
 
   onSelectRef.current = onSelect;
 
@@ -45,6 +51,7 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
     if (graph === null || renderer === null) {
       return;
     }
+    const canvasColors = graphCanvasThemeColors(colorSchemeRef.current);
     graph.clear();
     nodesByIdRef.current = new Map();
     for (const node of nodes) {
@@ -64,7 +71,7 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
       if (graph.hasNode(edge.source) && graph.hasNode(edge.target)) {
         graph.addEdge(edge.source, edge.target, {
           size: 1,
-          color: GRAPH_EDGE_COLOR,
+          color: canvasColors.edge,
           type: "line",
         });
       }
@@ -121,6 +128,19 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
   useEffect(() => {
     rebuildData();
   }, [rebuildData]);
+
+  // 主题切换就地重着色：只改边线色与标签色并刷新，不重建数据（保持布局坐标）
+  useEffect(() => {
+    const graph = graphRef.current;
+    const renderer = rendererRef.current;
+    if (graph === null || renderer === null) {
+      return;
+    }
+    const canvasColors = graphCanvasThemeColors(colorScheme);
+    graph.forEachEdge((edge) => graph.setEdgeAttribute(edge, "color", canvasColors.edge));
+    renderer.setSettings({ labelColor: { color: canvasColors.label } });
+    renderer.refresh();
+  }, [colorScheme]);
 
   useEffect(() => {
     const graph = graphRef.current;

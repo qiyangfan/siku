@@ -37,6 +37,7 @@ import { BrowseView } from "./BrowseView";
 import { GraphView } from "./GraphView";
 import { LibraryView } from "./LibraryView";
 import { SettingsView } from "./SettingsView";
+import { ThemeToggle } from "./ThemeToggle";
 import { WikiView } from "./WikiView";
 import { buildQuestionSuggestions, type QuestionSuggestion } from "./question-suggestions";
 import "./styles.css";
@@ -330,6 +331,7 @@ function App() {
           <Group className="page-status" justify="space-between" align="center" wrap="nowrap">
             <p className="eyebrow">SIKU / LOCAL KNOWLEDGE</p>
             <Group className="header-actions" gap="sm" wrap="nowrap">
+              <ThemeToggle />
               <Badge
                 className="service-status"
                 color={serviceStatusColor}

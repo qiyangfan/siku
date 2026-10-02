@@ -1,9 +1,22 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-mantine-color-scheme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>siku 四库</title>
+    <!-- 主题初始化脚本与 @mantine/core 的 ColorSchemeScript 同源（design-system.test.ts
+         防漂移守卫）：auto 态读系统偏好，手动值（库默认存储键）优先于系统，
+         与主应用同一事实源 -->
+    <script>
+try {
+  var _colorScheme = window.localStorage.getItem("mantine-color-scheme-value");
+  var colorScheme = _colorScheme === "light" || _colorScheme === "dark" || _colorScheme === "auto" ? _colorScheme : "auto";
+  var computedColorScheme = colorScheme !== "auto" ? colorScheme : window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  document.documentElement.setAttribute("data-mantine-color-scheme", computedColorScheme);
+} catch (e) {}
+</script>
+    <meta name="theme-color" content="#f6f8fb" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#10161d" media="(prefers-color-scheme: dark)" />
     <style>
       :root {
         color-scheme: light;
@@ -38,6 +51,20 @@
         --focus-outline-width: 0.1875rem;
         --focus-outline-offset: 0.125rem;
         --shadow-card: 0 0.75rem 2rem rgb(24 34 48 / 0.06);
+      }
+      /* 暗色块与主应用 resolver dark 块同源同值（theme.ts design D3）；
+         以库初始化脚本写的 data-mantine-color-scheme 为准，auto 态即系统偏好 */
+      :root[data-mantine-color-scheme="dark"] {
+        color-scheme: dark;
+        --color-ink: #e6ecf3;
+        --color-ink-soft: #a7b3c2;
+        --color-canvas: #10161d;
+        --color-surface: #182230;
+        --color-border: #2a3644;
+        --color-border-strong: #3a4a5c;
+        --color-accent: #5e8af2;
+        --color-danger: #e29a99;
+        --shadow-card: 0 0.75rem 2rem rgb(0 0 0 / 0.35);
       }
       * {
         box-sizing: border-box;
