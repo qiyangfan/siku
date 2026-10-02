@@ -7,12 +7,7 @@ from typer.testing import CliRunner
 
 from siku import __version__
 from siku.cli import LlmProtocol, _announce_supply_channels, app
-from siku.model_supply import (
-    LLM_PROTOCOLS,
-    ChannelValues,
-    ResolvedChannel,
-    config_file_path,
-)
+from siku.model_supply import LLM_PROTOCOLS, ChannelValues, ResolvedChannel
 from siku.retrieve.errors import ModelConfigFileError
 
 runner = CliRunner()
@@ -37,15 +32,10 @@ def test_serve_fails_fast_on_unreadable_config_with_accurate_copy(
     这条路径可达且止于 fail-fast（实测：serve 在 LLM 解析处就退出，不会走到启动
     横幅——所以断言落在退出文案上，不去测那条走不到的横幅分支）。
     """
-    home = tmp_path / "home"
-    # 与应用同源解析配置路径,三平台环境变量全部钉进 tmp:
-    # Linux=XDG_CONFIG_HOME(删掉回落 HOME)、macOS=HOME、Windows=APPDATA,
-    # 缺任意一个都会在对应平台解析到开发者真实 config.toml 并被用例覆写
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
-    cfg = config_file_path()
-    cfg.parent.mkdir(parents=True)
+    # 打桩 config_file_path(与 test_retrieve_cli/test_api_settings 等四处同款):
+    # 平台无关,绝不触真实用户路径;环境变量钉法会随路径解析实现漂移而失效
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text('[llm]\nmodel = "m"\n', encoding="utf-8")
     cfg.chmod(0o000)
     # 护栏:真跑到起服就当场失败,绝不让用例把端口绑起来挂住整轮
@@ -53,7 +43,6 @@ def test_serve_fails_fast_on_unreadable_config_with_accurate_copy(
         "siku.cli.uvicorn.run",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("serve 不应走到起服")),
     )
-    monkeypatch.setenv("HOME", str(home))
     try:
         result = runner.invoke(app, ["serve", "--port", "8199"])
     finally:
@@ -90,18 +79,12 @@ def test_serve_startup_warning_names_the_invalid_field(
     启动面的文案取自捕获到的异常本身：`detail` 是载入点自撰的字段级说明，少了它，
     用户在启动输出里看不出该改哪一行，也不知道这次的成因是取值而不是语法。
     """
-    home = tmp_path / "home"
-    # 与应用同源解析配置路径,三平台环境变量全部钉进 tmp:
-    # Linux=XDG_CONFIG_HOME(删掉回落 HOME)、macOS=HOME、Windows=APPDATA,
-    # 缺任意一个都会在对应平台解析到开发者真实 config.toml 并被用例覆写
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
-    cfg = config_file_path()
-    cfg.parent.mkdir(parents=True)
+    # 打桩 config_file_path(与 test_retrieve_cli/test_api_settings 等四处同款):
+    # 平台无关,绝不触真实用户路径;环境变量钉法会随路径解析实现漂移而失效
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text('[llm]\nprotocol = "gemini-native"\n', encoding="utf-8")
     monkeypatch.setattr("siku.cli.uvicorn.run", lambda *_a, **_k: None)
-    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("DASHSCOPE_API_KEY", "")  # 关掉厂商回退，逼出文件层解析
     result = runner.invoke(app, ["serve", "--port", "8196"])
     assert result.exit_code == 0
@@ -119,21 +102,15 @@ def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     `resolve_llm_channel(llm_cli, config=ModelSupplyConfig())` 落在 `except
     ModelConfigFileError` 的体内,ProtocolConfigError 直接穿出 `serve`。
     """
-    home = tmp_path / "home"
-    # 与应用同源解析配置路径,三平台环境变量全部钉进 tmp:
-    # Linux=XDG_CONFIG_HOME(删掉回落 HOME)、macOS=HOME、Windows=APPDATA,
-    # 缺任意一个都会在对应平台解析到开发者真实 config.toml 并被用例覆写
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
-    cfg = config_file_path()
-    cfg.parent.mkdir(parents=True)
+    # 打桩 config_file_path(与 test_retrieve_cli/test_api_settings 等四处同款):
+    # 平台无关,绝不触真实用户路径;环境变量钉法会随路径解析实现漂移而失效
+    cfg = tmp_path / "config.toml"
+    monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text("not [valid toml", encoding="utf-8")
     monkeypatch.setattr(
         "siku.cli.uvicorn.run",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("serve 不应走到起服")),
     )
-    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
     result = runner.invoke(app, ["serve", "--port", "8198"])
     assert result.exit_code == 1
