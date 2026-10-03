@@ -61,7 +61,7 @@ jobs:
       # 保证 PyInstaller 产物与 Rust target 架构一致（PyInstaller 不支持交叉编译）
       - name: 安装 x86_64 Python（Rosetta）
         if: matrix.target == 'x86_64-apple-darwin'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           architecture: "x64"
