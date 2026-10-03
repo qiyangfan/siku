@@ -168,7 +168,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: 下载全部平台产物
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -209,7 +209,7 @@ jobs:
         if: env.HOMEBREW_TAP_TOKEN != ''
         env:
           VERSION: ${{ needs.version-check.outputs.version }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
