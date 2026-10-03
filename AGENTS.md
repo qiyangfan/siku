@@ -61,4 +61,4 @@ uv run pre-commit run --all-files   # 全量 hooks
 
 - commit message 用中文（subject + body），格式参考：`feat(ingest): 新增 PDF 抽取后端`
 - **未经用户明确指示，禁止执行 git commit / git push**
-- main 为主干；功能开发必须从 main 派生并使用 `feature/<简短主题>` 命名，禁止使用工具或代理名称作为分支前缀
+- 单分支开发：直接在 main 上开发，不建 feature 分支

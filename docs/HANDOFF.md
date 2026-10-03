@@ -3,7 +3,7 @@
 > 即时状态见本文；常驻规则见 `AGENTS.md`，架构/排序见 `docs/architecture.md`、
 > `docs/adr/`、`docs/ROADMAP.md`。实现与评审明细在各 change 工件，不在此重复。
 
-- **更新时间**：2026-10-02；分支 `feature/adopt-mantine-ui-components`。
+- **更新时间**：2026-10-02；分支 `main`。
 - 本轮实施、验证并归档 `2026-10-02-dark-theme`（暗色三态主题）：Mantine 内建三态
   （auto 初值 + 库默认存储键持久化）、resolver light/dark 分流取值（守卫钉对比度）、
   两处 HTML 接 `ColorSchemeScript` 同源初始化脚本（带防漂移守卫）、壳页暗色块同源、
