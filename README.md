@@ -113,6 +113,40 @@ api_key_env = "SILICONFLOW_API_KEY"
 环境变量 `SIKU_EMBEDDING_*` / `SIKU_RERANK_*` / `SIKU_LLM_*` 与 config.toml 字段同形；
 key 不进日志、索引元数据与评测基线。桌面端配置说明见 [docs/desktop.md](docs/desktop.md)。
 
+### AI 客户端接入（MCP）
+
+siku 内置 stdio MCP 服务器（ADR-0014）：`siku mcp` 以 Model Context Protocol 标准
+stdio 传输暴露知识库工具，供 AI 客户端（ZCode、Claude Code、Claude Desktop、Cursor 等）
+直接调用。不监听网络端口、不依赖 `siku serve`；与桌面应用/CLI 并发安全（同库写入互斥）。
+
+暴露七个工具：`search`（混合检索带锚点）、`ask`（单轮有来源问答）、`list_documents`
+（资料库清单）、`read_document`（读投影全文，超长明示截断）、`graph_search` /
+`graph_neighbors`（知识图谱查询）、`ingest`（幂等摄取文件或目录）。移除、重建、设置等
+管理操作不经 MCP 暴露，请使用 WebUI 或 CLI。
+
+客户端配置（`--vault`/`--data-dir` **必须传绝对路径**：客户端以任意工作目录拉起服务器
+进程；模型通道经环境变量与 `config.toml` 解析，见上一节）：
+
+```jsonc
+// ZCode / Claude Code / 通用 stdio 客户端的 mcpServers 配置同构
+{
+  "mcpServers": {
+    "siku": {
+      "command": "siku",           // 或 uv tool 安装后的绝对路径
+      "args": ["mcp",
+               "--vault", "/absolute/path/to/vault",
+               "--data-dir", "/absolute/path/to/data"]
+    }
+  }
+}
+```
+
+Claude Code 一条命令接入：
+
+```bash
+claude mcp add siku -- siku mcp --vault /absolute/path/to/vault --data-dir /absolute/path/to/data
+```
+
 ### 经 muniu 网关使用（可选）
 
 muniu 提供 openai 兼容端点时，无需 siku 侧代码级对接；执行图谱或 wiki 命令时切换

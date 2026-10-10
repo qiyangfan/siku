@@ -28,6 +28,7 @@ dependencies = [
     # 同库写入跨进程互斥（change remove-manual-library-document）：成熟平台文件锁，
     # 覆盖 HTTP/CLI 不同进程；锁文件在 vault/.siku/ 非语料位置
     "filelock>=3.16",
+    "mcp>=2,<3",
 ]
 
 [project.scripts]

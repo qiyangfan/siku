@@ -1164,6 +1164,28 @@ def serve(
         uvicorn.run(application, host=host, port=port)
 
 
+@app.command()
+def mcp(
+    vault: Annotated[
+        Path,
+        typer.Option("--vault", help="事实层 vault 目录；AI 客户端配置须传绝对路径。"),
+    ] = DEFAULT_VAULT,
+    data_dir: Annotated[
+        Path,
+        typer.Option("--data-dir", help="派生数据目录；AI 客户端配置须传绝对路径。"),
+    ] = DEFAULT_DATA_DIR,
+) -> None:
+    """以 stdio MCP 服务器暴露知识库工具（供 AI 客户端接入，见 ADR-0014）。
+
+    协议独占 stdout，日志走 stderr（SIKU_LOG_LEVEL 可调）；不监听网络端口，
+    不依赖 serve 进程。模型通道经 环境变量 > config.toml 分层解析。
+    """
+    # 延迟导入：CLI 启动面不背 MCP SDK 的加载成本
+    from siku.mcp.server import run_stdio_server
+
+    run_stdio_server(vault=vault, data_dir=data_dir)
+
+
 def _watch_stdin_stream(stream: BinaryIO, shutdown: Callable[[], None]) -> None:
     """阻塞读取 stdin，读到 EOF（父进程消亡）即触发受控关停。"""
     try:
