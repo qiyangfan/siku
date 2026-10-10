@@ -516,4 +516,35 @@ describe("设置中心", () => {
     expect(note).toHaveTextContent("DASHSCOPE_API_KEY");
     expect(note).toHaveTextContent("qwen-max");
   });
+  it("环境层协议越界在读取面渲染无效警示条，不提供保存可修入口", async () => {
+    mockFetch([], {
+      get: {
+        ...settings,
+        ask_readiness: { ready: false, missing: [], invalid: ["llm.protocol"] },
+      },
+    });
+    render(<SettingsView />);
+
+    const alert = await screen.findByRole("alert", { name: "模型通道配置无效" });
+    expect(alert).toHaveTextContent("SIKU_LLM_PROTOCOL");
+    expect(alert).toHaveTextContent("保存覆盖不了");
+    expect(alert).toHaveTextContent("重启服务");
+    // 该状态页面保存修不了：不得渲染任何覆盖自救入口
+    expect(
+      screen.queryByRole("button", { name: "确认以空配置覆盖本机配置文件并重新填写" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ask_readiness 无 invalid token 时不渲染无效警示条", async () => {
+    mockFetch([], {
+      get: {
+        ...settings,
+        ask_readiness: { ready: true, missing: [], invalid: [] },
+      },
+    });
+    render(<SettingsView />);
+
+    expect(await screen.findByText(/配置写入/)).toBeInTheDocument();
+    expect(screen.queryByRole("alert", { name: "模型通道配置无效" })).not.toBeInTheDocument();
+  });
 });

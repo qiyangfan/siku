@@ -109,8 +109,10 @@
 - [x] proposal/tasks/review/HANDOFF 的用例计数改为「较上一批净增 9 条，实测 733 passed」
 - [x] kongming HANDOFF 三处口径修正（覆盖率抖动、授权读取点 6→7 且漏 `custom_dept_ids`、
       `FilterType.SKIP` 漏述）
-- [ ] **上报待裁**：文件层协议越界的 UI 死路（成因码收窄后 `invalid_settings` 无自救入口 +
-      `siku serve` 对该状态 fail-fast 使桌面 sidecar 进不到页面）。两种收口都要动对外交互规则：
-      ①`ProtocolConfigError` 携带来源层 + serve 只容忍文件层 + 设置页出「仅修正协议」控件；
-      ②`GET` 返回 200 带视图并以 `ask_readiness.missing` 表达不可用（会顶掉既有场景
-      「越界协议在读取面 503」）。按循环纪律暂停，未擅自改契约
+- [x] **上报待裁（已销号 2026-10-10）**：文件层协议越界的 UI 死路（成因码收窄后
+      `invalid_settings` 无自救入口 + `siku serve` 对该状态 fail-fast 使桌面 sidecar
+      进不到页面）。owner 授权定案并经 change `fix-supply-protocol-dead-end` 实施归档：
+      采纳②变体并收敛根因——`ask_readiness` 协议越界转数据（`invalid` token，与请求期
+      同源不谎报）、设置读取面文件层可读时恒 200、serve 统一容忍启动、请求面 503 归一
+      不变；旧否决（200+空文件层的误就绪）不触碰。证据见
+      `archive/2026-10-10-fix-supply-protocol-dead-end/review.md`

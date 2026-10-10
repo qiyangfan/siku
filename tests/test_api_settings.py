@@ -127,7 +127,7 @@ class TestGetSettings:
         monkeypatch.setenv("SIKU_EMBEDDING_MODEL", "bge-m3")
         client = TestClient(create_app())
         payload = client.get("/api/settings").json()
-        assert payload["ask_readiness"] == {"ready": True, "missing": []}
+        assert payload["ask_readiness"] == {"ready": True, "missing": [], "invalid": []}
 
     def test_ask_readiness_ready_after_full_file_config(self, config_path: Path) -> None:
         save_config(
@@ -242,20 +242,25 @@ class TestGetSettings:
         with pytest.raises(ModelConfigFileError):
             resolve_embedding_channel()
 
-    def test_env_layer_illegal_protocol_names_the_lever_not_the_page(
+    def test_env_layer_illegal_protocol_read_face_reports_invalid_token(
         self, config_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """环境变量层的坏协议值仍属运行期解析错误（它没有载入边界）：指引必须点名杠杆。
+        """环境变量层的坏协议值在读取面是数据（invalid token），在请求面仍是归一失败。
 
-        原口径「请在设置页重新选择协议并保存即可覆盖」在这种情形是错的——环境变量优先级
-        高于文件层，页面保存覆盖不了它，用户会反复保存同一个坏值而困惑。
+        读取面恒可渲染（change fix-supply-protocol-dead-end）：视图由请求期同一解析
+        路径产出，`invalid` token 意味着随后真实请求必失败——同源不谎报就绪。指引
+        点名杠杆（该变量）的职责在请求面文案与 UI token 话术，读取面不再整体 503。
         """
         monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
         client = TestClient(create_app())
-        payload = client.get("/api/settings").json()
-        assert payload["code"] == "invalid_settings"
-        assert "SIKU_LLM_PROTOCOL" in payload["message"]
-        assert "覆盖不了" in payload["message"]
+        response = client.get("/api/settings")
+        assert response.status_code == 200
+        readiness = response.json()["ask_readiness"]
+        assert readiness["ready"] is False
+        assert readiness["invalid"] == ["llm.protocol"]
+        # embedding 通道未配置的缺项照常呈现，与 invalid 并行不互斥
+        assert readiness["missing"] == ["embedding.base_url", "embedding.model"]
+        # 请求期同一故障仍是异常：视图数据与请求期同源
         with pytest.raises(ProtocolConfigError):
             resolve_llm_channel()
 
@@ -372,7 +377,11 @@ class TestPutSettings:
             },
         )
         assert response.status_code == 200
-        assert response.json()["ask_readiness"] == {"ready": True, "missing": []}
+        assert response.json()["ask_readiness"] == {
+            "ready": True,
+            "missing": [],
+            "invalid": [],
+        }
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX 权限位语义")
     def test_put_keeps_file_mode_0600(self, config_path: Path) -> None:
@@ -591,40 +600,36 @@ class TestPutSettings:
     def test_put_with_invalid_env_protocol_reports_written_not_500(
         self, config_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """env 层的越界协议毒化响应装配：落盘是既成事实，响应既不能 500 也不能谎报保存失败。
-
-        写入前的 `validate_channel_protocols` 只管文件层，而响应里的就绪判定含 env/cli 层
-        （与 GET、请求期同源），所以「文件已写入 + 判定抛 ProtocolConfigError」是可达状态；
-        此前它落在 try 之外，由全局兜底返 500 `internal_error`。
-        """
+        """env 层越界协议下落盘成功返回 200 成功形状：视图携带 invalid token，
+        不得谎报保存失败（文件已写入是事实），也不得退化为 500/503 错误形状。"""
         monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
         client = TestClient(create_app())
         response = client.put("/api/settings", json={"embedding": {"model": "bge-m3"}})
-        assert response.status_code != 500
+        assert response.status_code == 200
         payload = response.json()
-        assert payload["code"] == "invalid_settings"
-        assert "已写入" in payload["message"]
-        assert "openai-chat" in payload["message"]
-        # 本次提交确实落盘（不是被回滚后谎报）
+        assert payload["invalid_config_file_overwritten"] is False
+        assert payload["ask_readiness"]["ready"] is False
+        assert payload["ask_readiness"]["invalid"] == ["llm.protocol"]
+        # 本次提交确实落盘
         assert 'model = "bge-m3"' in config_path.read_text(encoding="utf-8")
-        # 与 GET 面同码同指引，只差「已写入」那句事实
+        # 读取面同源：同样 200 + invalid token
         again = client.get("/api/settings")
-        assert again.status_code == 503
-        assert again.json()["code"] == "invalid_settings"
+        assert again.status_code == 200
+        assert again.json()["ask_readiness"]["invalid"] == ["llm.protocol"]
 
     def test_degraded_put_over_corrupt_file_discloses_overwrite(
         self, config_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """坏文件叠加 env 层协议越界：响应虽是 503，覆盖自救确实发生了——两个事实都得进文案，
-        否则用户以为自救没生效而反复重试。"""
+        """坏文件叠加 env 层协议越界：保存成功且覆盖事实如实告知（成功形状 +
+        `invalid_config_file_overwritten=true`），不误报失败。"""
         config_path.write_text("not [valid toml", encoding="utf-8")
         monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
         client = TestClient(create_app())
         response = client.put("/api/settings", json={"embedding": {"model": "m"}})
-        assert response.status_code == 503
-        message = response.json()["message"]
-        assert "已写入" in message
-        assert "已被本次保存覆盖" in message
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["invalid_config_file_overwritten"] is True
+        assert payload["ask_readiness"]["invalid"] == ["llm.protocol"]
         assert 'model = "m"' in config_path.read_text(encoding="utf-8")
 
     def test_degraded_put_keeps_rebuild_warning(
@@ -633,8 +638,7 @@ class TestPutSettings:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """降级响应不得静默丢掉成功路径本该携带的重建告警：错误体只有 `{code,message}`
-        两个字段（既有契约不可扩），所以该事实进 message 文本。"""
+        """成功响应的 `warnings` 字段如实携带重建告警，不因 env 层协议越界丢失。"""
         write_note(tmp_path / "vault")
         sync_index(
             tmp_path / "vault",
@@ -645,12 +649,13 @@ class TestPutSettings:
         monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
         client = TestClient(create_app(data_dir=tmp_path / "data"))
         response = client.put("/api/settings", json={"embedding": EMBED_CHANNEL_B_VALUES})
-        assert response.status_code == 503
-        assert response.json()["code"] == "invalid_settings"
-        message = response.json()["message"]
-        assert "model-a" in message
-        assert "model-b" in message
-        assert "全量重建" in message
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ask_readiness"]["invalid"] == ["llm.protocol"]
+        warnings_text = "\n".join(payload["warnings"])
+        assert "model-a" in warnings_text
+        assert "model-b" in warnings_text
+        assert "全量重建" in warnings_text
 
     def test_request_body_never_reaches_logs(
         self, config_path: Path, caplog: pytest.LogCaptureFixture
@@ -1041,7 +1046,7 @@ class TestReadinessCountsCliLayer:
             )
         )
         payload = client.get("/api/settings").json()
-        assert payload["ask_readiness"] == {"ready": True, "missing": []}
+        assert payload["ask_readiness"] == {"ready": True, "missing": [], "invalid": []}
 
     def test_embedding_cli_layer_ready_on_put_response_too(
         self, config_path: Path, monkeypatch: pytest.MonkeyPatch

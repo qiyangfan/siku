@@ -235,12 +235,13 @@ def _config_file_gap_text() -> str:
 def _announce_supply_channels(
     embedding_supply: ChannelValues,
     rerank_supply: ChannelValues,
-    llm: ResolvedChannel,
+    llm: ResolvedChannel | None,
 ) -> None:
     """启动期在用户面明示三通道解析结果（BYOK 不静默）。
 
     embedding 未配置只告警不阻止启动：检索/问答请求时会返回配置指引错误，
     健康检查与静态 UI 不受影响（BYOK 产品的诚实行为，见 ADR-0009）。
+    `llm=None` 表示启动面已判定 LLM 通道无效（上层协议越界），横幅如实播报。
     """
     try:
         embedding_channel = resolve_embedding_channel(embedding_supply)
@@ -256,15 +257,17 @@ def _announce_supply_channels(
         rerank_text = _config_file_gap_text()
     except ModelNotAvailableError:
         rerank_text = "none（RRF-only）"
+    if llm is not None:
+        llm_text = f"{llm.model}@{base_url_host(llm.base_url)}"
+    else:
+        llm_text = "invalid（协议取值越界，本服务内不可用）"
     typer.echo(
-        f"模型供给: embedding={embedding_text} rerank={rerank_text} "
-        f"llm={llm.model}@{base_url_host(llm.base_url)}",
+        f"模型供给: embedding={embedding_text} rerank={rerank_text} llm={llm_text}",
         err=True,
     )
     logger.info(
-        "model supply channels: llm=%s@%s embedding=%s rerank=%s",
-        llm.model,
-        base_url_host(llm.base_url),
+        "model supply channels: llm=%s embedding=%s rerank=%s",
+        llm_text,
         embedding_text,
         rerank_text,
     )
@@ -1123,6 +1126,7 @@ def serve(
         api_key_env=api_key_env,
         protocol=_protocol_value(llm_protocol),
     )
+    llm: ResolvedChannel | None
     try:
         try:
             llm = resolve_llm_channel(llm_cli)
@@ -1141,6 +1145,25 @@ def serve(
             # try 的后续 except 分支接住，env/cli 层的越界协议（如 SIKU_LLM_PROTOCOL）
             # 在这里会直接穿成一段裸 traceback（实测崩溃），而不是归一化的中文指引
             llm = resolve_llm_channel(llm_cli, config=ModelSupplyConfig())
+    except ProtocolConfigError as exc:
+        # 上层协议越界与坏文件同一规则：供给配置错误不堵启动面（change
+        # fix-supply-protocol-dead-end）。区别在于文件层可被设置页覆盖自救，而
+        # env/程序层优先级更高、页面修不了——但 LLM 一个通道的配置错误不该废掉
+        # 整个服务（检索/摄取不依赖 LLM）；llm 置 None 继续启动，请求期各面按
+        # 既有 503 invalid_settings 归一失败，横幅如实播报通道无效。
+        typer.echo(
+            "LLM 通道的接口协议取值非法（来自优先级高于配置文件的环境变量或程序传入层，"
+            "如 SIKU_LLM_PROTOCOL）：该通道在本次服务中不可用，问答/图谱等请求将报错；"
+            "检索不受影响。请修正或取消该变量后重启服务。详细原因："
+            f"{exc}",
+            err=True,
+        )
+        logger.warning(
+            "serve starts with invalid llm protocol; llm channel disabled until restart:"
+            " error_class=%s",
+            type(exc).__name__,
+        )
+        llm = None
     except ModelNotAvailableError as exc:
         _fail(_llm_config_error_message(exc), exc)
     embedding_supply = _embedding_cli_values(
@@ -1151,7 +1174,10 @@ def serve(
     application = create_app(
         vault=resolved_vault,
         data_dir=resolved_data_dir,
-        api_key_env=llm.api_key_env or DEFAULT_API_KEY_ENV,
+        # llm=None（协议越界降级）时仍尊重显式 --api-key-env：错误文案点名用户传的变量
+        api_key_env=llm_cli.api_key_env
+        or (llm.api_key_env if llm is not None else None)
+        or DEFAULT_API_KEY_ENV,
         llm_supply=llm_cli,
         embedding_supply=embedding_supply,
         rerank_supply=rerank_supply,

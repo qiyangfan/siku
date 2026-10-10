@@ -334,6 +334,28 @@ def test_ask_model_not_available_maps_to_settings_guidance(tmp_path: Path) -> No
     assert "--embedding-base-url" not in payload["message"]
 
 
+def test_ask_env_layer_protocol_violation_maps_to_invalid_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """env 层协议越界在问答端点保持 503 invalid_settings（change
+    fix-supply-protocol-dead-end：读面转数据，请求面归一零漂移）。
+
+    不注入 fake 工厂：answer provider 走真实分层解析才能触达同一故障。
+    """
+    monkeypatch.setattr(
+        "siku.model_supply.config_file_path", lambda: tmp_path / "nonexistent" / "config.toml"
+    )
+    monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+    client = TestClient(create_app(vault=tmp_path / "vault", data_dir=tmp_path / "data"))
+    response = client.post("/api/ask", json={"question": "问题"})
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["code"] == "invalid_settings"
+    assert "SIKU_LLM_PROTOCOL" in payload["message"]
+    assert "--llm-protocol" not in payload["message"]
+
+
 def test_cli_model_not_available_guidance_stays_cli_oriented() -> None:
     """CLI 路径沿用 map_domain_error 的既有指引（config.toml 路径 + 参数示例）。"""
     message = retrieval_error_message(ModelNotAvailableError("embedding endpoint"))

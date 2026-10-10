@@ -181,14 +181,16 @@ class ChannelSettingsView(BaseModel):
 
 
 class AskReadinessView(BaseModel):
-    """问答就绪状态：missing 为稳定的 `<channel>.<field>` 机器 token（无凭证明文）。
+    """问答就绪状态：missing/invalid 为稳定的 `<channel>.<field>` 机器 token（无凭证明文）。
 
+    `missing` 是缺项；`invalid` 是跨层合并后取值非法（如环境变量层协议越界）。
     判定口径与请求期通道解析同源（rerank 可选不阻塞）；中文话术由 UI 依据
     token 生成，内核不承载展示文案。
     """
 
     ready: bool
     missing: list[str]
+    invalid: list[str] = Field(default_factory=list)
 
 
 class LlmEnvFallbackView(BaseModel):

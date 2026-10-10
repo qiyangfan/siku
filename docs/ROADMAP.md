@@ -49,7 +49,20 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
    脚本（防首帧闪烁 + 防漂移测试）、壳页暗色块同源、header 两态切换入口、图谱
    边线/标签色随主题；web-ui 主规格新增「主题三态与两态对比度」需求。
 
-排序队列已清空，下一项待 owner 对齐排序。
+排序队列已清空。2026-10-10 本轮两项已实施验收归档：
+
+1. ~~add-mcp-server~~ ✅（2026-10-10，归档
+   `2026-10-10-add-mcp-server`）：MCP 标准接入面——`siku mcp` stdio 服务器直连内核，
+   六只读工具（search/ask/list_documents/read_document/graph_search/graph_neighbors）
+   + 幂等 `ingest`，与 CLI/serve 共用写入互斥；官方 MCP Python SDK v2（2.3.0）进核心
+   依赖（既有钉版零移动）；ADR-0014 已接受；mcp-server 主规格入档；全量 pytest 830 通过。
+2. ~~fix-supply-protocol-dead-end~~ ✅（2026-10-10，归档
+   `2026-10-10-fix-supply-protocol-dead-end`）：待裁项收口（owner 授权定案）——
+   协议越界在就绪判定转数据（`ask_readiness.invalid` token，与请求期同源不谎报）、
+   设置读取面文件层可读时恒 200、`PUT` 落盘成功返回成功形状、`siku serve` 统一容忍
+   供给配置错误启动（部分可用性：LLM 通道坏不废检索）、请求面 503 归一零漂移；
+   UI 无效警示条不提供保存可修入口；顺带收敛 5 处主规格超长 Requirement，
+   `--specs --strict` 恢复 **9/9**；全量 pytest 834、ui vitest 131 通过。
 
 收款继续 Mock，不另开支付方案。最近完成并归档：
 
@@ -92,6 +105,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 商业化决策 | 商标全类目清查（SIKU 玩具品牌） | ADR-0007 |
 | 发布解禁（Release 重启 / Phase 6 启动） | 执行 Windows/Linux 实机安装冒烟并回填（清单见 docs/desktop.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell` |
 | 有 Ollama / 云端 key 的环境 | 补录双通道基线（复现路径见 benchmarks/README.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-byok-model-supply` |
+| 云端 key 环境补录 ✅ | `dashscope-text-embedding-v3` 通道基线已入 `benchmarks/baselines/`（Recall@5=0.9630 / MRR@10=0.9444，rerank-none，2026-10-10）；本地 Ollama 通道仍待环境 | 归档 `2026-10-10-fix-supply-protocol-dead-end` 轮次 |
 | Phase 6（代码签名 + 自动更新）重启 | 证书到位且 owner 明确指令双条件齐备才启动；期间不作为待办、不反复评审 | 用户裁决 2026-10-02 |
 | 有真实 BYOK 端点环境 | 设置中心/资料库/浏览·图谱·wiki 三视图 Tauri 壳内手工冒烟（serve 级全链路冒烟已记账于各归档 change review.md） | 归档 `2026-09-19-add-ui-settings-center` 及后续桌面上手 change |
 

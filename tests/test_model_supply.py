@@ -222,6 +222,19 @@ class TestLlmEnvFallback:
         assert "embedding.base_url" in readiness.missing
         assert "embedding.model" in readiness.missing
 
+    def test_ask_readiness_flags_env_layer_llm_protocol_as_invalid(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """env 层协议越界：判定不抛，记 invalid token（判定面是数据，请求面才抛）。"""
+        monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+        readiness = ask_readiness(load_config(tmp_path / "absent.toml"))
+        assert readiness.ready is False
+        assert readiness.invalid == ("llm.protocol",)
+        assert readiness.missing == ("embedding.base_url", "embedding.model")
+        # 同源复核：请求期同一解析在相同环境下必失败
+        with pytest.raises(ProtocolConfigError):
+            resolve_llm_channel(config_path=tmp_path / "absent.toml")
+
     def test_embedding_channel_never_falls_back(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -660,10 +673,22 @@ class TestAskReadinessCliLayer:
         )
         assert readiness.ready is True
 
-    def test_readiness_still_rejects_embedding_protocol_from_cli_layer(self) -> None:
-        """与请求期同源：CLI 层给 embedding 塞 protocol 时判定同样抛协议错误。"""
+    def test_readiness_flags_embedding_protocol_from_cli_layer_as_invalid(self) -> None:
+        """与请求期同源：CLI 层给 embedding 塞 protocol 时判定记 invalid token 不抛
+        （判定面是数据；请求面 resolve_embedding_channel 仍抛 ProtocolConfigError）。"""
+        readiness = ask_readiness(
+            ModelSupplyConfig(),
+            cli=ModelSupplyConfig(embedding=ChannelValues(protocol="anthropic")),
+        )
+        assert readiness.ready is False
+        assert readiness.invalid == ("embedding.protocol",)
+        # invalid 与 missing 并行：未配置的缺项照常呈现
+        assert "llm.api_key" in readiness.missing
+        assert "embedding.base_url" in readiness.missing
+
+    def test_request_face_still_rejects_embedding_protocol_from_cli_layer(self) -> None:
+        """请求面语义零漂移：协议越界在通道解析处照常抛归一化领域错误。"""
         with pytest.raises(ProtocolConfigError):
-            ask_readiness(
-                ModelSupplyConfig(),
-                cli=ModelSupplyConfig(embedding=ChannelValues(protocol="anthropic")),
+            resolve_embedding_channel(
+                config=ModelSupplyConfig(embedding=ChannelValues(protocol="anthropic"))
             )

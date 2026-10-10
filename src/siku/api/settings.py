@@ -156,7 +156,11 @@ def masked_view(
         llm=sections["llm"],
         embedding=sections["embedding"],
         rerank=sections["rerank"],
-        ask_readiness=AskReadinessView(ready=readiness.ready, missing=list(readiness.missing)),
+        ask_readiness=AskReadinessView(
+            ready=readiness.ready,
+            missing=list(readiness.missing),
+            invalid=list(readiness.invalid),
+        ),
         llm_env_fallback=fallback_view,
     )
 

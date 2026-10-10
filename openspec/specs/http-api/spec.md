@@ -229,39 +229,15 @@ SHALL NOT 引入第二套判定逻辑；rerank 通道 SHALL NOT 阻塞就绪。`
 
 ### Requirement: 提供模型供给设置的读写端点
 
-系统 SHALL 提供 `GET /api/settings` 返回 LLM/embedding/rerank 三通道配置的掩码视图
-（`base_url`、`model`、`api_key_env`、`protocol`、key 是否已设置的布尔标记），
-SHALL NOT 在响应中回显任何 key 明文；当通道的有效值来自环境变量层时 SHALL 予以
-标注。响应 SHALL 附带 `llm_env_fallback`：LLM 通道厂商环境变量回退生效时为其端点
-描述（`vendor`、`base_url`、`model`、`api_key_env`，不含凭证明文），未生效时为
-`null`；该字段 SHALL 与请求期通道解析同源（计入 serve 的 CLI 层）。系统 SHALL
-提供 `PUT /api/settings`，校验后把提交的三通道配置合并写入 config.toml 并保持
-0600 权限，返回写入后的掩码视图；`protocol` SHALL 按枚举校验（`openai-chat`/
-`anthropic`/`openai-responses`），embedding/rerank 通道提交非空 `protocol` 与
-非法枚举值均 SHALL 返回 422 与既有 `{code, message}` 结构且不改写配置文件。
-连通性测试 SHALL 按通道当前协议发起最小调用。设置读写 SHALL NOT 使 key 进入
-日志或错误消息；遇配置文件故障时日志 SHALL 只记异常类名与文件路径，SHALL NOT 再记
-解码器详情文本（成因与处置已由响应面完整承载，详情文本对排障无增量，且路径本已单列）。
-防凭证值泄漏由既有的「`ValidationError` 只保留字段路径与错误类型」保证，与本条无关。
-
-单次设置请求 SHALL 只读取一次配置文件：写面响应里的回退判定 SHALL 复用本次合并结果，
-SHALL NOT 再读一次文件（同请求两套事实源会让视图与回退标注不一致）。
-
-写入已落盘之后的响应装配若抛领域错误（如环境变量层的协议越界——写入前的校验只管文件层），
-`PUT /api/settings` SHALL NOT 返回 `internal_error` 类 5xx，SHALL 按 `GET` 面同一映射给出状态码、
-`code` 与指引，并在文案中声明「本次提交的配置已写入本机配置文件」这一既成事实——写成功是事实，
-谎报保存失败会把「重新保存覆盖坏文件」这条自救路径变成反复重试的迷宫。该分支 SHALL NOT 静默丢弃
-成功响应本该携带的事实（写入与覆盖告知、重建告警），错误体结构不变；兜底映射 SHALL 覆盖任何
-供给类领域错误，使装配失败在任何成因下都不退化为 500。
-
-配置文件内容不可解析时，`PUT /api/settings` SHALL NOT 因此拒绝保存：系统 SHALL 以
-空的文件层为基底合并本次提交并原子替换坏文件，响应 SHALL 携带布尔字段
-`invalid_config_file_overwritten`（缺省 `false`）明示该次保存覆盖了不可解析的文件；
-仅因权限/IO 故障读不到文件时 SHALL NOT 走覆盖路径。`GET /api/settings` 遇同型错误
-SHALL 返回可行动指引（重新保存即可覆盖，或删除该配置文件后重配且删除不影响已摄取
-语料）并按成因给 `code`，SHALL NOT 输出「补全 base_url 与 model」这类与实际成因不符
-的文案；读面 SHALL NOT 为「让表单出图」而改成成功响应——请求期每请求现读该文件，
-容忍会让就绪状态与真实请求结果分叉（误就绪比死路更难排查）。
+系统 SHALL 提供 `GET /api/settings` 返回三通道配置掩码视图，SHALL NOT 回显任何 key
+明文，通道有效值来自环境变量层时 SHALL 标注；响应 SHALL 附带与请求期同源的
+`ask_readiness`（含 `missing` 与 `invalid` 两族稳定 token）与 `llm_env_fallback`。
+只要配置文件层可读，读取 SHALL 成功返回视图——环境变量或程序层携带的非法取值 SHALL
+以 `invalid` token 呈现而非使读取整体失败。系统 SHALL 提供 `PUT /api/settings`：
+校验合并写入 config.toml 并保持 0600，返回写入后的掩码视图；`protocol` SHALL 按枚举
+校验，embedding/rerank 提交非空 `protocol` 与非法枚举值均 SHALL 返回 422 且不改写
+配置文件。设置读写 SHALL NOT 使 key 进日志或错误消息；单次设置请求 SHALL 只读取一次
+配置文件，写面响应的回退判定 SHALL 复用本次合并结果。
 
 #### Scenario: 读取返回掩码视图
 
@@ -320,14 +296,21 @@ SHALL 返回可行动指引（重新保存即可覆盖，或删除该配置文�
   「重新保存覆盖 / 删除该文件后重配」两条出路，不出现命令行参数教程；设置页据该 code
   提供覆盖自救入口，保存成功后再次读取返回 200
 
+#### Scenario: 环境层协议越界时读取成功且不谎报就绪
+
+- **GIVEN** config.toml 有效，但环境变量 `SIKU_LLM_PROTOCOL` 取值越界
+- **WHEN** 客户端请求 `GET /api/settings`
+- **THEN** 返回 200 与完整视图；`ask_readiness.ready=false` 且 `invalid` 含稳定 token
+  （如 `llm.protocol`），该 token 由与请求期相同的解析路径产出——随后对问答端点的
+  真实请求确会失败，视图不谎报就绪
+
 #### Scenario: 落盘后装配失败不得谎报保存失败
 
 - **GIVEN** 文件层配置合法，但环境变量层的 `protocol` 取值越界（就绪判定含该层）
 - **WHEN** 客户端请求 `PUT /api/settings` 提交合法配置
-- **THEN** 返回 503 且 `code` 与 `GET` 面对同一故障一致（`invalid_settings`），而非 500
-  `internal_error`；message 声明本次提交已写入本机配置文件并给出协议取值指引，且成功响应本该
-  携带的覆盖告知与 embedding 重建告警一并写入该文案（错误体只有 `{code,message}`，不新增字段）；
-  再次读取仍为同一码（两面同源）
+- **THEN** 返回 200 成功响应而非错误形状：写入事实（含覆盖告知与 embedding 重建
+  告警等既有字段）如实携带，视图 `ask_readiness.ready=false` 且 `invalid` 含稳定
+  token；文件已写入却谎报保存失败的情形 SHALL NOT 发生
 
 ### Requirement: 设置写入后无需重启生效
 
@@ -534,30 +517,15 @@ SHALL 提供自动扫描间隔的读写端点（0 表示关闭自动扫描，负
 
 ### Requirement: 配置文件故障以稳定 code 分道
 
-模型配置文件的两类故障 SHALL 在 HTTP 错误响应的 `code` 字段上可机器判别：
-**文件层内容确证无效**（非法 TOML、段结构非法、非 UTF-8、字段类型不符，
-以及可解析但字段取值不在允许范围——例如 `[llm] protocol` 越界、embedding/rerank
-段多出 `protocol`）SHALL 用 `invalid_config_file`；因权限或 IO 故障读不到
-（内容未知）SHALL 用 `config_file_unreadable`。二者 SHALL 与其它供给类错误
-（`model_not_available`）区分，且该分道 SHALL 在**所有** HTTP 错误映射点一致生效
-（设置读取、设置写入、连通性测试、检索/问答等请求期端点）。状态码与
-`{code, message}` 结构 SHALL 不变，`code` 取值集也不 SHALL NOT 因本条扩出新值：
-「取值非法」归入 `invalid_config_file` 而不是另立成因码，因为对客户端它是同一条出路
-（重新保存覆盖）。
-
-由环境变量或程序传入的 CLI 层提供的协议越界值 SHALL NOT 落入 `invalid_config_file`
-（那会承诺页面保存能修好它，而这两层优先级高于文件层），SHALL 由既有
-`invalid_settings` 承载，且 message SHALL 点名真正的杠杆。由于文件层的非法取值在载入点
-即被拒、`--llm-protocol` 是枚举参数（非法值在解析阶段即被拒），`llm` 通道的该错误只可能
-来自 `SIKU_LLM_PROTOCOL` 或程序传入的配置；同理 embedding/rerank 的非空 `protocol`
-只可能来自程序传入的配置（其环境变量层没有该字段）。message SHALL NOT 点名这两个来源
-之外的杠杆。连通性测试面对同一故障 SHALL 与设置读取面给出同一 `code` 与同一 message。
-
-文案 SHALL 指明到底哪个字段无效及其合法取值名单；该补充说明 SHALL 由服务端自撰，
-禁止 (MUST NOT) 回显用户原值（与「凭证不进日志与错误消息」同一纪律）。
-
-分型 SHALL 由异常类决定，禁止 (MUST NOT) 由 message 文本推导；客户端 SHALL NOT 需要靠
-「服务是否可达」之类的启发式来判断「一次保存能否修好当前故障」——该判断只有服务端掌握。
+模型配置文件的两类故障 SHALL 在 HTTP 错误响应 `code` 上可机器判别：文件层内容确证
+无效（非法 TOML、段结构非法、非 UTF-8、类型不符、取值越界）SHALL 用
+`invalid_config_file`；权限或 IO 读不到（内容未知）SHALL 用 `config_file_unreadable`。
+二者 SHALL 与 `model_not_available` 区分，分道 SHALL 在所有 HTTP 错误映射点一致
+生效；状态码与 `{code, message}` 结构 SHALL 不变，`code` 取值集 SHALL NOT 扩新值。
+环境变量或程序层的协议越界 SHALL NOT 落入 `invalid_config_file`，SHALL 由
+`invalid_settings` 承载并点名真正杠杆（读取面呈现见设置读写端点条）。文案 SHALL
+指明无效字段与合法名单，SHALL NOT 回显用户原值。分型 SHALL 由异常类决定，SHALL NOT
+由 message 文本推导。
 
 #### Scenario: 可覆盖与不可覆盖在 code 上可辨
 
@@ -584,10 +552,10 @@ SHALL 提供自动扫描间隔的读写端点（0 表示关闭自动扫描，负
 
 - **GIVEN** `SIKU_LLM_PROTOCOL`（或程序传入的 CLI 层）取值越界，而 config.toml 本身有效
 - **WHEN** 客户端请求 `GET /api/settings` 或调用问答端点
-- **THEN** 返回 503 与 `code=invalid_settings`，message 说明该值来自优先级高于配置文件的
-  环境变量或程序传入层、设置页保存覆盖不了它，点名 `SIKU_LLM_PROTOCOL`，
-  SHALL NOT 点名 `--llm-protocol`（枚举参数在解析阶段即拒，不可能承载该错误）；
-  同一故障下连通性测试给出同一 `code` 与同一 message
+- **THEN** 设置读取面返回 200 视图，`ask_readiness` 以稳定 token 呈现无效并给出点名
+  `SIKU_LLM_PROTOCOL` 的指引，SHALL NOT 承诺页面保存可修；问答与连通性测试面返回
+  503 `invalid_settings`，message 同样点名该环境变量、SHALL NOT 点名 `--llm-protocol`
+  （枚举参数在解析阶段即拒，不可能承载该错误），连通性测试与问答面同码同 message
 
 ### Requirement: 提供确认的单来源移除任务
 

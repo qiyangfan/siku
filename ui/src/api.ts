@@ -48,6 +48,9 @@ export type AskReadiness = {
   ready: boolean;
   // 稳定机器 token（如 "llm.api_key"），中文话术由界面生成
   missing: string[];
+  // 跨层合并后取值非法的稳定 token（如 "llm.protocol"）：该通道本服务内不可用，
+  // 保存覆盖不了（来源层优先级更高）；话术由界面生成。旧内核缺失该字段时按空处理
+  invalid?: string[];
 };
 
 // LLM 通道厂商环境变量回退的端点描述（不含凭证明文）；旧内核缺失该字段时按无回退处理

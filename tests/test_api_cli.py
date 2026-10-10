@@ -80,6 +80,36 @@ def test_serve_defaults_to_loopback_and_warns_on_explicit_public_bind(
     assert calls[-1][1:] == ("0.0.0.0", 8000)
 
 
+def test_serve_tolerates_env_layer_protocol_violation_and_disables_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """上层协议越界不堵启动面（change fix-supply-protocol-dead-end）：
+
+    serve 明示告警后继续启动，LLM 通道按无效播报、api_key_env 回落缺省；
+    llm_supply 原样透传，请求期各面按既有 503 invalid_settings 归一失败。
+    """
+    monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
+    captured: dict[str, object] = {}
+
+    def fake_create_app(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "siku.cli.uvicorn.run",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 0
+    assert "SIKU_LLM_PROTOCOL" in result.output
+    assert "invalid" in result.output
+    # CLI 层原样透传（env 值由请求期解析现读现拒），api_key_env 回落缺省
+    assert captured["llm_supply"].protocol is None
+    assert captured["api_key_env"] == "SIKU_LLM_API_KEY"
+
+
 def test_serve_passes_shared_llm_configuration_to_api(
     monkeypatch: object,
 ) -> None:

@@ -39,11 +39,25 @@ export function LlmReadinessHint({ onGoToSettings }: { onGoToSettings: () => voi
     return null;
   }
 
-  if (!readiness.missing.includes("llm.api_key")) {
+  const llmInvalid = (readiness.invalid ?? []).some((token) => token.startsWith("llm."));
+  if (!readiness.missing.includes("llm.api_key") && !llmInvalid) {
     return (
       <p className="hint" role="note">
         模型通道已就绪：点击下方按钮即可开始，真实模型调用可能需要几分钟。
       </p>
+    );
+  }
+  if (llmInvalid) {
+    return (
+      <Group className="llm-readiness-missing" gap="sm" wrap="wrap" role="note">
+        <p className="hint">
+          构建需要调用 LLM 通道，当前其配置无效（如接口协议取值越界，来自优先级更高的
+          环境变量层）；建议先在「设置」查看无效警示，也可以直接尝试构建。
+        </p>
+        <Button variant="subtle" type="button" onClick={onGoToSettings}>
+          去设置
+        </Button>
+      </Group>
     );
   }
   return (

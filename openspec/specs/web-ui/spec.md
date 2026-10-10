@@ -84,16 +84,14 @@ parquet 或图谱缓存，SHALL NOT 实现检索排序、提示词拼装和 cita
 ### Requirement: 提供模型供给设置表单
 
 界面 SHALL 提供进入设置视图的入口与 LLM/embedding/rerank 三通道表单（base_url、
-model、api_key、api_key_env、LLM 通道接口协议），经 `GET/PUT /api/settings` 读取
-与保存；保存成功与失败 SHALL 给出中文反馈，校验错误 SHALL 就地展示。api_key 输入
-SHALL 只写不回显（以占位状态表示已设置）；界面 SHALL NOT 把 key 写入 localStorage、
-日志或任何可持久化的前端状态。表单 SHALL 提供厂商预设下拉（精选官方厂商与本地
-端点，按「厂商 × 协议分支」组织），选中后 SHALL 填充该通道的 base_url/model/
-api_key_env/protocol 与凭证模式且仍可手改；LLM 通道 SHALL 提供接口协议选择
-（openai-chat / anthropic / openai-responses，缺省 openai-chat），embedding/rerank
-通道 SHALL NOT 提供协议选择。界面 SHALL 说明自建网关反代与官方端点平级、手填即可
-使用。LLM 通道回退生效时（响应 `llm_env_fallback` 非空）SHALL 展示说明提示。表单
-SHALL 遵循既有可访问性要求：主要操作键盘可达，窄窗口可读。
+model、api_key、api_key_env、LLM 通道接口协议），经 `GET/PUT /api/settings` 读取与
+保存；保存成功与失败 SHALL 给出中文反馈，校验错误 SHALL 就地展示。api_key 输入
+SHALL 只写不回显（占位表示已设置），SHALL NOT 写入 localStorage、日志或可持久化
+前端状态。表单 SHALL 提供厂商预设下拉，选中后 SHALL 填充该通道字段且仍可手改；
+LLM 通道 SHALL 提供接口协议选择（缺省 openai-chat），embedding/rerank SHALL NOT
+出现协议控件。回退生效 SHALL 展示说明提示；`ask_readiness.invalid` 非空时 SHALL
+展示无效警示条（点名来源环境变量与重启指引），SHALL NOT 提供任何「保存可修」入口。
+主要操作 SHALL 键盘可达，窄窗口可读。
 
 #### Scenario: 编辑并保存通道配置
 
@@ -138,6 +136,15 @@ SHALL 遵循既有可访问性要求：主要操作键盘可达，窄窗口可�
 - **GIVEN** 用户在任一通道点击连通性测试
 - **WHEN** `POST /api/settings/test` 返回成功或失败
 - **THEN** 界面分别展示成功耗时或中文失败指引，测试期间阻止重复点击
+
+#### Scenario: 环境层协议越界警示不提供保存可修入口
+
+- **GIVEN** `SIKU_LLM_PROTOCOL` 取值越界，设置读取返回 200 视图且
+  `ask_readiness.invalid` 非空
+- **WHEN** 用户查看设置页
+- **THEN** 界面在表单上方展示警示条：说明该值来自环境变量层、优先级高于本页设置、
+  保存覆盖不了，并给出「修正或取消该变量后重启服务」的指引；界面 SHALL NOT 渲染
+  任何声称保存能修复该状态的控件；`invalid` 为空时不渲染该警示条
 
 ### Requirement: 提供桌面资料库视图
 

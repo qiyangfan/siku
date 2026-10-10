@@ -96,33 +96,36 @@ def test_serve_startup_warning_names_the_invalid_field(
 def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """坏文件已让启动面走「忽略文件层」分支,其间 env 层协议越界不得漏成裸 traceback。
+    """坏文件 + env 层协议越界叠加：两因分别明示后继续启动（不堵启动面、无裸 traceback）。
 
-    except 块里再抛的异常不会被同一 try 的后续 except 接住——原实现正是如此:
-    `resolve_llm_channel(llm_cli, config=ModelSupplyConfig())` 落在 `except
-    ModelConfigFileError` 的体内,ProtocolConfigError 直接穿出 `serve`。
+    原实现这里归一化失败退出；change fix-supply-protocol-dead-end 收敛为「供给配置
+    错误不堵启动面」——文件层无效告警照旧，协议越界告警点名杠杆，LLM 通道按无效
+    呈现，服务照常起服（uvicorn.run 被调用即到达）。
     """
     # 打桩 config_file_path(与 test_retrieve_cli/test_api_settings 等四处同款):
     # 平台无关,绝不触真实用户路径;环境变量钉法会随路径解析实现漂移而失效
     cfg = tmp_path / "config.toml"
     monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text("not [valid toml", encoding="utf-8")
+    uvicorn_calls: list[tuple[object, str, int]] = []
     monkeypatch.setattr(
         "siku.cli.uvicorn.run",
-        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("serve 不应走到起服")),
+        lambda application, *, host, port: uvicorn_calls.append((application, host, port)),
     )
     monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
     result = runner.invoke(app, ["serve", "--port", "8198"])
-    assert result.exit_code == 1
-    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 0
+    assert result.exception is None
+    assert len(uvicorn_calls) == 1
     # CLI 面点名环境变量与配置文件路径，且不得把这个杠杆指到 `--llm-protocol`：该参数
-    # 是枚举型，非法值在解析阶段就被拒（exit 2），根本进不到运行期（见上面那条用例）
+    # 是枚举型，非法值在解析阶段就被拒（exit 2），根本进不到运行期
     assert "SIKU_LLM_PROTOCOL" in result.output
     assert "config.toml" in result.output
     assert "--llm-protocol" not in result.output
     assert "Traceback" not in result.output
     # 文件层的故障仍先行明示(不是静默忽略),两因分别可读
     assert "不是合法 TOML" in result.output
+    assert "invalid" in result.output
 
 
 def test_supply_banner_corrupt_config_is_not_reported_as_unconfigured(

@@ -1,0 +1,32 @@
+{
+  "baseline_version": 1,
+  "config": {
+    "candidate_k": 50,
+    "embedding_base_url_host": "dashscope.aliyuncs.com",
+    "embedding_dimensions": 1024,
+    "embedding_model_id": "text-embedding-v3",
+    "embedding_model_revision": null,
+    "provider_kind": "rerank-none",
+    "reranker_base_url_host": null,
+    "reranker_model_id": null,
+    "reranker_model_revision": null,
+    "rrf_k": 60,
+    "tokenizer_version": "cjk-uni-bigram-v1",
+    "top_k": 10
+  },
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "python": "3.12.13",
+    "siku_version": "0.1.0",
+    "timestamp": "2026-10-10T12:14:04+00:00"
+  },
+  "fixture": {
+    "cases": 27,
+    "name": "golden-set-v0.jsonl",
+    "sha256": "5a3d26fc9c2182daeae9b7e47d81cce6198ba2adc5d660c54932ab3631b07f11"
+  },
+  "metrics": {
+    "mrr_at_10": 0.9444444444444444,
+    "recall_at_5": 0.9629629629629629
+  }
+}

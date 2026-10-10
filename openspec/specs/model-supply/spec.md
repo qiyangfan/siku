@@ -100,22 +100,15 @@
 
 ### Requirement: LLM 通道支持多协议接入
 
-LLM 通道 SHALL 支持三种线协议：`openai-chat`（缺省，既有 `/chat/completions`
-行为）、`anthropic`（Messages API：`{base_url}/v1/messages`、`x-api-key` 与
-`anthropic-version` 凭证头、顶层 `system` 字段、`max_tokens` 必填）、
-`openai-responses`（`{base_url}/responses`、顶层 `instructions` 字段）。
-`protocol` SHALL 作为通道配置字段随既有三层（CLI > 环境变量 > config.toml）
-合并解析，缺省 `openai-chat` 且缺省行为与既有完全一致。三协议 SHALL 保持同等
-幂等语义（temperature=0、非流式），并 SHALL 复用既有五剧本错误映射。
-
-协议取值 SHALL 在**每个输入边界**被拒，禁止 (MUST NOT) 让非法值进入运行期：
-config.toml 的取值在载入点校验（`load_config`），非法即抛「配置文件无效」，
-与内容不可解析走同一条成因码与同一条自救路径；`--llm-protocol` 是枚举参数，
-取值不在名单内 SHALL 在命令行解析阶段失败退出；环境变量与程序传入的 CLI 层
-没有载入边界，SHALL 在通道解析时拒绝，且指引 SHALL 点名真正的杠杆（该变量或
-该参数），SHALL NOT 让用户去「设置」页保存——那两层优先级高于文件层，
-页面保存覆盖不了。embedding 与 rerank 通道 SHALL NOT 消费 `protocol` 字段，
-在文件层出现即视为该文件无效（与非法取值同一条路径），杜绝静默忽略。
+LLM 通道 SHALL 支持三种线协议：`openai-chat`（缺省，既有 `/chat/completions` 行为）、
+`anthropic`（Messages API：`{base_url}/v1/messages`、`x-api-key` 凭证头、顶层
+`system`、`max_tokens` 必填）、`openai-responses`（`{base_url}/responses`、顶层
+`instructions`）。`protocol` SHALL 经既有三层（CLI > 环境变量 > config.toml）合并
+解析，缺省行为零漂移；三协议 SHALL 同等幂等并复用既有五剧本错误映射。协议取值
+SHALL 在每个输入边界被拒：文件层在载入点拒（归文件无效），`--llm-protocol` 枚举
+参数在命令行解析阶段拒，环境变量与程序层在通道解析时拒且指引 SHALL 点名真正杠杆、
+SHALL NOT 让用户去「设置」页保存。embedding 与 rerank 通道 SHALL NOT 消费
+`protocol` 字段，文件层出现即视为文件无效。
 
 #### Scenario: 缺省协议行为零漂移
 
@@ -147,10 +140,12 @@ config.toml 的取值在载入点校验（`load_config`），非法即抛「配�
 #### Scenario: 非法协议值报可行动指引
 
 - **GIVEN** 用户提交或配置了枚举之外的 `protocol` 值
-- **WHEN** 系统处理设置提交、载入配置文件或解析通道
-- **THEN** 返回可行动指引并列出三个合法值；指引按取值来源指对杠杆：提交值 →
-  422 校验错误；文件层 → 503 `invalid_config_file`（重新保存即可覆盖）；
-  环境变量/命令行层 → 503 `invalid_settings` 并点名该变量或参数
+- **WHEN** 系统处理设置提交、载入配置文件、解析通道或读取设置
+- **THEN** 指引按取值来源分面且列出三个合法值：提交值 → 422 校验错误；文件层 →
+  503 `invalid_config_file`（重新保存即可覆盖）；环境变量/程序层 → 请求面与连通
+  探测面 503 `invalid_settings` 并点名该变量或参数，设置读取面 SHALL 返回 200 视图
+  并以 `ask_readiness.invalid` 稳定 token 呈现，指引同样点名该变量且 SHALL NOT
+  承诺页面保存可修
 
 #### Scenario: 文件层坏协议归入文件无效并可被保存修复
 
@@ -205,26 +200,16 @@ SHALL NOT 归为同一类。
 
 ### Requirement: 配置文件不可解析时用户可自救
 
-配置文件对模型供给无效时，系统 SHALL 仍允许用户以显式保存覆盖该文件以恢复可用
-状态。「无效」涵盖两种形态——内容不可解析（非法 TOML、段结构非法、非 UTF-8），
-以及**可解析但字段取值不在允许范围**（如 `[llm] protocol` 越界、embedding/rerank
-段多出 `protocol` 字段）：后者 SHALL 在载入点即被拒并归入同一形态，禁止 (MUST NOT)
-让非法取值以合法配置对象的形态进入运行期，从而逼迫就绪判定、启动面与前端各自
-再加一套善后分支。
-
-设置写入 SHALL 以空的配置层为基底合并本次提交并原子替换坏文件，SHALL 在响应中
-显式告知「原配置文件无效、已被本次保存覆盖」；SHALL NOT 在仅因权限或 IO 故障
-读不到文件时走覆盖路径（该情形内容未知，必须保持报错）。设置读取与命令行入口面
-对同型错误 SHALL 给出可行动指引而非「去补全 base_url/model」，并 SHALL 指明到底
-是哪个字段无效与它的合法取值名单；SHALL 以稳定 `code` 区分「保存可修」
-（`invalid_config_file`）与「保存不可修」（`config_file_unreadable`）——设置页的
-覆盖自救入口 SHALL 只由前者驱动，禁止 (MUST NOT) 靠「服务可达与否」之类的客户端
-启发式推断。
-
-启动面忽略文件层之后 SHALL NOT 因此放弃对其余层校验：文件层无效、而 env/CLI 层的
-`protocol` 取值越界时，`siku serve` SHALL 归一化失败（先明示文件层无效，再给出协议
-取值指引并以非零码退出），禁止 (MUST NOT) 把该异常漏成未捕获的 traceback——
-`except` 块内再抛出的异常不会被同一 `try` 的后续分支接住，这是一条真实崩溃路径。
+配置文件对模型供给无效时，系统 SHALL 仍允许用户以显式保存覆盖恢复可用：「无效」涵盖
+内容不可解析（非法 TOML、段结构非法、非 UTF-8）与可解析但取值不在允许范围（如
+`[llm] protocol` 越界）——后者 SHALL 在载入点即被拒，禁止非法取值进入运行期。设置
+写入 SHALL 以空配置层为基底合并本次提交并原子替换坏文件，SHALL 显式告知覆盖事实；
+仅权限/IO 读不到时 SHALL NOT 走覆盖（内容未知必须保持报错）。读取与命令行面对同型
+错误 SHALL 给可行动指引（指明无效字段与合法名单），SHALL 以稳定 `code` 区分「保存
+可修」（`invalid_config_file`）与「保存不可修」（`config_file_unreadable`），设置页
+覆盖自救入口 SHALL 只由前者驱动，SHALL NOT 靠客户端启发式推断。启动面忽略文件层后
+SHALL 继续校验其余层：`siku serve` 遇文件层无效或上层协议越界 SHALL 在用户面明示后
+继续启动，SHALL NOT 把异常漏成未捕获的 traceback。
 
 #### Scenario: 坏文件下保存即恢复
 
@@ -276,9 +261,10 @@ SHALL NOT 归为同一类。
 - **GIVEN** 配置文件无效（不可解析，或字段取值非法），且 env/CLI 层的 `protocol`
   取值越界
 - **WHEN** 用户启动 `siku serve`
-- **THEN** 先明示文件层无效，再以归一化中文指引退出（点名该环境变量或程序传入层，
-  `--llm-protocol` 作为枚举参数不再是这条错误的来源），
-  用户面不出现未捕获异常的 traceback
+- **THEN** 先在用户面明示文件层无效，再告警协议越界（点名该环境变量或程序传入层，
+  `--llm-protocol` 作为枚举参数不再是这条错误的来源）并继续启动：LLM 通道按无效
+  呈现、其余通道照常可用，用户面不出现未捕获异常的 traceback（场景名沿旧约保留，
+  「归一化」语义不变——从归一化失败收敛为归一化明示后继续）
 
 #### Scenario: 坏取值文件不产生运行期非法状态
 

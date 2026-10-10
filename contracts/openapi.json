@@ -1195,6 +1195,13 @@
             },
             "type": "array",
             "title": "Missing"
+          },
+          "invalid": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Invalid"
           }
         },
         "type": "object",
@@ -1203,7 +1210,7 @@
           "missing"
         ],
         "title": "AskReadinessView",
-        "description": "问答就绪状态：missing 为稳定的 `<channel>.<field>` 机器 token（无凭证明文）。\n\n判定口径与请求期通道解析同源（rerank 可选不阻塞）；中文话术由 UI 依据\ntoken 生成，内核不承载展示文案。"
+        "description": "问答就绪状态：missing/invalid 为稳定的 `<channel>.<field>` 机器 token（无凭证明文）。\n\n`missing` 是缺项；`invalid` 是跨层合并后取值非法（如环境变量层协议越界）。\n判定口径与请求期通道解析同源（rerank 可选不阻塞）；中文话术由 UI 依据\ntoken 生成，内核不承载展示文案。"
       },
       "AskRequest": {
         "properties": {

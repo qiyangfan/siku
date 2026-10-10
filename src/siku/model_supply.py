@@ -320,19 +320,26 @@ MISSING_LLM_API_KEY = "llm.api_key"
 MISSING_EMBEDDING_BASE_URL = "embedding.base_url"
 MISSING_EMBEDDING_MODEL = "embedding.model"
 
+# ask_readiness.invalid 的稳定 token 全集：值存在但非法（与 missing 互斥的失效形态）
+INVALID_LLM_PROTOCOL = "llm.protocol"
+INVALID_EMBEDDING_PROTOCOL = "embedding.protocol"
+
 
 @dataclass(frozen=True)
 class AskReadiness:
     """问答链路的模型供给就绪状态。
 
-    ``missing`` 是稳定的 ``<channel>.<field>`` 机器 token 契约（当前全集：
-    ``llm.api_key``、``embedding.base_url``、``embedding.model``），供 UI 与
-    API 消费方映射为中文指引；判定口径与请求期 ``resolve_*_channel`` 同源，
-    计入 CLI 参数、环境变量与配置文件三层。
+    ``missing`` 与 ``invalid`` 是稳定的机器 token 契约（前者全集：
+    ``llm.api_key``、``embedding.base_url``、``embedding.model``；后者：跨层
+    合并后的字段取值非法，如 ``llm.protocol``、``embedding.protocol``），供 UI
+    与 API 消费方映射为中文指引；判定口径与请求期 ``resolve_*_channel`` 同源，
+    计入 CLI 参数、环境变量与配置文件三层。协议越界 SHALL NOT 使判定抛异常——
+    解析结果在这里是数据（视图面），请求面才把同一失败归一为 503。
     """
 
     ready: bool
     missing: tuple[str, ...]
+    invalid: tuple[str, ...] = ()
 
 
 def ask_readiness(
@@ -344,7 +351,9 @@ def ask_readiness(
 
     就绪 = llm 通道凭证可解析（base_url/model 有兼容缺省，不构成缺项）且
     embedding 通道 base_url/model 三层合并非空；rerank 通道是可选项
-    （reranker=none 一等公民），永不进入 ``missing``。
+    （reranker=none 一等公民），永不进入 ``missing``。协议越界不抛异常，记入
+    ``invalid`` token——判定面把解析结果当数据，与请求期同一解析函数同源：
+    视图说无效 ⇔ 请求必失败，不谎报就绪。
 
     `cli` 是服务入口（``siku serve --embedding-base-url`` 等）传入的命令行层，
     形状与文件层同构（三通道各一个 :class:`ChannelValues`）：判定 MUST 计入它，
@@ -357,20 +366,29 @@ def ask_readiness(
     llm_cli = cli.llm if cli is not None else None
     embedding_cli = cli.embedding if cli is not None else None
     missing: list[str] = []
-    llm = resolve_llm_channel(llm_cli, config=supply)
-    if llm.resolve_api_key() is None:
-        missing.append(MISSING_LLM_API_KEY)
+    invalid: list[str] = []
+    try:
+        llm = resolve_llm_channel(llm_cli, config=supply)
+    except ProtocolConfigError:
+        # 协议越界在判定面是数据不是异常：与请求期同一解析函数产出同一失败，
+        # 视图说无效 ⇔ 请求必失败（同源不谎报）；文件层非法值在 load_config
+        # 载入点已被拒，这里只可能收到上层（env/程序）的越界
+        invalid.append(INVALID_LLM_PROTOCOL)
+    else:
+        if llm.resolve_api_key() is None:
+            missing.append(MISSING_LLM_API_KEY)
     embedding = _resolve_channel(supply.embedding, EmbeddingEnvSettings, embedding_cli)
-    # 与请求期 resolve_embedding_channel 同源：协议越界时整个判定失败（抛
-    # ProtocolConfigError，GET 面转成 503 中文指引），不得出现「判定就绪而请求必炸」
-    # 的第二套事实源。文件层的非法值已在 load_config 载入点被拒，这里挡的是程序传入的
-    # cli 层与调用方直接递进来的 config 层
-    _reject_channel_protocol("embedding", embedding.protocol)
+    if embedding.protocol is not None:
+        # 与请求期 resolve_embedding_channel 的拒绝同源：程序/CLI 层的非法字段
+        # 在判定面记为 invalid token，不抛（文件层该字段已在载入点被拒）
+        invalid.append(INVALID_EMBEDDING_PROTOCOL)
     if not embedding.base_url:
         missing.append(MISSING_EMBEDDING_BASE_URL)
     if not embedding.model:
         missing.append(MISSING_EMBEDDING_MODEL)
-    return AskReadiness(ready=not missing, missing=tuple(missing))
+    return AskReadiness(
+        ready=not missing and not invalid, missing=tuple(missing), invalid=tuple(invalid)
+    )
 
 
 def _reject_channel_protocol(channel: str, protocol: str | None) -> None:

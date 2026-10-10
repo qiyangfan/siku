@@ -43,6 +43,26 @@ const LLM_PROTOCOL_OPTIONS = [
   { value: "openai-responses", label: "OpenAI Responses（/responses）" },
 ];
 
+// ask_readiness.invalid 稳定 token → 中文话术（与内核 model_supply 的 token 全集对齐）。
+// 这些值来自优先级高于文件层的 env/程序传入层，保存覆盖不了：话术必须指向真正的
+// 杠杆（修正变量后重启），不得渲染任何「保存可修」的暗示。
+function invalidTokenText(token: string): string {
+  if (token === "llm.protocol") {
+    return (
+      "LLM 通道的接口协议取值无效：该值来自优先级高于本页设置的环境变量或程序传入层" +
+      "（如 SIKU_LLM_PROTOCOL），保存覆盖不了它；该通道在当前服务内不可用（问答/图谱" +
+      "请求将报错），检索不受影响。请在启动服务的终端修正或取消该变量后重启服务。"
+    );
+  }
+  if (token === "embedding.protocol") {
+    return (
+      "embedding 通道不支持接口协议字段：该值来自程序传入层，保存覆盖不了它；" +
+      "请从启动服务的命令行或环境中移除该字段后重启服务。"
+    );
+  }
+  return `模型通道存在无效配置（${token}）：请修正后重启服务。`;
+}
+
 type SaveState = "idle" | "loading";
 
 type ChannelTestState =
@@ -614,6 +634,17 @@ export function SettingsView({
       {saveError !== null && (
         <Alert color="red" role="alert" title="设置保存失败">{saveError}</Alert>
       )}
+      {(views?.ask_readiness?.invalid ?? []).map((token) => (
+        <Alert
+          key={token}
+          className="status-card"
+          color="yellow"
+          role="alert"
+          title="模型通道配置无效"
+        >
+          {invalidTokenText(token)}
+        </Alert>
+      ))}
       {overwrittenInvalidConfig && (
         <Alert color="yellow" role="status" title="原配置文件不可解析">
           本机配置文件内容已损坏、无法读取，本次保存以空配置为基底写入了新内容并覆盖该文件。
