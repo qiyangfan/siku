@@ -238,3 +238,52 @@ class TestWikiCommand:
         result = runner.invoke(app, ["wiki", "--data-dir", str(tmp_path / "data")])
         assert result.exit_code == 1
         assert "未配置 LLM API key" in result.output
+
+
+class TestGraphPreWarning:
+    def test_model_change_prewarns_full_reextract_on_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """换模型后显式构建预告全量重抽规模（design D3）：stderr 告知，
+        stdout 保持纯净 JSON（--json 稳定输出契约不被污染）。"""
+        write_corpus(tmp_path / VAULT)
+        with monkeypatch.context() as scoped:
+            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            first = runner.invoke(app, graph_args(tmp_path, "--json"))
+            assert first.exit_code == 0
+            assert json.loads(first.output)["llm_calls"] == 2
+
+        switched = FakeGraphExtractor(
+            extractor_id="llm-graph",
+            model_id="switched-model",
+            prompt_version="v1",
+            respond=legal_extraction_for,
+        )
+        with monkeypatch.context() as scoped:
+            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: switched)
+            second = runner.invoke(app, graph_args(tmp_path, "--json"))
+
+        assert second.exit_code == 0
+        # 预告走 stderr（生产环境与 stdout 分离，`> out.json` 不被污染）；
+        # CliRunner 的 output 混合两流，JSON 取首个 '{' 之后
+        assert "全量重抽 2 个 chunk" in (second.stderr or "")
+        payload = json.loads(second.output[second.output.index("{") :])
+        assert payload["llm_calls"] == 2
+        assert payload["cache_hits"] == 0
+
+    def test_same_model_has_no_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """身份一致时不预告（增量是常态，不制造噪音）。"""
+        write_corpus(tmp_path / VAULT)
+        with monkeypatch.context() as scoped:
+            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            first = runner.invoke(app, graph_args(tmp_path, "--json"))
+            assert first.exit_code == 0
+        with monkeypatch.context() as scoped:
+            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            second = runner.invoke(app, graph_args(tmp_path, "--json"))
+        assert second.exit_code == 0
+        assert "全量重抽" not in (second.stderr or "")
+        # 无预告时 output 即纯净 JSON
+        assert json.loads(second.output)["cache_hits"] == 2

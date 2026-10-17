@@ -300,7 +300,7 @@ describe("来源目录同步", () => {
     const fetchSpy = mockRoutes({
       "/api/library": () => emptyListing,
       "/api/library/sources": () => emptySyncSources,
-      "/api/library/scan-settings": () => ({ interval_secs: 300 }),
+      "/api/library/scan-settings": () => ({ interval_secs: 300, graph_auto_refresh: false }),
     });
     render(<LibraryView />);
 
@@ -355,11 +355,12 @@ describe("来源目录同步", () => {
         { name: "新文档.pdf", path: "attachments/新文档--a1b2c3d4e5f6.pdf", status: "created", detail: null },
       ],
       error: null,
+      notice: "图谱已增量更新：新增抽取 1 块，缓存命中 2 块。",
     });
     mockRoutes({
       "/api/library": () => emptyListing,
       "/api/library/sources": () => oneSyncSource,
-      "/api/library/scan-settings": () => ({ interval_secs: 300 }),
+      "/api/library/scan-settings": () => ({ interval_secs: 300, graph_auto_refresh: false }),
       "/api/library/scan": (method, init) => {
         expect(method).toBe("POST");
         expect(String(init?.body)).toContain('"full":false');
@@ -374,6 +375,9 @@ describe("来源目录同步", () => {
     await user.click(screen.getByRole("button", { name: "立即扫描" }));
 
     expect(await screen.findByText("扫描完成：处理 1 项动作。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("图谱已增量更新：新增抽取 1 块，缓存命中 2 块。"),
+    ).toBeInTheDocument();
   });
 
   it("清单展示缺失、已替代徽标与来源路径", async () => {
@@ -708,5 +712,53 @@ describe("单项移除", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "重试移除" })).toBeInTheDocument(),
     );
+  });
+});
+
+describe("图谱自动刷新开关", () => {
+  const settingsRoutes = (graphAutoRefresh: boolean) => ({
+    "/api/library": () => emptyListing,
+    "/api/library/sources": () => oneSyncSource,
+    "/api/library/scan-settings": () => ({ interval_secs: 300, graph_auto_refresh: graphAutoRefresh }),
+  });
+
+  it("展示开关与中文说明（缺省关闭）", async () => {
+    mockRoutes(settingsRoutes(false));
+    render(<LibraryView />);
+
+    await screen.findByText("资料库还是空的");
+    await userEvent.setup().click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
+
+    const toggle = await screen.findByLabelText("摄取/扫描后自动增量更新图谱");
+    expect(toggle).not.toBeChecked();
+    expect(
+      screen.getByText(/仅在图谱已构建时增量维护（不会自动创建）/),
+    ).toBeInTheDocument();
+  });
+
+  it("切换开关经 PUT 持久化并回读生效", async () => {
+    const puts: Array<Record<string, unknown>> = [];
+    mockRoutes({
+      ...settingsRoutes(false),
+      "/api/library/scan-settings": (method, init) => {
+        if (method === "PUT") {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          puts.push(body);
+          return { interval_secs: 300, graph_auto_refresh: Boolean(body.graph_auto_refresh) };
+        }
+        return { interval_secs: 300, graph_auto_refresh: false };
+      },
+    });
+    render(<LibraryView />);
+
+    await screen.findByText("资料库还是空的");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
+
+    const toggle = await screen.findByLabelText("摄取/扫描后自动增量更新图谱");
+    await user.click(toggle);
+
+    expect(puts).toEqual([{ graph_auto_refresh: true }]);
+    expect(await screen.findByLabelText("摄取/扫描后自动增量更新图谱")).toBeChecked();
   });
 });

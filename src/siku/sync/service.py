@@ -396,6 +396,10 @@ class SyncService:
             if staged is not None:
                 discard_staged(staged.path)
 
+        # 两个 except 分支均已 return：到达此处必有暂存副本与摄取报告
+        assert staged is not None
+        assert report is not None
+
         new_source_id = self._new_source_id(report)
         if new_source_id is None:
             observer.op_finished(

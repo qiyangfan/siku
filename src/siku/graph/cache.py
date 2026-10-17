@@ -9,6 +9,7 @@ SQL 全部参数化（`?` 占位），禁止字符串拼接。
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sqlite3
 from pathlib import Path
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 NAMESPACE_EXTRACTION = "extraction"
 NAMESPACE_SUMMARY = "summary"
+# 上次成功构建的抽取器身份：自动维护的资格闸门据此比对（design D3）
+GRAPH_IDENTITY_KEY = "graph_build_identity"
+GRAPH_IDENTITY_FIELDS = ("extractor_id", "model_id", "prompt_version")
 
 # 字段分隔符使用控制字符，杜绝内容拼接歧义（与 chunk_id 派生同款）
 _KEY_SEPARATOR = "\x1f"
@@ -140,6 +144,48 @@ class ExtractionCache:
 
     def put_summary(self, cache_key: str, summary: str) -> None:
         self._put(NAMESPACE_SUMMARY, cache_key, summary)
+
+    def get_build_identity(self) -> dict[str, str] | None:
+        """上次成功构建记录的抽取器身份；无记录或损坏返回 None（自愈重抽）。"""
+        row = self._connection.execute(
+            "SELECT value FROM cache_meta WHERE key = ?", (GRAPH_IDENTITY_KEY,)
+        ).fetchone()
+        if row is None:
+            return None
+        try:
+            parsed = json.loads(str(row[0]))
+        except ValueError:
+            logger.warning("corrupt graph build identity ignored, will re-extract")
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        identity: dict[str, str] = {}
+        for field in GRAPH_IDENTITY_FIELDS:
+            value = parsed.get(field)
+            if not isinstance(value, str):
+                return None
+            identity[field] = value
+        return identity
+
+    def put_build_identity(self, extractor_id: str, model_id: str, prompt_version: str) -> None:
+        """构建成功落盘后记录抽取器身份；构建失败不得调用（产物未变则身份未变）。"""
+        self._set_meta(
+            GRAPH_IDENTITY_KEY,
+            json.dumps(
+                {
+                    "extractor_id": extractor_id,
+                    "model_id": model_id,
+                    "prompt_version": prompt_version,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    def _set_meta(self, key: str, value: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR REPLACE INTO cache_meta(key, value) VALUES (?, ?)", (key, value)
+            )
 
     def _get(self, namespace: str, cache_key: str) -> str | None:
         row = self._connection.execute(

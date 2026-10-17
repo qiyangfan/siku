@@ -18,6 +18,7 @@ from fakes import FakeEmbeddingProvider
 from siku.api import library as library_module
 from siku.api.app import create_app
 from siku.api.library import STAGING_ROOT, AttachmentDigestCache
+from siku.graph.refresh import GraphRefreshOutcome
 from siku.ingest import IngestReport
 from siku.ingest.pipeline import IngestItem
 from siku.retrieve.errors import ModelConfigMismatchError
@@ -51,6 +52,7 @@ def build_library_app(
     *,
     index_runner: MarkedRunner,
     ingest_handler: Callable[[Path, Path], IngestReport] | None = None,
+    graph_refresh_runner: Callable[[], GraphRefreshOutcome] | None = None,
 ) -> TestClient:
     kwargs: dict[str, Any] = {
         "vault": tmp_path / "vault",
@@ -59,7 +61,29 @@ def build_library_app(
     }
     if ingest_handler is not None:
         kwargs["ingest_handler"] = ingest_handler
+    if graph_refresh_runner is not None:
+        kwargs["graph_refresh_runner"] = graph_refresh_runner
     return TestClient(create_app(**kwargs))  # type: ignore[arg-type]
+
+
+def make_graph_refresh_runner(
+    outcome: GraphRefreshOutcome | None = None,
+    raises: Exception | None = None,
+) -> tuple[Callable[[], GraphRefreshOutcome], list[int]]:
+    """可编程 fake 图谱自动维护执行器：记录调用次数并按剧本返回/抛错。"""
+    calls: list[int] = []
+
+    def runner() -> GraphRefreshOutcome:
+        calls.append(1)
+        if raises is not None:
+            raise raises
+        return outcome or GraphRefreshOutcome(
+            refreshed=True,
+            code="refreshed",
+            message="图谱已增量更新：新增抽取 1 块，缓存命中 2 块。",
+        )
+
+    return runner, calls
 
 
 def upload(client: TestClient, *payloads: tuple[str, bytes]) -> dict[str, Any]:
@@ -411,11 +435,10 @@ def test_cancel_stops_after_current_file(tmp_path: Path) -> None:
     job = upload(client, ("a.md", b"# A"), ("b.md", b"# B"), ("c.md", payload_c))
 
     deadline = time.monotonic() + 5.0
-    while time.monotonic() < deadline:
-        snapshot = client.get(f"/api/library/jobs/{job['job_id']!s}").json()
-        if snapshot["current"] == "b.md":
-            break
+    snapshot = client.get(f"/api/library/jobs/{job['job_id']!s}").json()
+    while time.monotonic() < deadline and snapshot["current"] != "b.md":
         time.sleep(0.01)
+        snapshot = client.get(f"/api/library/jobs/{job['job_id']!s}").json()
     assert snapshot["current"] == "b.md"
 
     cancelled_request = client.post(f"/api/library/jobs/{job['job_id']!s}/cancel")
@@ -496,3 +519,162 @@ def test_index_failure_fails_job_with_existing_guidance(tmp_path: Path) -> None:
     assert "different model configuration" not in str(final)
     # 摄取产物不受索引失败影响：清单仍可读
     assert [source["ingest_status"] for source in listing(client)["sources"]] == ["ingested"]
+
+
+# -- 图谱自动维护收尾链（add-graph-auto-refresh：design D4）--
+
+REFRESHED_OUTCOME = GraphRefreshOutcome(
+    refreshed=True,
+    code="refreshed",
+    message="图谱已增量更新：新增抽取 1 块，缓存命中 2 块。",
+)
+SKIPPED_OUTCOME = GraphRefreshOutcome(
+    refreshed=False,
+    code="identity_changed",
+    message=(
+        "抽取模型或 prompt 已变更，已跳过图谱自动更新：自动更新不执行全量重抽，请显式更新图谱。"
+    ),
+)
+
+
+def created_ingest_handler(source: Path, vault: Path) -> IngestReport:
+    attachment = vault / "attachments" / source.name
+    return IngestReport(
+        items=(
+            IngestItem(
+                source_path=source,
+                status="created",
+                note_path=source,
+                attachment_path=attachment,
+            ),
+        ),
+        ignored_paths=(),
+    )
+
+
+def test_ingest_finish_chains_graph_refresh_with_notice(tmp_path: Path) -> None:
+    runner, index_calls = make_index_runner()
+    graph_runner, graph_calls = make_graph_refresh_runner(REFRESHED_OUTCOME)
+    client = build_library_app(
+        tmp_path,
+        index_runner=runner,
+        ingest_handler=created_ingest_handler,
+        graph_refresh_runner=graph_runner,
+    )
+    job = upload(client, ("a.md", "# A\n\n正文".encode()))
+    final, _ = poll_until_finished(client, str(job["job_id"]))
+
+    assert final["state"] == "succeeded"
+    assert index_calls == [False]
+    assert graph_calls == [1]  # 索引发布后衔接一次图谱自动维护
+    assert final["notice"] == REFRESHED_OUTCOME.message
+    assert final["error"] is None
+
+
+def test_ingest_finish_skip_outcome_also_notifies(tmp_path: Path) -> None:
+    runner, _ = make_index_runner()
+    graph_runner, _ = make_graph_refresh_runner(SKIPPED_OUTCOME)
+    client = build_library_app(
+        tmp_path,
+        index_runner=runner,
+        ingest_handler=created_ingest_handler,
+        graph_refresh_runner=graph_runner,
+    )
+    job = upload(client, ("a.md", "# A\n\n正文".encode()))
+    final, _ = poll_until_finished(client, str(job["job_id"]))
+
+    assert final["state"] == "succeeded"
+    assert final["notice"] == SKIPPED_OUTCOME.message
+
+
+def test_graph_refresh_failure_keeps_ingest_succeeded(tmp_path: Path) -> None:
+    runner, _ = make_index_runner()
+    graph_runner, graph_calls = make_graph_refresh_runner(
+        raises=RuntimeError("fake: extraction exploded")
+    )
+    client = build_library_app(
+        tmp_path,
+        index_runner=runner,
+        ingest_handler=created_ingest_handler,
+        graph_refresh_runner=graph_runner,
+    )
+    job = upload(client, ("a.md", "# A\n\n正文".encode()))
+    final, _ = poll_until_finished(client, str(job["job_id"]))
+
+    # 刷新失败只落通知，不改写摄取成功终态（spec：刷新失败不改变任务终态）
+    assert final["state"] == "succeeded"
+    assert final["error"] is None
+    assert graph_calls == [1]
+    assert final["notice"] is not None
+    assert "失败" in final["notice"]
+    assert "旧图谱保持有效" in final["notice"]
+
+
+def test_no_graph_runner_means_no_notice(tmp_path: Path) -> None:
+    runner, _ = make_index_runner()
+    client = build_library_app(tmp_path, index_runner=runner, ingest_handler=created_ingest_handler)
+    job = upload(client, ("a.md", "# A\n\n正文".encode()))
+    final, _ = poll_until_finished(client, str(job["job_id"]))
+
+    assert final["state"] == "succeeded"
+    assert final.get("notice") is None  # 旧契约：字段缺失按无附加信息
+
+
+def test_cancelled_ingest_does_not_refresh_graph(tmp_path: Path) -> None:
+    runner, index_calls = make_index_runner()
+    graph_runner, graph_calls = make_graph_refresh_runner(REFRESHED_OUTCOME)
+    release = threading.Event()
+    calls_seen = 0
+
+    def blocking_on_second(source: Path, vault: Path) -> IngestReport:
+        nonlocal calls_seen
+        calls_seen += 1
+        if calls_seen == 2:
+            release.wait(timeout=5)
+        return created_ingest_handler(source, vault)
+
+    client = build_library_app(
+        tmp_path,
+        index_runner=runner,
+        ingest_handler=blocking_on_second,
+        graph_refresh_runner=graph_runner,
+    )
+    job = upload(client, ("a.md", b"# A"), ("b.md", b"# B"), ("c.md", b"# C"))
+
+    deadline = time.monotonic() + 5.0
+    snapshot = client.get(f"/api/library/jobs/{job['job_id']!s}").json()
+    while time.monotonic() < deadline and snapshot["current"] != "b.md":
+        time.sleep(0.01)
+        snapshot = client.get(f"/api/library/jobs/{job['job_id']!s}").json()
+    assert snapshot["current"] == "b.md"
+
+    assert client.post(f"/api/library/jobs/{job['job_id']!s}/cancel").status_code == 200
+    release.set()
+    final, _ = poll_until_finished(client, str(job["job_id"]))
+
+    # 取消仍发布索引（决议 #3），但不触发图谱自动维护（取消 = 停止新工作）
+    assert final["state"] == "cancelled"
+    assert index_calls == [False]
+    assert graph_calls == []
+
+
+def test_rebuild_job_does_not_refresh_graph(tmp_path: Path) -> None:
+    runner, index_calls = make_index_runner()
+    graph_runner, graph_calls = make_graph_refresh_runner(REFRESHED_OUTCOME)
+    client = build_library_app(
+        tmp_path,
+        index_runner=runner,
+        ingest_handler=created_ingest_handler,
+        graph_refresh_runner=graph_runner,
+    )
+    unconfirmed = client.post("/api/library/rebuild", json={"confirm": False})
+    assert unconfirmed.status_code == 422
+    job = client.post("/api/library/rebuild", json={"confirm": True}).json()
+    final, _ = poll_until_finished(client, str(job["job_id"]))
+
+    # 全量重建是索引侧显式动作，不衔接图谱自动维护（触发条件与索引逐字一致：
+    # 非 rebuild）
+    assert final["state"] == "succeeded"
+    assert index_calls == [True]
+    assert graph_calls == []
+    assert final.get("notice") is None

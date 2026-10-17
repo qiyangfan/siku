@@ -18,6 +18,8 @@ from uuid import uuid4
 # 扫描间隔缺省值与设置键（决议 #1：间隔存注册表，免重启生效）
 DEFAULT_SCAN_INTERVAL_SECS = 300
 INTERVAL_KEY = "scan_interval_secs"
+DEFAULT_GRAPH_AUTO_REFRESH = False
+GRAPH_AUTO_REFRESH_KEY = "graph_auto_refresh"
 # 库域状态库文件名（与检索索引库 retrieval.sqlite3 同目录、物理分离）
 DATABASE_NAME = "library.sqlite3"
 
@@ -354,4 +356,25 @@ class SyncRegistry:
                 "INSERT INTO sync_settings (key, value) VALUES (?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (INTERVAL_KEY, str(seconds)),
+            )
+
+    def get_graph_auto_refresh(self) -> bool:
+        with closing(self._connect()) as connection, connection:
+            row = connection.execute(
+                "SELECT value FROM sync_settings WHERE key = ?",
+                (GRAPH_AUTO_REFRESH_KEY,),
+            ).fetchone()
+        if row is None:
+            return DEFAULT_GRAPH_AUTO_REFRESH
+        try:
+            return int(row[0]) == 1
+        except ValueError:
+            return DEFAULT_GRAPH_AUTO_REFRESH
+
+    def set_graph_auto_refresh(self, enabled: bool) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                "INSERT INTO sync_settings (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (GRAPH_AUTO_REFRESH_KEY, "1" if enabled else "0"),
             )

@@ -99,29 +99,35 @@ def build_graph(
                 # 逐 chunk 落缓存：中断重跑自动续传，不重复烧 key
                 cache.put_extraction(cache_key, extraction)
             pairs.append((chunk, extraction))
+
+        merged = merge_extractions(pairs)
+        memory_graph = build_memory_graph(merged.entities, merged.relations)
+        member_groups = detect_communities(memory_graph)
+        entity_by_id = {entity.entity_id: entity for entity in merged.entities}
+        communities = tuple(
+            Community(
+                community_id=community_id,
+                member_entity_ids=members,
+                level=0,
+                # 键指纹须覆盖摘要 prompt 全部输入（成员展示名/类型在内），
+                # 与 wiki 阶段的过期校验共用同一函数（community.py 单一定义点）
+                summary_cache_key=summary_cache_key(
+                    [entity_by_id[member] for member in members],
+                    internal_relation_triples(merged.relations, set(members)),
+                    identity=summary_identity,
+                ),
+            )
+            for community_id, members in enumerate(member_groups)
+        )
+        save_graph(data_dir, merged.entities, merged.relations, communities)
+        # 产物发布成功才记录抽取器身份：自动维护的资格闸门据此比对（design D3）；
+        # 构建失败不落身份，避免把旧产物的身份误记为当前通道
+        cache.put_build_identity(
+            extractor.extractor_id, extractor.model_id, extractor.prompt_version
+        )
     finally:
         cache.close()
 
-    merged = merge_extractions(pairs)
-    memory_graph = build_memory_graph(merged.entities, merged.relations)
-    member_groups = detect_communities(memory_graph)
-    entity_by_id = {entity.entity_id: entity for entity in merged.entities}
-    communities = tuple(
-        Community(
-            community_id=community_id,
-            member_entity_ids=members,
-            level=0,
-            # 键指纹须覆盖摘要 prompt 全部输入（成员展示名/类型在内），
-            # 与 wiki 阶段的过期校验共用同一函数（community.py 单一定义点）
-            summary_cache_key=summary_cache_key(
-                [entity_by_id[member] for member in members],
-                internal_relation_triples(merged.relations, set(members)),
-                identity=summary_identity,
-            ),
-        )
-        for community_id, members in enumerate(member_groups)
-    )
-    save_graph(data_dir, merged.entities, merged.relations, communities)
     report = GraphHealthReport(
         extractor_id=extractor.extractor_id,
         model_id=extractor.model_id,

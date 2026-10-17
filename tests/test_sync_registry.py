@@ -107,3 +107,29 @@ def test_registry_state_survives_reopen(tmp_path: Path) -> None:
     assert set(reopened.list_tombstones()) == {"doc-1"}
     # 与检索索引库物理分离：同名冲突即失去隔离语义
     assert db_path.name == "library.sqlite3"
+
+
+def test_graph_auto_refresh_defaults_off_and_persists(registry: SyncRegistry) -> None:
+    assert registry.get_graph_auto_refresh() is False
+    registry.set_graph_auto_refresh(True)
+    assert registry.get_graph_auto_refresh() is True
+    registry.set_graph_auto_refresh(False)
+    assert registry.get_graph_auto_refresh() is False
+
+
+def test_graph_auto_refresh_isolated_per_vault(registry: SyncRegistry, tmp_path: Path) -> None:
+    other = SyncRegistry(library_db_path(tmp_path / "other-data"))
+    registry.set_graph_auto_refresh(True)
+    assert other.get_graph_auto_refresh() is False
+
+
+def test_graph_auto_refresh_corrupt_value_falls_back_off(
+    registry: SyncRegistry, tmp_path: Path
+) -> None:
+    import sqlite3
+
+    with sqlite3.connect(library_db_path(tmp_path / "data")) as connection:
+        connection.execute(
+            "INSERT INTO sync_settings (key, value) VALUES ('graph_auto_refresh', 'garbage')"
+        )
+    assert registry.get_graph_auto_refresh() is False

@@ -9,6 +9,7 @@ from siku.graph.cache import ExtractionCache, extraction_cache_key
 from siku.graph.errors import LlmRateLimitError
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.models import EntityMention, GraphExtraction, RelationMention
+from siku.graph.refresh import read_build_identity
 from siku.graph.service import build_graph, load_chunks
 from siku.graph.store import graph_file_paths, load_graph
 from siku.retrieve.errors import NotesDirMissingError
@@ -148,3 +149,38 @@ class TestBuildGraph:
                     extractor.prompt_version,
                 )
                 assert cache.get_extraction(key) is not None
+
+    def test_successful_build_records_identity(self, tmp_path: Path) -> None:
+        write_note(tmp_path / VAULT)
+        build_graph(tmp_path / VAULT, tmp_path / "data", default_extractor())
+        recorded = read_build_identity(tmp_path / "data")
+        assert recorded == {
+            "extractor_id": "fake-graph-extractor",
+            "model_id": "fake-model",
+            "prompt_version": "v1",
+        }
+
+    def test_failed_build_does_not_record_identity(self, tmp_path: Path) -> None:
+        write_note(tmp_path / VAULT)
+        # 首次构建即失败：无身份记录（自动路径据此判定不满足）
+        provider = ScriptedLlmProvider(script=[RATE_LIMITED])
+        with pytest.raises(LlmRateLimitError):
+            build_graph(tmp_path / VAULT, tmp_path / "data", LlmGraphExtractor(provider))
+        assert read_build_identity(tmp_path / "data") is None
+
+    def test_failed_build_keeps_previous_identity(self, tmp_path: Path) -> None:
+        write_note(tmp_path / VAULT)
+        build_graph(tmp_path / VAULT, tmp_path / "data", default_extractor())
+        # 换模型后构建失败：身份记录保持旧值（产物未变则身份未变，design D3）
+        provider = ScriptedLlmProvider(
+            model_id="another-model", script=[LEGAL_OUTPUT, RATE_LIMITED]
+        )
+        with pytest.raises(LlmRateLimitError):
+            build_graph(
+                tmp_path / VAULT,
+                tmp_path / "data",
+                LlmGraphExtractor(provider),
+            )
+        recorded = read_build_identity(tmp_path / "data")
+        assert recorded is not None
+        assert recorded["model_id"] == "fake-model"

@@ -40,6 +40,11 @@ from siku.graph.providers import (
     DEFAULT_API_KEY_ENV,
     HttpxLlmProvider,
 )
+from siku.graph.refresh import (
+    full_reextract_warning,
+    llm_extractor_factory,
+    maybe_refresh_graph,
+)
 from siku.graph.report import SCALE_WARN_EDGES
 from siku.graph.service import build_graph
 from siku.ingest import IngestError, ingest_path
@@ -64,7 +69,7 @@ from siku.retrieve.errors import (
     RetrievalError,
 )
 from siku.retrieve.indexer import sync_index
-from siku.retrieve.models import SearchOptions
+from siku.retrieve.models import IndexReport, SearchOptions
 from siku.retrieve.providers import EmbeddingProvider, RerankerProvider
 from siku.retrieve.service import SearchService
 from siku.sync.locking import LibraryWriteBusyError, library_write_lock
@@ -432,6 +437,7 @@ class _CliScanObserver:
         self.count = 0
         self.had_changes = False
         self.had_failures = False
+        self.ops: list[ScanOpResult] = []
 
     def set_total(self, total: int) -> None:
         if total == 0:
@@ -444,6 +450,7 @@ class _CliScanObserver:
 
     def op_finished(self, result: ScanOpResult) -> None:
         self.count += 1
+        self.ops.append(result)
         if result.status in ("created", "updated", "removed"):
             self.had_changes = True
         if result.status == "failed":
@@ -495,6 +502,7 @@ def scan(
     # 扫描写入与衔接索引都在同一写锁内：锁外构建会清掉另一进程（如 serve
     # 移除任务）刚形成的可恢复消减暂存对，也是普通双构建互踩窗口的复活
     embedding: EmbeddingProvider | None = None
+    report: IndexReport | None = None
     scan_completed = False
     try:
         with _library_write_guard(vault, data_dir):
@@ -510,12 +518,31 @@ def scan(
                     embedding_dimensions,
                 )
                 report = sync_index(vault, data_dir, embedding, rebuild=False)
+                # 图谱自动维护与索引同收尾链（design D4）：开关现读注册表，
+                # 只维护已存在快照；失败/跳过只出中文通知，扫描成功终态不变
+                try:
+                    outcome = maybe_refresh_graph(
+                        vault=vault,
+                        data_dir=data_dir,
+                        extractor_factory=llm_extractor_factory(),
+                        auto_refresh_enabled=registry.get_graph_auto_refresh(),
+                    )
+                    if outcome.message is not None:
+                        typer.echo(outcome.message)
+                except Exception as exc:  # 刷新失败不把已成功的扫描判失败
+                    logger.debug(
+                        "cli graph auto refresh failed: error_class=%s",
+                        type(exc).__name__,
+                        exc_info=True,
+                    )
+                    typer.echo("图谱自动更新失败：旧图谱保持有效，请稍后重试或显式更新图谱。")
     except typer.Exit:
         # 锁忙等用户面退出（_fail 已成文）不得被通用分支吞掉后二次误报
         raise
     except Exception as exc:
+        detail = _retrieval_error_message(exc) if isinstance(exc, RetrievalError) else str(exc)
         if scan_completed:
-            _fail(f"扫描已完成，但索引同步失败: {_retrieval_error_message(exc)}", exc)
+            _fail(f"扫描已完成，但索引同步失败: {detail}", exc)
         _fail(f"扫描执行失败: {exc}", exc)
     finally:
         if embedding is not None:
@@ -525,7 +552,7 @@ def scan(
         # 失败项存在时非零退出：脚本/cron 场景需要可靠感知（评审建议）
         typer.echo("部分条目处理失败，请检查上方输出后重试。")
         raise typer.Exit(code=1)
-    if observer.had_changes and embedding is not None:
+    if report is not None:
         typer.echo(
             f"索引已增量同步: created={report.created} updated={report.updated} "
             f"skipped={report.skipped} removed={report.removed} chunks={report.total_chunks}"
@@ -907,6 +934,11 @@ def graph(
     )
     summarizer: CommunitySummarizer | None = None
     try:
+        # 身份变更预告（design D3）：换模型/prompt 后旧缓存键全部失效，显式构建
+        # 会把整个语料在用户 key 上重抽一遍——走 stderr，保 --json stdout 纯净
+        warning = full_reextract_warning(vault, data_dir, extractor)
+        if warning is not None:
+            typer.echo(warning, err=True)
         with _library_write_guard(vault, data_dir):
             result = build_graph(
                 vault,

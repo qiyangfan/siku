@@ -159,6 +159,8 @@ export type LibraryJob = {
   current: string | null;
   items: LibraryJobItem[];
   error: string | null;
+  // 收尾阶段派生维护的中文通知（图谱自动刷新计数/跳过原因/失败事实）；旧服务端缺失
+  notice?: string | null;
 };
 
 export type LibrarySyncSource = {
@@ -421,18 +423,29 @@ export async function scanLibrarySources(full: boolean): Promise<LibraryJob> {
   );
 }
 
-export type LibraryScanSettings = { interval_secs: number };
+export type LibraryScanSettings = {
+  interval_secs: number;
+  // 图谱自动刷新开关（缺省关闭：内容变更后增量维护已构建的图谱）
+  graph_auto_refresh: boolean;
+};
+
+export type LibraryScanSettingsUpdate = {
+  interval_secs?: number;
+  graph_auto_refresh?: boolean;
+};
 
 export async function getScanSettings(): Promise<LibraryScanSettings> {
   return parseResponse<LibraryScanSettings>(await fetch("/api/library/scan-settings"));
 }
 
-export async function updateScanSettings(intervalSecs: number): Promise<LibraryScanSettings> {
+export async function updateScanSettings(
+  update: LibraryScanSettingsUpdate,
+): Promise<LibraryScanSettings> {
   return parseResponse<LibraryScanSettings>(
     await fetch("/api/library/scan-settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ interval_secs: intervalSecs }),
+      body: JSON.stringify(update),
     }),
   );
 }

@@ -13,6 +13,7 @@ import {
   SimpleGrid,
   Stack,
   Switch,
+  Text,
   TextInput,
 } from "@mantine/core";
 import {
@@ -165,6 +166,7 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
   const [newSourcePath, setNewSourcePath] = useState("");
   const [scanFull, setScanFull] = useState(false);
   const [intervalText, setIntervalText] = useState<string | null>(null);
+  const [graphAutoRefresh, setGraphAutoRefresh] = useState<boolean | null>(null);
   const [confirmingPurge, setConfirmingPurge] = useState(false);
 
   const refreshListing = useCallback(async () => {
@@ -210,9 +212,11 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
     try {
       const settings = await getScanSettings();
       setIntervalText(String(settings.interval_secs));
+      setGraphAutoRefresh(settings.graph_auto_refresh ?? false);
     } catch {
       // 间隔读取失败不阻塞来源管理：输入留空即不展示保存
       setIntervalText(null);
+      setGraphAutoRefresh(null);
     }
   }, []);
 
@@ -385,8 +389,18 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
     }
     setActionError(null);
     try {
-      const saved = await updateScanSettings(parsed);
+      const saved = await updateScanSettings({ interval_secs: parsed });
       setIntervalText(String(saved.interval_secs));
+    } catch (caught: unknown) {
+      setActionError(connectionFallback(caught));
+    }
+  };
+
+  const saveGraphAutoRefresh = async (enabled: boolean) => {
+    setActionError(null);
+    try {
+      const saved = await updateScanSettings({ graph_auto_refresh: enabled });
+      setGraphAutoRefresh(saved.graph_auto_refresh ?? false);
     } catch (caught: unknown) {
       setActionError(connectionFallback(caught));
     }
@@ -584,6 +598,22 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
                 </Button>
               </div>
             )}
+            {graphAutoRefresh !== null && (
+              <div className="library-sync-group">
+                <Switch
+                  id="graph-auto-refresh-switch"
+                  className="library-sync-check"
+                  checked={graphAutoRefresh}
+                  disabled={running}
+                  onChange={(event) => void saveGraphAutoRefresh(event.target.checked)}
+                  label="摄取/扫描后自动增量更新图谱"
+                />
+                <Text size="xs" c="dimmed">
+                  缺省关闭。仅在图谱已构建时增量维护（不会自动创建）；更换模型或 prompt
+                  后需显式更新图谱。任务完成后在下方通知区显示抽取计数。
+                </Text>
+              </div>
+            )}
           </div>
           {syncSources === null ? (
             <Alert role="status">
@@ -690,6 +720,11 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
           <Button variant="default" type="button" className="button-secondary" onClick={() => setJob(null)}>
             关闭
           </Button>
+        </Alert>
+      )}
+      {job !== null && job.notice != null && job.notice !== "" && (
+        <Alert role="status" color="blue" title="派生维护通知">
+          {job.notice}
         </Alert>
       )}
 

@@ -87,11 +87,14 @@ def test_scan_settings_read_write_and_validation(tmp_path: Path) -> None:
 
     initial = client.get("/api/library/scan-settings")
     assert initial.status_code == 200
-    assert initial.json() == {"interval_secs": DEFAULT_SCAN_INTERVAL_SECS}
+    assert initial.json() == {
+        "interval_secs": DEFAULT_SCAN_INTERVAL_SECS,
+        "graph_auto_refresh": False,
+    }
 
     updated = client.put("/api/library/scan-settings", json={"interval_secs": 60})
     assert updated.status_code == 200
-    assert updated.json() == {"interval_secs": 60}
+    assert updated.json() == {"interval_secs": 60, "graph_auto_refresh": False}
 
     invalid = client.put("/api/library/scan-settings", json={"interval_secs": -1})
     assert invalid.status_code == 422
@@ -100,6 +103,33 @@ def test_scan_settings_read_write_and_validation(tmp_path: Path) -> None:
     # 调度线程每轮现读注册表 → 免重启生效（决议 #3）
 
     assert SyncRegistry(library_db_path(tmp_path / "data")).get_scan_interval() == 60
+
+
+def test_graph_auto_refresh_toggle_read_write_and_validation(tmp_path: Path) -> None:
+    client = build_library_app(tmp_path, index_runner=noop_runner)
+
+    enabled = client.put("/api/library/scan-settings", json={"graph_auto_refresh": True})
+    assert enabled.status_code == 200
+    assert enabled.json() == {
+        "interval_secs": DEFAULT_SCAN_INTERVAL_SECS,
+        "graph_auto_refresh": True,
+    }
+    # 收尾链每轮现读注册表 → 免重启生效（决议 #3）
+    assert SyncRegistry(library_db_path(tmp_path / "data")).get_graph_auto_refresh() is True
+
+    # 仅更新另一字段时开关保持（部分更新）
+    kept = client.put("/api/library/scan-settings", json={"interval_secs": 30})
+    assert kept.json() == {"interval_secs": 30, "graph_auto_refresh": True}
+
+    disabled = client.put("/api/library/scan-settings", json={"graph_auto_refresh": False})
+    assert disabled.status_code == 200
+    assert disabled.json() == {"interval_secs": 30, "graph_auto_refresh": False}
+
+    wrong_type = client.put("/api/library/scan-settings", json={"graph_auto_refresh": "maybe"})
+    assert wrong_type.status_code == 422
+    assert wrong_type.json()["code"] == "invalid_request"
+    # 非法写入不落库
+    assert SyncRegistry(library_db_path(tmp_path / "data")).get_graph_auto_refresh() is False
 
 
 def test_scan_with_no_sources_completes_empty(tmp_path: Path) -> None:

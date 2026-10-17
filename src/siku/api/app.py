@@ -106,6 +106,11 @@ from siku.graph.providers import (
     DEFAULT_API_KEY_ENV,
     HttpxLlmProvider,
 )
+from siku.graph.refresh import (
+    GraphRefreshOutcome,
+    llm_extractor_factory,
+    maybe_refresh_graph,
+)
 from siku.graph.service import GraphBuildResult, build_graph
 from siku.ingest import IngestReport, ingest_path
 from siku.model_supply import (
@@ -274,6 +279,30 @@ def _supply_index_runner(
     return runner
 
 
+def _supply_graph_refresh_runner(
+    vault: Path,
+    data_dir: Path,
+    llm_supply: ChannelValues | None,
+    registry: SyncRegistry,
+) -> Callable[[], GraphRefreshOutcome]:
+    """构建每个任务现解析 LLM 通道的图谱自动维护执行器。
+
+    与索引执行器同口径：设置中心写入后免重启生效；开关每轮现读注册表。
+    通道解析延迟到资格闸门之后——开关关闭/快照缺失/身份不符均不解析通道、
+    不产生任何模型调用（策略单一定义于 graph.refresh.maybe_refresh_graph）。
+    """
+
+    def runner() -> GraphRefreshOutcome:
+        return maybe_refresh_graph(
+            vault=vault,
+            data_dir=data_dir,
+            extractor_factory=llm_extractor_factory(llm_supply),
+            auto_refresh_enabled=registry.get_graph_auto_refresh(),
+        )
+
+    return runner
+
+
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -300,6 +329,7 @@ def create_app(
     embedding_dimensions: int | None = None,
     ingest_handler: IngestHandler = ingest_path,
     index_runner: IndexRunner | None = None,
+    graph_refresh_runner: Callable[[], GraphRefreshOutcome] | None = None,
     search_service_factory: SearchServiceFactory | None = None,
     graph_extractor_factory: GraphExtractorFactory | None = None,
     graph_builder: GraphBuilder = build_graph,
@@ -360,6 +390,8 @@ def create_app(
         scan_runner=_scan_job_body,
         purge_runner=sync_service.run_purge,
         remove_runner=sync_service.run_removal,
+        graph_refresh_runner=graph_refresh_runner
+        or _supply_graph_refresh_runner(vault, data_dir, llm_supply, sync_registry),
     )
     sync_scheduler = SyncScheduler(
         sync_registry,
@@ -592,20 +624,29 @@ def create_app(
 
     @application.get("/api/library/scan-settings", response_model=LibraryScanSettingsResponse)
     def library_scan_settings_read() -> LibraryScanSettingsResponse:
-        """自动扫描间隔（秒；0 = 关闭）。"""
-        return LibraryScanSettingsResponse(interval_secs=sync_registry.get_scan_interval())
+        """自动扫描间隔（秒；0 = 关闭）与图谱自动刷新开关（缺省关闭）。"""
+        return LibraryScanSettingsResponse(
+            interval_secs=sync_registry.get_scan_interval(),
+            graph_auto_refresh=sync_registry.get_graph_auto_refresh(),
+        )
 
     @application.put("/api/library/scan-settings", response_model=LibraryScanSettingsResponse)
     def library_scan_settings_write(
         request: LibraryScanSettingsUpdateRequest,
     ) -> LibraryScanSettingsResponse | JSONResponse:
-        """更新自动扫描间隔：调度线程每轮现读，免重启生效；负数非法。"""
-        if request.interval_secs < 0:
+        """更新自动扫描间隔与图谱自动刷新开关：调度/收尾每轮现读，免重启生效；负数非法。"""
+        if request.interval_secs is not None and request.interval_secs < 0:
             return _error_response(
                 422, "invalid_request", "扫描间隔不能为负数；0 表示关闭自动扫描。"
             )
-        sync_registry.set_scan_interval(request.interval_secs)
-        return LibraryScanSettingsResponse(interval_secs=request.interval_secs)
+        if request.interval_secs is not None:
+            sync_registry.set_scan_interval(request.interval_secs)
+        if request.graph_auto_refresh is not None:
+            sync_registry.set_graph_auto_refresh(request.graph_auto_refresh)
+        return LibraryScanSettingsResponse(
+            interval_secs=sync_registry.get_scan_interval(),
+            graph_auto_refresh=sync_registry.get_graph_auto_refresh(),
+        )
 
     @application.post("/api/library/purge", response_model=LibraryJobResponse)
     def library_purge(request: LibraryPurgeRequest) -> LibraryJobResponse | JSONResponse:
@@ -789,6 +830,7 @@ def create_app(
         logger.info("API ask started: request_id=%s", request_id)
         try:
             provider = application.state.answer_provider_factory()
+            assert provider is not None  # 工厂契约：现解析通道，不返回 None
             service = AnswerService(
                 application.state.search_service_factory(application.state.data_dir),
                 provider,
@@ -832,6 +874,7 @@ def create_app(
         extractor: GraphExtractor | None = None
         try:
             extractor = application.state.graph_extractor_factory()
+            assert extractor is not None  # 工厂契约：现解析通道，不返回 None
             # 图谱构建是同库写入：与移除/摄取互斥，且构建结果不得发布已移除内容
             with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
                 if target_vault == application.state.vault:

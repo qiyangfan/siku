@@ -268,7 +268,7 @@
     "/api/library/scan-settings": {
       "get": {
         "summary": "Library Scan Settings Read",
-        "description": "自动扫描间隔（秒；0 = 关闭）。",
+        "description": "自动扫描间隔（秒；0 = 关闭）与图谱自动刷新开关（缺省关闭）。",
         "operationId": "library_scan_settings_read_api_library_scan_settings_get",
         "responses": {
           "200": {
@@ -285,7 +285,7 @@
       },
       "put": {
         "summary": "Library Scan Settings Write",
-        "description": "更新自动扫描间隔：调度线程每轮现读，免重启生效；负数非法。",
+        "description": "更新自动扫描间隔与图谱自动刷新开关：调度/收尾每轮现读，免重启生效；负数非法。",
         "operationId": "library_scan_settings_write_api_library_scan_settings_put",
         "requestBody": {
           "content": {
@@ -1978,6 +1978,17 @@
               }
             ],
             "title": "Error"
+          },
+          "notice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notice"
           }
         },
         "type": "object",
@@ -2073,6 +2084,11 @@
           "interval_secs": {
             "type": "integer",
             "title": "Interval Secs"
+          },
+          "graph_auto_refresh": {
+            "type": "boolean",
+            "title": "Graph Auto Refresh",
+            "default": false
           }
         },
         "type": "object",
@@ -2080,21 +2096,36 @@
           "interval_secs"
         ],
         "title": "LibraryScanSettingsResponse",
-        "description": "自动扫描间隔设置（秒；0 = 关闭自动扫描）。"
+        "description": "自动扫描间隔（秒；0 = 关闭）与图谱自动刷新开关（缺省关闭）。"
       },
       "LibraryScanSettingsUpdateRequest": {
         "properties": {
           "interval_secs": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Interval Secs"
+          },
+          "graph_auto_refresh": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Auto Refresh"
           }
         },
         "type": "object",
-        "required": [
-          "interval_secs"
-        ],
         "title": "LibraryScanSettingsUpdateRequest",
-        "description": "自动扫描间隔更新；调度线程每轮现读，免重启生效。"
+        "description": "扫描设置更新；未携带的字段保持原值。调度/收尾每轮现读，免重启生效。"
       },
       "LibrarySourceCreateRequest": {
         "properties": {

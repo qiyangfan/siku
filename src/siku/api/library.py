@@ -30,6 +30,7 @@ from siku.api.models import (
     LibrarySourceResponse,
 )
 from siku.extractors import extractor_registry
+from siku.graph.refresh import GraphRefreshOutcome
 from siku.ingest import IngestError, IngestReport
 from siku.retrieve.errors import RetrievalError
 from siku.retrieve.indexer import database_path
@@ -58,6 +59,8 @@ _STAGE_IO_CHUNK = 1024 * 1024
 _SOURCE_ID_SUFFIX = re.compile(r"--[0-9a-f]{8,64}$")
 
 IndexRunner = Callable[[bool], IndexReport]
+# 图谱自动维护执行体：返回结构化结果（执行/跳过 + 中文通知 + 计数）
+GraphRefreshRunner = Callable[[], GraphRefreshOutcome]
 IngestHandler = Callable[[Path, Path], IngestReport]
 # 扫描/清理执行体（由 siku.sync.SyncService 适配而来）
 # 扫描任务体签名：(full, 预计算计划或 None, 观察者)。plans 非 None = 自动路径，
@@ -102,6 +105,8 @@ class _Job:
     current: str | None = None
     items: list[_JobItem] = field(default_factory=list)
     error: str | None = None
+    # 收尾阶段派生维护的中文通知（图谱自动刷新计数/跳过原因/失败事实）
+    notice: str | None = None
 
 
 def _sha256_file(path: Path) -> str:
@@ -447,6 +452,7 @@ class LibraryJobManager:
         scan_runner: ScanRunner | None = None,
         purge_runner: PurgeRunner | None = None,
         remove_runner: RemoveRunner | None = None,
+        graph_refresh_runner: GraphRefreshRunner | None = None,
     ) -> None:
         self._vault = vault
         self._data_dir = data_dir
@@ -457,6 +463,7 @@ class LibraryJobManager:
         self._scan_runner = scan_runner
         self._purge_runner = purge_runner
         self._remove_runner = remove_runner
+        self._graph_refresh_runner = graph_refresh_runner
         self._lock = threading.Lock()
         self._job: _Job | None = None
         self._staged: list[Path] = []
@@ -647,6 +654,7 @@ class LibraryJobManager:
                 for item in job.items
             ],
             error=job.error,
+            notice=job.notice,
         )
 
     def _append_item(self, job: _Job, item: _JobItem) -> None:
@@ -690,8 +698,36 @@ class LibraryJobManager:
                 job.state = "failed"
                 job.error = message
             return
+        if not rebuild:
+            self._refresh_graph_after_index(job, cancelled=cancelled)
         with self._lock:
             job.state = "cancelled" if cancelled else "succeeded"
+
+    def _refresh_graph_after_index(self, job: _Job, *, cancelled: bool) -> None:
+        """索引发布后按开关自动增量维护图谱（design D4）。
+
+        触发条件与索引逐字一致（非 rebuild、有变更——由调用方保证），另加两条
+        刻意分歧：取消的任务不触发（取消 = 停止尚未开始的新工作；图谱陈旧是
+        下轮内容变更或显式更新可自愈的中间态）；刷新失败只落通知、不改终态
+        （旧快照原子写保证可读，下轮凭 chunk 缓存续传）。
+        """
+        if cancelled or self._graph_refresh_runner is None:
+            return
+        try:
+            outcome = self._graph_refresh_runner()
+        except Exception as exc:
+            logger.debug(
+                "library graph auto refresh failed: error_class=%s detail=%s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            with self._lock:
+                job.notice = "图谱自动更新失败：旧图谱保持有效，请稍后重试或显式更新图谱。"
+            return
+        if outcome.message is not None:
+            with self._lock:
+                job.notice = outcome.message
 
     def _record_report(self, job: _Job, source_name: str, report: IngestReport) -> None:
         for item in report.items:
@@ -799,7 +835,7 @@ class LibraryJobManager:
         # 标记集合只含 user_removed 时，全部收尾都经无模型消减发布完成，
         # 不需要（也不允许依赖）任务收尾的增量索引同步——后者要解析当前
         # embedding 通道，BYOK 不可用会把已成功的移除误报为失败（design D3）
-        only_user_removals = bool(self._registry is not None) and all(
+        only_user_removals = self._registry is not None and all(
             tombstone.reason == "user_removed"
             for tombstone in self._registry.list_tombstones().values()
         )

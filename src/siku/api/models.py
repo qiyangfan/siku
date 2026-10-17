@@ -323,6 +323,9 @@ class LibraryJobResponse(BaseModel):
     current: str | None
     items: list[LibraryJobItemResponse]
     error: str | None
+    # 收尾阶段派生维护的中文通知（图谱自动刷新计数/跳过原因/失败事实）；
+    # 缺失按无附加信息处理，旧客户端解析不受影响
+    notice: str | None = None
 
 
 class LibraryRebuildRequest(BaseModel):
@@ -373,15 +376,17 @@ class LibraryScanRequest(BaseModel):
 
 
 class LibraryScanSettingsResponse(BaseModel):
-    """自动扫描间隔设置（秒；0 = 关闭自动扫描）。"""
+    """自动扫描间隔（秒；0 = 关闭）与图谱自动刷新开关（缺省关闭）。"""
 
     interval_secs: int
+    graph_auto_refresh: bool = False
 
 
 class LibraryScanSettingsUpdateRequest(BaseModel):
-    """自动扫描间隔更新；调度线程每轮现读，免重启生效。"""
+    """扫描设置更新；未携带的字段保持原值。调度/收尾每轮现读，免重启生效。"""
 
-    interval_secs: int
+    interval_secs: int | None = None
+    graph_auto_refresh: bool | None = None
 
 
 class LibraryPurgeRequest(BaseModel):

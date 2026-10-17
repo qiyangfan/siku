@@ -15,6 +15,7 @@ from graph_fakes import ScriptedLlmProvider, ScriptStep
 from siku.graph.community import SUMMARIZER_ID, SUMMARY_PROMPT_VERSION
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.providers import DEFAULT_MODEL_ID
+from siku.graph.refresh import maybe_refresh_graph
 from siku.graph.report import GraphHealthReport
 from siku.graph.service import build_graph
 from siku.graph.store import graph_file_paths
@@ -176,3 +177,56 @@ class TestIdempotenceGate:
         assert second.graph_llm_calls == 0
         assert third.graph_llm_calls == 0
         assert first.artifacts == second.artifacts == third.artifacts
+
+
+_NOTE_C = _NOTE_TEMPLATE.format(
+    title="观察笔记",
+    source_hash="c" * 64,
+    source_name="notes.md",
+    source_id="cccccccccccc",
+    body="## page:1\n\n王五在北京拜访张三。\n",
+)
+_C_EXTRACTION = (
+    '{"entities": ['
+    '{"name": "王五", "type": "人物", "evidence": "王五在北京拜访张三"},'
+    '{"name": "北京", "type": "地点", "evidence": "王五在北京拜访张三"},'
+    '{"name": "张三", "type": "人物", "evidence": "王五在北京拜访张三"}],'
+    '"relations": [{"source": 0, "target": 2, "type": "拜访", "evidence": "王五在北京拜访张三"}]}'
+)
+
+
+def snapshot_graph_artifacts(data_dir: Path) -> dict[str, bytes]:
+    """仅图谱三件 parquet 的字节快照（自动路径不生成 wiki，比对只取图谱）。"""
+    return {path.name: path.read_bytes() for path in graph_file_paths(data_dir)}
+
+
+class TestAutoRefreshMatchesExplicit:
+    def test_auto_refresh_artifacts_match_explicit_update(self, tmp_path: Path) -> None:
+        """自动增量刷新与显式更新的图谱产物 diff 为空（spec：自动与显式产物一致）。
+
+        自动路径不得引入独立的增量算法：与显式更新同一 build_graph 入口、
+        同一缓存、同一确定性合并与社区发现。
+        """
+        write_corpus(tmp_path)
+        build_all(tmp_path)  # 首轮显式构建（A+B，4 次抽取）
+
+        # 新增文档 C：走自动增量刷新（同身份，仅 1 个新 chunk 走 LLM）
+        (tmp_path / VAULT / "notes" / "c--cccccccccccc.md").write_text(_NOTE_C, encoding="utf-8")
+        auto_provider = ScriptedLlmProvider(script=[_C_EXTRACTION])
+        outcome = maybe_refresh_graph(
+            vault=tmp_path / VAULT,
+            data_dir=tmp_path / "data",
+            extractor_factory=lambda: LlmGraphExtractor(auto_provider),
+            auto_refresh_enabled=True,
+        )
+        assert outcome.refreshed is True
+        assert outcome.llm_calls == 1
+        assert outcome.cache_hits == 4
+        auto_artifacts = snapshot_graph_artifacts(tmp_path / "data")
+
+        # 对照：同一语料（A+B+C）在干净数据目录显式全量构建
+        explicit_dir = tmp_path / "explicit-data"
+        explicit_provider = ScriptedLlmProvider(script=[*_EXTRACTION_SCRIPT, _C_EXTRACTION])
+        build_graph(tmp_path / VAULT, explicit_dir, LlmGraphExtractor(explicit_provider))
+
+        assert auto_artifacts == snapshot_graph_artifacts(explicit_dir)
