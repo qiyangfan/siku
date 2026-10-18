@@ -277,7 +277,7 @@ export type WikiEntryDetail = {
 async function parseResponse<T>(response: Response): Promise<T> {
   // 非 JSON 响应体（代理 502 HTML 等）不得让语法错误冒泡成「无法连接」：
   // 解析失败时按错误状态回退稳定错误体
-  let payload: unknown = null;
+  let payload: unknown;
   try {
     payload = await response.json();
   } catch {

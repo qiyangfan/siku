@@ -1,8 +1,8 @@
 # pre-commit 框架管理的 git hooks：克隆后执行 `uv run pre-commit install` 启用
 repos:
-  # 通用文件卫生检查
+  # 通用文件卫生检查（v6 移除 check-byte-order-marker/fix-encoding-pragma，本项目未使用）
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
@@ -14,7 +14,7 @@ repos:
 
   # ruff：唯一的 lint/format 权威（与 pyproject.toml 配置联动）
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.8
+    rev: v0.17.1
     hooks:
       - id: ruff
         args: [--fix]

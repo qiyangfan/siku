@@ -183,7 +183,7 @@ impl SidecarRegistry {
             || self
                 .process
                 .as_ref()
-                .map_or(true, |process| process.generation != generation)
+                .is_none_or(|process| process.generation != generation)
         {
             return None;
         }
@@ -437,8 +437,8 @@ fn spawn_sidecar(
 fn create_sidecar_job() -> Result<std::os::windows::io::OwnedHandle, String> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::System::JobObjects::{
-        CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
 
     unsafe {
@@ -745,9 +745,7 @@ fn run_startup(app: tauri::AppHandle, generation: u64, shell_page_url: String) {
 
     let health_url = format!("http://127.0.0.1:{port}/api/health");
     let app_url = format!("http://127.0.0.1:{port}/");
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(HEALTH_REQUEST_TIMEOUT_SECS))
-        .build();
+    let agent = health_check_agent();
     let deadline = Instant::now() + Duration::from_secs(HEALTH_TIMEOUT_SECS);
 
     loop {
@@ -831,9 +829,7 @@ fn monitor_sidecar(
     shell_page_url: String,
     health_url: String,
 ) {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(HEALTH_REQUEST_TIMEOUT_SECS))
-        .build();
+    let agent = health_check_agent();
     let mut consecutive_failures = 0_u8;
 
     loop {
@@ -888,6 +884,14 @@ fn monitor_sidecar(
     }
 }
 
+/// 健康检查专用 HTTP agent：ureq 3 经 config builder 配全局超时。
+fn health_check_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(HEALTH_REQUEST_TIMEOUT_SECS)))
+        .build()
+        .new_agent()
+}
+
 /// 健康接口必须返回 siku 的成功标记，不能只依赖任意 HTTP 200。
 fn health_is_ok(agent: &ureq::Agent, health_url: &str) -> bool {
     agent
@@ -895,7 +899,7 @@ fn health_is_ok(agent: &ureq::Agent, health_url: &str) -> bool {
         .call()
         .ok()
         .filter(|response| response.status() == 200)
-        .and_then(|response| response.into_string().ok())
+        .and_then(|response| response.into_body().read_to_string().ok())
         .map(|body| health_body_is_ok(&body))
         .unwrap_or(false)
 }

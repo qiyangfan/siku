@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
-import Sigma from "sigma";
+import Sigma, { DEFAULT_STYLES } from "sigma";
 import { useComputedColorScheme } from "@mantine/core";
 import type { GraphEdge, GraphNode } from "./api";
 import { GRAPH_COMMUNITY_COLORS, GRAPH_UNASSIGNED_COLOR, graphCanvasThemeColors } from "./theme";
@@ -35,14 +35,26 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
   const rendererRef = useRef<Sigma | null>(null);
   const selectedRef = useRef<string | null>(null);
   const nodesByIdRef = useRef<Map<string, GraphNode>>(new Map());
-  const onSelectRef = useRef(onSelect);
   // 画布绘制的边线/标签色读不到 CSS 变量（theme.ts 登记的第二处 canvas 例外），
-  // 按解析后的主题取值；经 ref 中转避免把主题变更接进数据重建（重建会重掷布局坐标）
+  // 按解析后的主题取值；经 ref 中转避免把主题变更接进数据重建（重建会重掷布局坐标）。
+  // ref 写入放 effect（渲染期写 ref 是 React 违规模式，react-hooks 7 起 lint 拦截）
   const colorScheme = useComputedColorScheme("light", { getInitialValueInEffect: false });
   const colorSchemeRef = useRef(colorScheme);
-  colorSchemeRef.current = colorScheme;
+  const onSelectRef = useRef(onSelect);
+  useEffect(() => {
+    colorSchemeRef.current = colorScheme;
+    onSelectRef.current = onSelect;
+  }, [colorScheme, onSelect]);
 
-  onSelectRef.current = onSelect;
+  /** 选中高亮：选中节点放大并平移相机聚焦，其余恢复基准尺寸。 */
+  const applySelection = (graph: Graph, renderer: Sigma, nodeId: string | null) => {
+    for (const id of graph.nodes()) {
+      const baseSize = graph.getNodeAttribute(id, "baseSize") as number | undefined;
+      const base = baseSize ?? 6;
+      graph.setNodeAttribute(id, "size", id === nodeId ? base * 1.8 : base);
+    }
+    renderer.refresh();
+  };
 
   /** 灌入当前有界数据集：整体重建图内容（≤ 数百节点，代价可忽略）。 */
   const rebuildData = useCallback(() => {
@@ -63,6 +75,7 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
           baseSize: nodeSize(node.degree),
           size: nodeSize(node.degree),
           color: communityColor(node.community_id),
+          labelColor: canvasColors.label,
         });
         nodesByIdRef.current.set(node.entity_id, node);
       }
@@ -84,29 +97,26 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
     renderer.refresh();
   }, [nodes, edges]);
 
-  /** 选中高亮：选中节点放大并平移相机聚焦，其余恢复基准尺寸。 */
-  const applySelection = (graph: Graph, renderer: Sigma, nodeId: string | null) => {
-    for (const id of graph.nodes()) {
-      const baseSize = graph.getNodeAttribute(id, "baseSize") as number | undefined;
-      const base = baseSize ?? 6;
-      graph.setNodeAttribute(id, "size", id === nodeId ? base * 1.8 : base);
-    }
-    renderer.refresh();
-  };
-
   useEffect(() => {
     const container = containerRef.current;
     if (container === null) {
       return;
     }
     const graph = new Graph({ multi: true });
-    // Sigma v3：第三参即 Settings（无 v2 的 {settings} 包装）
+    // Sigma v4：选项拆为 { settings, styles } 两层；styles 传入即整体替换，
+    // 故在 DEFAULT_STYLES 上扩展 labelColor 绑定（主题色经节点属性供给）。
+    // itemSizesReference 显式钉 "screen"：v4 默认改为 "positions"，会改变节点观感。
     const renderer = new Sigma(graph, container, {
-      allowInvalidContainer: true,
-      renderEdgeLabels: false,
-      defaultEdgeType: "line",
-      labelSize: 12,
-      labelRenderedSizeThreshold: 9,
+      settings: {
+        allowInvalidContainer: true,
+        renderEdgeLabels: false,
+        labelRenderedSizeThreshold: 9,
+        itemSizesReference: "screen",
+      },
+      styles: {
+        nodes: { ...DEFAULT_STYLES.nodes, labelSize: 12, labelColor: { attribute: "labelColor" } },
+        edges: DEFAULT_STYLES.edges,
+      },
     });
     renderer.on("clickNode", ({ node }) => {
       const payload = nodesByIdRef.current.get(node);
@@ -137,8 +147,8 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
       return;
     }
     const canvasColors = graphCanvasThemeColors(colorScheme);
+    graph.forEachNode((node) => graph.setNodeAttribute(node, "labelColor", canvasColors.label));
     graph.forEachEdge((edge) => graph.setEdgeAttribute(edge, "color", canvasColors.edge));
-    renderer.setSettings({ labelColor: { color: canvasColors.label } });
     renderer.refresh();
   }, [colorScheme]);
 

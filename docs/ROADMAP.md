@@ -66,6 +66,13 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 
 收款继续 Mock，不另开支付方案。最近完成并归档：
 
+0. **全栈依赖升级至 2026-10-18 最新稳定版**：归档 `2026-10-18-upgrade-dependencies-2026-10`
+   （skip_specs）——Python lock 刷新（filelock 4.2.2 跨大版本 + 跨进程锁验证；typer 被
+   docling-core 上界钉住留 0.26.8）、前端 eslint 10/vite 8/TS 6.0.2/sigma 4（GraphCanvas
+   适配 + 亮暗视觉回归）/react 19.3.1/marked 18.1.1（ReDoS 修复）、Rust tauri 2.12.4 +
+   ureq 3 + edition 2024（MSRV 1.90）、setup-uv v10.3.0 + pre-commit-hooks v6；
+   `react-hooks/set-state-in-effect` 9 处降 warn 待独立重构。评审证据见该归档 review.md。
+
 1. **模型供给错误分型与双面文案**：归档 `2026-10-01-fix-model-supply-error-surfacing`——401/403 凭证
    被拒不再与「未配置」同型；config.toml 不可解析时 PUT 可覆盖自救 + serve 可启动，且设置页给出
    显式确认的覆盖入口；`ask_readiness` 计入 serve 的 CLI 层；`map_domain_error` 分 CLI/HTTP 双面文案。
@@ -108,6 +115,10 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 云端 key 环境补录 ✅ | `dashscope-text-embedding-v3` 通道基线已入 `benchmarks/baselines/`（Recall@5=0.9630 / MRR@10=0.9444，rerank-none，2026-10-10）；本地 Ollama 通道仍待环境 | 归档 `2026-10-10-fix-supply-protocol-dead-end` 轮次 |
 | Phase 6（代码签名 + 自动更新）重启 | 证书到位且 owner 明确指令双条件齐备才启动；期间不作为待办、不反复评审 | 用户裁决 2026-10-02 |
 | 有真实 BYOK 端点环境 | 设置中心/资料库/浏览·图谱·wiki 三视图 Tauri 壳内手工冒烟（serve 级全链路冒烟已记账于各归档 change review.md） | 归档 `2026-09-19-add-ui-settings-center` 及后续桌面上手 change |
+| typescript-eslint 宣布支持 TS 7 | 另开 TS 7 升级件（当前钉 ~6.0.2 过渡版，区间 `<6.1.0`） | 归档 `2026-10-18-upgrade-dependencies-2026-10` |
+| Node 26 进入 LTS（2026-10-28 已过） | 例行维护顺手把 CI/setup-node 从 24 切 26，不单独开窗 | 归档 `2026-10-18-upgrade-dependencies-2026-10` |
+| lancedb #4516（并列分顺序不稳定）与 #4364（自定义分词器）关闭，且 golden set A/B 对比不降 | 另开 LanceDB 原生 FTS 迁移件（证据与对比矩阵见该归档 design.md） | 归档 `2026-10-18-upgrade-dependencies-2026-10` |
+| docling-core 放开 `typer<0.27` 上界 | typer 随下一轮依赖升级带入 0.27（当前 0.26.8 可用，无急迫性） | 归档 `2026-10-18-upgrade-dependencies-2026-10` |
 
 ## Backlog（明确不进当前阶段，防 scope creep）
 
