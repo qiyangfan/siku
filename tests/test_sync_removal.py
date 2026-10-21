@@ -1,8 +1,7 @@
-"""手动资料移除的完整链路与失败语义（change remove-manual-library-document）。
+"""手动资料移除的完整流程与失败语义。
 
-覆盖：来源判定与清单资格、选择式清理、无模型索引消减（含暂存对恢复）、
-图谱/Wiki 快照失效与重建不复活、同库跨进程互斥、扫描锁后重验与取消收尾。
-全部走真实 SQLite/LanceDB 索引（fake embedding）与真实文件布局。
+覆盖资格判定、选择式清理、无模型索引消减与恢复、快照失效、跨进程互斥与取消收尾。
+全部使用真实 SQLite/LanceDB 索引（fake embedding）与真实文件布局。
 """
 
 from __future__ import annotations
@@ -140,7 +139,6 @@ def test_manual_document_removes_fully_and_keeps_external_original(
     with pytest.raises(GraphArtifactsMissingError):
         load_graph(data_dir)
     assert not (data_dir / "wiki").exists()
-    # 标记与登记清空
     assert source_id_a not in registry.list_tombstones()
 
 
@@ -190,7 +188,7 @@ def test_selective_removal_does_not_touch_other_markers(tmp_path: Path) -> None:
 
 
 def test_removal_ignores_symlink_planted_in_managed_root(tmp_path: Path) -> None:
-    """定位排除符号链接：植入的链接既不被删除，也不影响真实受管文件清理。"""
+    """植入的符号链接不被删除，真实受管文件照常清理。"""
     service, _registry, vault, _data_dir = make_service(tmp_path)
     external = tmp_path / "external"
     source_id = ingest_manual(vault, external, "a.md", b"# A")
@@ -232,7 +230,7 @@ def test_index_reduction_needs_no_model_endpoint(tmp_path: Path) -> None:
     assert staged.removed_source_ids == (source_id,)
     publish_staged_reduction(data_dir, staged)
 
-    assert len(provider.calls) == calls_before  # 消减不产生模型调用
+    assert len(provider.calls) == calls_before
     index = SqliteIndex.open(database_path(data_dir))
     try:
         assert source_id not in index.source_manifest()
@@ -285,7 +283,7 @@ def test_pending_reduction_recovers_after_vector_only_switch(tmp_path: Path) -> 
 
 
 def test_normal_build_does_not_discard_recoverable_staged_pair(tmp_path: Path) -> None:
-    """普通构建入口先恢复已确认消减，不误删可恢复暂存对（评审 2.2a）。"""
+    """普通构建入口先恢复已确认消减，不删除可恢复的暂存数据。"""
     _service, _registry, vault, data_dir = make_service(tmp_path)
     external = tmp_path / "external"
     source_id = ingest_manual(vault, external, "a.md", b"# A")
@@ -374,7 +372,7 @@ def test_partial_failure_retains_marker_and_retry_completes(tmp_path: Path) -> N
 
 
 def test_cancel_before_physical_delete_undoes_new_marker(tmp_path: Path) -> None:
-    """取消在不可逆删除前：撤销本次新增的确认标记与未发布暂存产物。"""
+    """物理删除开始前取消时，撤销新增的确认标记和未发布暂存产物。"""
     service, registry, vault, _data_dir = make_service(tmp_path)
     external = tmp_path / "external"
     source_id = ingest_manual(vault, external, "a.md", b"# A")
@@ -475,7 +473,7 @@ def test_two_process_mutex_via_subprocess(tmp_path: Path) -> None:
 
 
 def test_scan_plan_revalidated_under_lock(tmp_path: Path) -> None:
-    """槽外计划不是执行授权：解除登记/停用后旧计划整组丢弃（决议 D4）。"""
+    """槽外计划不是执行授权：来源解除登记或停用后，丢弃对应计划。"""
     service, registry, vault, _data_dir = make_service(tmp_path)
     feed = tmp_path / "feed"
     feed.mkdir()
@@ -608,13 +606,13 @@ def test_pdf_document_removes_end_to_end(tmp_path: Path) -> None:
     assert pdf.exists()  # 外部原件保留
 
 
-# ---- 独立评审确认缺陷的回归（2026-10-02 第二轮） ----
+# ---- 相对路径与并发边界 ----
 
 
 def test_removal_works_with_relative_vault_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """相对路径 vault（CLI/serve 默认布局）不得被越界防御误拒（缺陷 1）。"""
+    """相对路径 vault 不得被越界防御误拒。"""
     monkeypatch.chdir(tmp_path)
     vault = Path("vault")
     data_dir = Path("data")
@@ -637,7 +635,7 @@ def test_removal_works_with_relative_vault_path(
 
 
 def test_crash_debris_without_marker_does_not_brick_write_entries(tmp_path: Path) -> None:
-    """无消减标记的崩溃残片（缺 commit 的 tmp 产物）按残片清理，不阻塞写入口（缺陷 2）。"""
+    """无消减标记的崩溃残片按残片清理，不阻塞写入口。"""
     _service, registry, vault, data_dir = make_service(tmp_path)
     external = tmp_path / "external"
     ingest_manual(vault, external, "a.md", b"# A")
@@ -670,7 +668,7 @@ def test_pending_marker_with_unpairable_debris_fails_clearly(tmp_path: Path) -> 
 
 
 def test_job_recovers_from_crashing_recovery_step(tmp_path: Path) -> None:
-    """恢复步骤异常 → 任务 failed 终态，单任务槽不被卡死（缺陷 3）。"""
+    """恢复步骤异常时任务进入 failed 终态，单任务槽不被卡死。"""
     import time as _time
 
     from siku.api import library as library_module
@@ -721,7 +719,7 @@ def test_job_recovers_from_crashing_recovery_step(tmp_path: Path) -> None:
 
 
 def test_purge_of_only_user_removed_survives_missing_provider(tmp_path: Path) -> None:
-    """仅 user_removed 的全量清理：收尾不依赖 embedding 通道，不被误报失败（缺陷 5）。"""
+    """仅 user_removed 的全量清理不依赖 embedding 通道。"""
 
     from fastapi.testclient import TestClient
 
@@ -757,7 +755,7 @@ def test_purge_of_only_user_removed_survives_missing_provider(tmp_path: Path) ->
 
 
 def test_cli_scan_busy_reports_single_actionable_message(tmp_path: Path) -> None:
-    """锁忙时 scan 只报一次互斥提示，不被通用异常分支二次误报（R2 评审缺陷 1）。"""
+    """锁忙时 scan 只报告一次互斥错误。"""
     vault = tmp_path / "vault"
     vault.mkdir()
     data_dir = tmp_path / "data"

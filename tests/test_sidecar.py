@@ -26,7 +26,7 @@ def test_main_invokes_shared_cli(monkeypatch: Any) -> None:
 
 
 def test_main_calls_freeze_support_before_cli(monkeypatch: Any) -> None:
-    """冻结形态防护必须在 CLI 导入/执行前调用（历史坑：spawn 子进程重放 CLI）。"""
+    """冻结形态下，必须先配置 multiprocessing 再导入或执行 CLI。"""
     order: list[str] = []
 
     def fake_freeze_support() -> None:

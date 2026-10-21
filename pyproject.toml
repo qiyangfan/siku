@@ -12,7 +12,7 @@ dependencies = [
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
     "typer>=0.12",
-    # 图谱包依赖（Phase 3）：内存图 + parquet 本体读写 + openai 兼容 LLM 通道。
+    # 图谱依赖：内存图、parquet 本体读写和 OpenAI 兼容 LLM 通道。
     # 三者均为轻依赖，不引入 torch 系重依赖与 server 形态组件（架构红线 #4、ADR-0003）
     "httpx>=0.27",
     "networkx>=3.3",
@@ -25,8 +25,7 @@ dependencies = [
     "pypdf>=5.1",
     "python-pptx>=1.0",
     "openpyxl>=3.1",
-    # 同库写入跨进程互斥（change remove-manual-library-document）：成熟平台文件锁，
-    # 覆盖 HTTP/CLI 不同进程；锁文件在 vault/.siku/ 非语料位置
+    # 同库写入跨进程互斥；锁文件位于 vault/.siku/，不进入语料清单。
     "filelock>=3.16",
     "mcp>=2,<3",
 ]
@@ -36,8 +35,7 @@ siku = "siku.cli:app"
 
 [project.optional-dependencies]
 # 重依赖抽取引擎一律放 extras，保持核心安装轻量（架构红线 #4）。
-# ADR-0013 后默认 PDF 走核心 pypdf；docling 重引擎保留为可选安装，
-# 供未来需要复杂版面还原时评估，默认与桌面构建均不安装。
+# 默认 PDF 使用核心 pypdf；Docling 作为可选的重型解析后端，不进入桌面构建。
 ingest-pdf = ["docling>=2.0"]
 
 [dependency-groups]
@@ -47,7 +45,7 @@ dev = [
     "ruff>=0.8",
     "mypy>=1.13",
     "pre-commit>=4.0",
-    # 桌面 sidecar 打包（Phase 5）：仅构建期需要，运行时零影响
+    # 桌面 sidecar 打包：仅构建期需要
     "pyinstaller>=6.10",
     # 测试专用 PDF 夹具生成（含中文 CID 字体）；不进运行时依赖
     "reportlab>=4.0",
@@ -95,5 +93,4 @@ python_version = "3.12"
 files = ["src", "tests"]
 disallow_untyped_defs = true
 warn_return_any = true
-# 脚手架阶段先宽松，核心模块成型后逐步收紧
 ignore_missing_imports = true

@@ -1,11 +1,7 @@
 """从 `vault/notes/` 的 Markdown 投影解析文档与检索块。
 
-Phase 1 投影格式约定（见 ingest.pipeline._render_note）：
-- frontmatter 提供 `title/source_hash/source_name/source_id/extractor`，值为 JSON 字符串；
-- 正文为 `# 标题` + 若干 `## <anchor>` 结构区块，区块首行可带
-  `<!-- source_hash: ...; anchor: ... -->` 注释。
-
-本模块只读取投影，绝不写入 `vault/`（ADR-0004：vault 是唯一事实源）。
+格式与 ``ingest.pipeline._render_note`` 一致：frontmatter 为 JSON 字符串，正文为
+`# 标题` 加 `## <anchor>` 区块。本模块只读投影，不写 vault。
 """
 
 from __future__ import annotations
@@ -24,7 +20,7 @@ _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---[ \t]*\r?\n?", re.DOTALL)
 _FIELD_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)[ \t]*:[ \t]*(.+?)[ \t]*$")
 _HEADING1_RE = re.compile(r"^#\s+")
 _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$")
-# Phase 1 写入区块首行的溯源注释，解析正文时剔除
+# 投影区块首行的溯源注释，解析正文时剔除。
 _COMMENT_RE = re.compile(r"^<!--\s*source_hash:")
 
 
@@ -125,7 +121,7 @@ def read_note(note_path: Path, vault_root: Path) -> tuple[DocumentRecord, tuple[
     body_lines = text[match.end() :].splitlines()
 
     # 丢弃首个 H1 标题行（标题已在 frontmatter 与 source_name 中）；
-    # Phase 1 投影在 frontmatter 结束标记后总输出一个空行，先跳过起始空行
+    # 投影在 frontmatter 后保留一个空行，先跳过它。
     remainder = list(body_lines)
     while remainder and not remainder[0].strip():
         remainder.pop(0)

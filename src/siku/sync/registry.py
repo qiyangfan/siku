@@ -1,9 +1,7 @@
 """来源目录同步的库域状态层：来源注册表、变更检测缓存、tombstone 与扫描间隔。
 
-存储为 ``<data_dir>/library.sqlite3``（WAL、全参数化 SQL）。它是**状态**而非派生物：
-任何索引/图谱/wiki 重建都不得触碰（ADR-0010 决议 #4）；tombstone 在此持久，使
-「已标记待清理」的记忆活过任意重建与进程重启。每次操作开短连接，天然线程安全，
-无需进程内锁。
+存储为 ``<data_dir>/library.sqlite3``（WAL、参数化 SQL）。它是状态而非派生物，
+索引/图谱/wiki 重建不得触碰；tombstone 跨重建与重启保留。每次操作开短连接。
 """
 
 from __future__ import annotations
@@ -15,7 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
-# 扫描间隔缺省值与设置键（决议 #1：间隔存注册表，免重启生效）
 DEFAULT_SCAN_INTERVAL_SECS = 300
 INTERVAL_KEY = "scan_interval_secs"
 DEFAULT_GRAPH_AUTO_REFRESH = False
@@ -61,8 +58,6 @@ class SourceAlreadyRegisteredError(RuntimeError):
 
 @dataclass(frozen=True)
 class SyncSource:
-    """一条来源目录登记。"""
-
     id: str
     path: str
     enabled: bool
@@ -126,8 +121,7 @@ class SyncRegistry:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
-    # 调用侧统一 ``with closing(self._connect()) as conn, conn:``：先提交/回滚再
-    # 关闭连接，不依赖 CPython 引用计数兜底（评审 S1）
+    # 连接用法：先提交或回滚，再显式关闭。
 
     # ---- 来源注册表 ----
 

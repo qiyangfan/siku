@@ -283,11 +283,11 @@ class TestLlmProtocolField:
     def test_protocol_error_survives_copy_and_pickle(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """kind 进 args：copy/deepcopy/pickle 圆厂不因自定义 __init__ 缺参而炸。"""
+        """kind 进 args，保证 copy/deepcopy/pickle 正常。"""
         import copy
         import pickle
 
-        # env 层的越界协议才会走到运行期解析错误(文件层的非法值已在载入点被拒)
+        # 文件层非法值已在载入点拒绝，这里只能测 env 层。
         monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
         with pytest.raises(ProtocolConfigError) as excinfo:
             resolve_llm_channel(config=ModelSupplyConfig())
@@ -302,7 +302,7 @@ class TestLlmProtocolField:
             assert round_trip.kind == "llm_enum"
 
     def test_config_file_error_detail_survives_copy_and_pickle(self) -> None:
-        """detail 进 args：同上，自定义 __init__ 不得破坏基类 `__reduce__` 圆厂。"""
+        """detail 进 args，保证 copy/deepcopy/pickle 正常。"""
         import copy
         import pickle
 
@@ -317,7 +317,7 @@ class TestLlmProtocolField:
     def test_illegal_llm_protocol_is_rejected_at_load_with_allowed_values(
         self, tmp_path: Path
     ) -> None:
-        """非法取值在载入点就被拒（运行期不存在非法状态），且指引给出合法名单。"""
+        """非法取值在载入点拒绝，提示列出合法名单且不回显原值。"""
         file = write_toml(tmp_path / "config.toml", '[llm]\nprotocol = "gemini-native"\n')
         with pytest.raises(ModelConfigFileError) as excinfo:
             load_config(file)
@@ -567,9 +567,7 @@ class TestAskReadiness:
 
 
 class TestConfigFileErrorTyping:
-    """坏配置文件的分型（change fix-model-supply-error-surfacing 决议 #3）：
-    「内容不可解析」与「文件读不到」必须可区分——前者允许用户保存覆盖自救，
-    后者内容未知，覆盖即丢用户配置。"""
+    """区分内容不可解析与无法读取：前者可覆盖，后者覆盖会丢配置。"""
 
     def test_unparseable_toml_raises_config_file_error(self, tmp_path: Path) -> None:
         file = write_toml(tmp_path / "config.toml", "not [valid toml")
@@ -594,8 +592,7 @@ class TestConfigFileErrorTyping:
     def test_unreadable_file_is_its_own_class_not_unconfigured(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """OSError（权限/IO 故障）内容未知：独立分型，既不是「可覆盖」的不可解析，
-        也不是「通道未配置」——文件可能配得好好的，只是读不出来。"""
+        """OSError 内容未知，独立分型。"""
         file = write_toml(tmp_path / "config.toml", '[llm]\nmodel = "m"\n')
 
         def refuse(*_args: object, **_kwargs: object) -> str:
@@ -610,8 +607,7 @@ class TestConfigFileErrorTyping:
 
 
 class TestAskReadinessCliLayer:
-    """就绪判定计入 serve 的 CLI 层（决议 #4）：请求期真实可用而判定报未配置，
-    是同一函数 docstring 明令禁止的第二套事实源。"""
+    """就绪判定包含 serve 的 CLI 配置层。"""
 
     _CLI_EMBEDDING = ChannelValues(base_url="http://127.0.0.1:11434/v1", model="bge-m3")
 
@@ -674,8 +670,7 @@ class TestAskReadinessCliLayer:
         assert readiness.ready is True
 
     def test_readiness_flags_embedding_protocol_from_cli_layer_as_invalid(self) -> None:
-        """与请求期同源：CLI 层给 embedding 塞 protocol 时判定记 invalid token 不抛
-        （判定面是数据；请求面 resolve_embedding_channel 仍抛 ProtocolConfigError）。"""
+        """CLI 层 embedding protocol 非法时记 invalid token，不抛。"""
         readiness = ask_readiness(
             ModelSupplyConfig(),
             cli=ModelSupplyConfig(embedding=ChannelValues(protocol="anthropic")),

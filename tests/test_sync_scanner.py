@@ -148,8 +148,7 @@ def test_rename_matched_by_content_hash(tmp_path: Path) -> None:
 
 
 def test_rename_does_not_swallow_changed_registered_file(tmp_path: Path) -> None:
-    """评审 A1 回归：消失文件的内容哈希恰好等于另一「已登记文件的新内容」时，
-    不得配对为改名——后者必须走内容变更超替，前者保持缺失语义。"""
+    """消失文件与另一登记文件的新内容同哈希时不得配对为改名。"""
     feed = tmp_path / "feed"
     vanished_path = feed / "old.md"
     size, mtime = write(vanished_path, b"# H1")

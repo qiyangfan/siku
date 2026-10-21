@@ -15,11 +15,9 @@ from siku.retrieve.errors import ProviderError
 
 
 def base_url_host(base_url: str) -> str:
-    """base_url 的主机名（不含端口、路径、query 与凭证），供通道标识记录。
+    """base_url 的主机名（不含端口、路径与凭证）。
 
-    畸形 URL（如括号不匹配的 IPv6 形）不抛裸异常：主机标签回退空串——
-    调用方（启动明示/通道 slug/索引元数据）只做展示与记录，真正的配置
-    错误由请求路径的领域错误回流。
+    畸形 URL 返回空串：调用方只做展示与记录，真正的配置错误由请求路径报出。
     """
     try:
         return urlsplit(base_url).hostname or ""
@@ -77,11 +75,10 @@ def validate_embedding_output(
 
 @dataclass(frozen=True)
 class IndexModelMetadata:
-    """进入索引元数据的模型侧信息，用于拒绝配置不一致的混用。
+    """写入索引元数据的模型信息，用于拒绝配置不一致的混用。
 
-    `embedding_channel_host` 记录建库端点主机（不含端口/路径/凭证，ADR-0009
-    通道化语义）；仅作追溯展示，不参与 matches_provider 比较——同一模型经不同
-    端点供给时向量语义兼容，无需强制重建。
+    `embedding_channel_host` 只作追溯展示，不参与 `matches_provider`：同一模型经
+    不同端点供给时向量语义兼容，无需强制重建。
     """
 
     embedding_model_id: str

@@ -35,9 +35,7 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
   const rendererRef = useRef<Sigma | null>(null);
   const selectedRef = useRef<string | null>(null);
   const nodesByIdRef = useRef<Map<string, GraphNode>>(new Map());
-  // 画布绘制的边线/标签色读不到 CSS 变量（theme.ts 登记的第二处 canvas 例外），
-  // 按解析后的主题取值；经 ref 中转避免把主题变更接进数据重建（重建会重掷布局坐标）。
-  // ref 写入放 effect（渲染期写 ref 是 React 违规模式，react-hooks 7 起 lint 拦截）
+  // 边线与标签色按主题解析后经 ref 中转，避免主题切换触发数据重建（会重掷布局）。
   const colorScheme = useComputedColorScheme("light", { getInitialValueInEffect: false });
   const colorSchemeRef = useRef(colorScheme);
   const onSelectRef = useRef(onSelect);
@@ -103,9 +101,7 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
       return;
     }
     const graph = new Graph({ multi: true });
-    // Sigma v4：选项拆为 { settings, styles } 两层；styles 传入即整体替换，
-    // 故在 DEFAULT_STYLES 上扩展 labelColor 绑定（主题色经节点属性供给）。
-    // itemSizesReference 显式钉 "screen"：v4 默认改为 "positions"，会改变节点观感。
+    // Sigma v4 的 styles 传入即整体替换；itemSizesReference 固定 screen 以保持节点观感。
     const renderer = new Sigma(graph, container, {
       settings: {
         allowInvalidContainer: true,

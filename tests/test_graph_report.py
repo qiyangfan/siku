@@ -43,7 +43,7 @@ class TestReportFields:
 
 class TestScaleWarnings:
     def test_threshold_is_design_magnitude(self) -> None:
-        # design.md：图规模超过 10⁵ 边属 ADR-0003 复核信号
+        # ADR-0003 的复核阈值：图谱超过 10⁵ 条边时评估存储结构。
         assert SCALE_WARN_EDGES == 100_000
 
     def test_edges_at_threshold_do_not_warn(self) -> None:

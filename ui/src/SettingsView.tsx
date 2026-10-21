@@ -43,9 +43,7 @@ const LLM_PROTOCOL_OPTIONS = [
   { value: "openai-responses", label: "OpenAI Responses（/responses）" },
 ];
 
-// ask_readiness.invalid 稳定 token → 中文话术（与内核 model_supply 的 token 全集对齐）。
-// 这些值来自优先级高于文件层的 env/程序传入层，保存覆盖不了：话术必须指向真正的
-// 杠杆（修正变量后重启），不得渲染任何「保存可修」的暗示。
+// invalid token 的中文话术；值来自 env/程序传入层，保存覆盖不了，指引必须指向真正来源。
 function invalidTokenText(token: string): string {
   if (token === "llm.protocol") {
     return (
@@ -70,8 +68,7 @@ type ChannelTestState =
   | { kind: "done"; ok: boolean; message: string }
   | null;
 
-// 厂商预设（静态填充表，只住 UI 层）：官方几家 + 本地 Ollama，中转站不做。
-// model 为常用默认，以厂商当前列表为准可手改；api_key_env 为 null 表示本地无凭证。
+// 厂商预设（UI 层静态表）；api_key_env 为 null 表示本地端点无凭证。
 type VendorPreset = {
   id: string;
   label: string;
@@ -354,7 +351,7 @@ function formsFrom(settings: SettingsResponse): Record<ChannelName, ChannelForm>
 }
 
 function payloadFrom(form: ChannelForm): ChannelSettingsPayload {
-  // 契约（design.md 决议 #1）：base_url/model/api_key_env 恒提交，空白 = 清空；
+  // base_url/model/api_key_env 始终提交，空白表示清空；
   // api_key 只在用户输入新值或显式勾选清除时提交，未触碰不上传（保持已存 key）
   const payload: ChannelSettingsPayload = {
     base_url: form.base_url.trim(),
@@ -384,15 +381,14 @@ export function SettingsView({
     rerank: EMPTY_FORM,
   });
   const [loadError, setLoadError] = useState<string | null>(null);
-  // 成因码来自服务端的 {code,message}：只有 invalid_config_file（内容确证不可解析）
-  // 能由「重新保存覆盖」修复；权限/IO 读不到属内容未知，给覆盖入口就会毁掉用户配置。
+  // 只有 invalid_config_file 能由重新保存修复；权限/IO 错误不提供覆盖入口。
   const [loadErrorCode, setLoadErrorCode] = useState<string | null>(null);
   const [blankFormConfirmed, setBlankFormConfirmed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
-  // 本次保存是否覆盖了「内容不可解析」的配置文件(坏文件自救的显式告知,不做静默替换)
+  // 标记保存是否覆盖了「内容不可解析」的配置文件，避免静默替换。
   const [overwrittenInvalidConfig, setOverwrittenInvalidConfig] = useState(false);
   const [testStates, setTestStates] = useState<Record<ChannelName, ChannelTestState>>({
     llm: null,
@@ -454,8 +450,7 @@ export function SettingsView({
         [channel]: {
           ...form,
           key_mode: mode,
-          // 切走「直接填写」时丢弃尚未保存的明文输入，避免用户已改选
-          // 环境变量、表单却仍把密文框里的临时值提交上去
+          // 切走直接填写时丢弃未保存明文，避免切到环境变量后仍提交旧值。
           api_key: mode === "env" ? "" : form.api_key,
           clearStoredKey: mode === "env" ? false : form.clearStoredKey,
         },
@@ -463,9 +458,7 @@ export function SettingsView({
     });
   };
 
-  // 厂商预设填充：云端预设切换到「引用环境变量」并预填变量名（key 需自备）；
-  // 本地预设（Ollama）无需凭证，回到「直接填写」。两种切换都丢弃尚未保存的
-  // 明文输入，防止切厂商后把 A 家临时 key 连同 B 家端点一起保存
+  // 厂商预设：云端切到环境变量，本地端点无凭证；切换时丢弃未保存明文。
   const applyPreset = (channel: ChannelName, presetId: string | null) => {
     setPresetIds((prev) => ({ ...prev, [channel]: presetId }));
     if (presetId === null) {

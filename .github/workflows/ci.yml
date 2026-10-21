@@ -5,19 +5,13 @@ on:
     branches: [main]
   pull_request:
 
-# Node 运行时说明：以下官方 action（checkout v7 / setup-uv v10 / setup-node v7）
-# 均声明 using: node24，由 runner 内置 Node 24 执行 action 包装层；
-# ui 作业另经 setup-node 安装 Node 24 作为前端工具链。
-# runner 本身的内置 Node 版本由 GitHub 管理无法指定，钉死手段就是选用 node24 版 action。
-
 jobs:
   test:
     name: 测试（Python ${{ matrix.python-version }}）
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # 矩阵取声明范围两端：3.12 = .python-version 钉定的开发基准；3.14 = 当前最新稳定版
-      # 阶段一经 uv tool install 分发，用户侧解释器版本异构，两端绿才代表 >=3.12 的声明成立
+      # 测试最低支持版本 3.12 和更新版本 3.14。
       matrix:
         python-version: ["3.12", "3.14"]
     steps:
@@ -41,8 +35,7 @@ jobs:
       - name: 测试
         run: uv run pytest
 
-  # ui/ 前端作业：Node 24 工具链；package.json 不存在时所有步骤自动跳过
-  # （hashFiles 仅可用于 step 级 if，不能写在 job 级 if，否则整个 workflow 文件校验失败）
+  # 前端作业仅在 ui/package.json 存在时执行；hashFiles 只能用于 step 级 if。
   ui:
     name: 前端（Node 24）
     runs-on: ubuntu-latest
@@ -65,14 +58,13 @@ jobs:
         if: ${{ hashFiles('ui/package.json') != '' }}
         run: npm run lint --if-present && npm test --if-present && npm run build --if-present
 
-  # 桌面壳 Rust 门禁（Phase 5）：编译错误与生命周期回归不再只能靠打 tag 暴露
+  # 桌面壳 Rust 检查：fmt、clippy 和测试
   desktop-shell:
     name: 桌面壳（Rust fmt/clippy/test）
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
 
-      # dtolnay/rust-toolchain 的 @stable 是官方维护的滚动分支（区别于 setup-uv 场景）
       - name: 安装 Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -90,8 +82,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev
 
-      # cargo test 会运行 tauri-build，其校验 tauri.conf.json 的 resources 路径存在性；
-      # 本作业不构建真实产物，放占位布局即可（真实产物由 release.yml 构建）
+      # tauri-build 会检查 resources 路径；测试使用占位布局。
       - name: 生成 sidecar/UI 资源占位
         run: |
           mkdir -p ui/src-tauri/binaries/siku-sidecar ui/dist
@@ -108,7 +99,7 @@ jobs:
         run: cargo test --manifest-path ui/src-tauri/Cargo.toml
 
   # 桌面 sidecar 产物检查（ADR-0013）：三平台真实构建 + 资源/架构/无 torch 门禁。
-  # Release 仍禁用；本作业只验证产物形态，不发布任何工件。
+  # 本作业只验证产物形态，不发布工件。
   sidecar-artifacts:
     name: 桌面 sidecar 产物检查（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}

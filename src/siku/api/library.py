@@ -1,9 +1,8 @@
 """桌面资料库：只读清单推导与进程内摄取/重建任务管理。
 
 清单派生自既有摄取事实（attachments/ 原件 + notes/ 投影 frontmatter + 索引
-manifest），绝不复制第二份事实存储（spec：清单为只读派生）。任务状态只存进程
-内存，单任务槽串行执行；崩溃恢复 = 按既有幂等语义重跑（决议见本 change
-design.md「约束冻结决议」#1/#3）。
+manifest），不复制第二份事实存储。任务状态保存在进程内存，任务串行执行；
+重启后任务状态丢失，重新执行依靠幂等语义。
 """
 
 from __future__ import annotations
@@ -51,20 +50,18 @@ from siku.sync.service import (
 
 logger = logging.getLogger(__name__)
 
-# 上传暂存根目录：内容哈希派生子目录使命名确定性（同内容同名 → 同 source_id →
-# 既有管线幂等 skip），残留属系统临时目录垃圾，无害
+# 上传暂存根目录；按内容哈希分目录，使同内容同名文件得到同一路径并可幂等跳过。
+# 残留文件位于系统临时目录，可安全忽略。
 STAGING_ROOT = Path(tempfile.gettempdir()) / "siku-uploads"
 _STAGE_IO_CHUNK = 1024 * 1024
 # 附件文件名中嵌入的 source_id 后缀（pipeline._artifact_stem 命名约定）
 _SOURCE_ID_SUFFIX = re.compile(r"--[0-9a-f]{8,64}$")
 
 IndexRunner = Callable[[bool], IndexReport]
-# 图谱自动维护执行体：返回结构化结果（执行/跳过 + 中文通知 + 计数）
+# 图谱自动维护执行体：返回执行或跳过结果及通知。
 GraphRefreshRunner = Callable[[], GraphRefreshOutcome]
 IngestHandler = Callable[[Path, Path], IngestReport]
-# 扫描/清理执行体（由 siku.sync.SyncService 适配而来）
-# 扫描任务体签名：(full, 预计算计划或 None, 观察者)。plans 非 None = 自动路径，
-# 检测已在槽外完成（决议 #3）；None = 手动路径，任务体内自行计划 + 执行。
+# 扫描执行体签名：(full, 槽外计划或 None, 观察者)。None 时由任务体自行生成计划。
 ScanRunner = Callable[[bool, list[SourcePlan] | None, ScanObserver], None]
 PurgeRunner = Callable[[ScanObserver], int]
 # 单来源确认移除执行体：返回是否完整收尾（False = 取消或可重试失败）
@@ -105,7 +102,7 @@ class _Job:
     current: str | None = None
     items: list[_JobItem] = field(default_factory=list)
     error: str | None = None
-    # 收尾阶段派生维护的中文通知（图谱自动刷新计数/跳过原因/失败事实）
+    # 收尾阶段生成的通知（图谱刷新结果或失败原因）
     notice: str | None = None
 
 
@@ -119,7 +116,7 @@ def _sha256_file(path: Path) -> str:
 
 @dataclass(frozen=True)
 class _DigestEntry:
-    """stat 指纹 → 全量哈希的记忆化条目。"""
+    """记录文件 stat 指纹与对应完整哈希。"""
 
     size: int
     mtime_ns: int
@@ -127,15 +124,10 @@ class _DigestEntry:
 
 
 class AttachmentDigestCache:
-    """附件 SHA-256 的进程内记忆化：stat 快路径命中则免全量读盘。
+    """按（大小, mtime）缓存附件 SHA-256，命中时免读盘。
 
-    清单每请求对全部附件做完整 SHA-256 是 O(全部原件字节数) 的磁盘 I/O；
-    本缓存以 (st_size, st_mtime_ns) 为正确性锚点，原件一经变更下次请求必然
-    重算，摄取后无需显式失效。同尺寸且同 mtime 的内容替换（需刻意伪造）可能
-    漏检，但摄取管线以真实 source_hash 为权威，呈现层误差会随下次摄取自愈。
-    进程内不落盘，不触碰「读取面只读」边界；已删附件的键会残留，量级为会话
-    内删过的附件数（KB 级），不值得修剪。并发：dict 读写依 GIL 原子性，最坏
-    情形是并发请求重复哈希同一文件（幂等无害），不加锁。
+    大小与 mtime 相同的内容替换可能漏检，摄取仍以真实 ``source_hash`` 为准。
+    缓存只驻留内存；并发请求可能重复计算同一文件，但不影响结果。
     """
 
     def __init__(self) -> None:
@@ -153,10 +145,9 @@ class AttachmentDigestCache:
 
 
 def stage_upload(filename: str, stream: BinaryIO) -> Path:
-    """把一个上传流写入确定性暂存路径并返回。
+    """把上传流写入按内容哈希命名的暂存路径。
 
-    目录按内容 SHA-256 前 12 位命名、文件名保留原始名（只取末段防路径穿越）：
-    同内容同名重导入得到同一路径，经既有管线派生出相同 source_id 而被幂等跳过。
+    文件名只取末段以防路径穿越；同内容同名重导入会得到同一路径，由管线幂等跳过。
     """
     safe_name = Path(filename).name
     if not safe_name or safe_name in {".", ".."}:
@@ -206,10 +197,7 @@ def _index_status_for(
     note_rel_path: str,
     manifest: dict[str, tuple[str, str]],
 ) -> Literal["indexed", "stale", "missing"]:
-    """索引状态对照**附件当前哈希**（红线 3：原件是事实源）：manifest 一致才 indexed。
-
-    原件变更后即使索引与旧投影自洽，对用户也应呈现「索引已过期」。
-    """
+    """按附件当前哈希判定索引状态（原件是事实源）：manifest 一致才算 indexed。"""
     if source_id is None:
         return "missing"
     entry = manifest.get(source_id)
@@ -241,7 +229,7 @@ def _source_row(
         try:
             document = read_frontmatter(note_path, vault)
         except RetrievalError:
-            # 损坏投影按待摄取呈现：下次摄取会因 frontmatter 读不出 hash 而重写
+            # 损坏的投影按待摄取处理，下次摄取会重写。
             document = None
     if attachment.suffix.lower() not in whitelist:
         ingest_status: str = "ignored"
@@ -252,23 +240,21 @@ def _source_row(
             if document is None
             else ("ingested" if document.source_hash == digest else "stale")
         )
-        # source_id 优先取投影 frontmatter；投影缺失时回退附件文件名中嵌入的 id
         source_id = (
             document.source_id if document is not None else (_source_id_match(attachment.stem))
         )
         index_status = _index_status_for(source_id, digest, f"notes/{attachment.stem}.md", manifest)
     source_id = document.source_id if document is not None else _source_id_match(attachment.stem)
-    # 库域 tombstone 覆盖呈现：missing（上游消失）/ superseded（已被替代）/
-    # user_removed（移除未完成，可按原 ID 重试）标记优先于推导状态
+    # tombstone 覆盖推导状态：user_removed 保持可重试，missing/superseded 可清理。
     removable = source_id is not None and source_id not in managed_ids
     if source_id is not None and tombstones is not None:
         tombstone = tombstones.get(source_id)
         if tombstone is not None:
             if tombstone.reason == USER_REMOVED_REASON:
                 ingest_status = "removing"
-                # 已确认未完成的移除沿同一入口重试，保持可移除
+                # 未完成的移除保持可重试。
             else:
-                # missing/superseded 走既有全量清理；其他标记一律不可手动移除
+                # 其他标记不可手动移除；missing/superseded 可走全量清理。
                 removable = False
                 if tombstone.reason in ("missing", "superseded") and ingest_status in (
                     "ingested",
@@ -298,7 +284,7 @@ def _quarantine_row(
     origins: dict[str, str] | None,
     digest_cache: AttachmentDigestCache | None = None,
 ) -> LibrarySourceResponse:
-    """检疫目录中的原件行：superseded 固定态，索引必不包含（已退出检索）。"""
+    """检疫目录中的原件行：固定为 superseded，索引必不包含。"""
     if digest_cache is not None:
         digest = digest_cache.digest_of(original)
     else:
@@ -330,12 +316,9 @@ def build_library_view(
 ) -> LibraryResponse:
     """以 attachments/ 为主体推导来源清单；vault 为空或目录缺失时返回空清单。
 
-    digest_cache 传入时启用 stat 快路径，跨请求复用附件全量哈希（serve 进程内
-    由应用状态持有同一实例，不得跨 vault 共享键空间）。目录级与单附件级的扫描
-    窗口竞态（外部删除/重生成/权限等 OSError）一律降级留痕：目录不可读呈现
-    空清单、单附件缺席该行，均不落 500，下次刷新自愈。registry 传入时叠加库域
-    登记：tombstone 覆盖 missing/superseded 呈现、条目附上游路径，并扫描
-    vault/superseded/ 检疫目录（决议 #2/#4）。
+    digest_cache 启用 stat 快路径，须按 vault 分实例复用。扫描期间文件消失或不可读
+    时跳过对应行或返回空清单，不报 500。registry 传入时叠加 tombstone 状态与上游
+    路径，并扫描 ``vault/superseded/`` 检疫目录。
     """
     attachments = vault / "attachments"
     notes = vault / "notes"
@@ -376,8 +359,7 @@ def build_library_view(
                 )
             except OSError as exc:
                 logger.debug("library attachment vanished during scan: detail=%s", exc)
-    # 检疫原件清单：superseded/attachments/（角色分层保证 .md 原件不与投影同名，
-    # 全部文件都是原件；投影副本 superseded/notes/ 不进清单）
+    # 检疫目录只列 attachments/ 下的原件；notes/ 下的投影副本不展示。
     quarantine_originals = vault / QUARANTINE_DIR_NAME / "attachments"
     if quarantine_originals.is_dir():
         try:
@@ -390,8 +372,7 @@ def build_library_view(
                 sources.append(_quarantine_row(original, vault, origins, digest_cache))
             except OSError as exc:
                 logger.debug("library quarantine vanished during scan: detail=%s", exc)
-    # 未完成的已确认移除如实呈现：受管文件已删尽（附件行消失）但标记仍在的
-    # 来源单独成行，不以「原件缺失」掩盖任务失败（http-api spec）
+    # 移除标记仍在但附件行已消失时单独补一行，避免把失败呈现为原件缺失。
     represented_ids = {row.source_id for row in sources if row.source_id is not None}
     for source_id, tombstone in (tombstones or {}).items():
         if tombstone.reason != USER_REMOVED_REASON or source_id in represented_ids:
@@ -426,16 +407,10 @@ def build_library_view(
 
 
 class LibraryJobManager:
-    """进程内单任务槽：一次只跑一个摄取/重建/移除任务，状态只存内存。
+    """进程内单任务槽：一次只跑一个资料库任务，状态只存内存。
 
-    任务在 daemon 工作线程中串行逐文件执行（与 CLI 串行语义一致，避免 SQLite
-    写竞争）；取消为协作式文件粒度（当前文件处理完毕后停止，决议 #3）。
-
-    跨进程互斥（change remove-manual-library-document）：每个任务在启动时
-    同步取得该 vault 的平台文件锁（短超时，冲突即 ``LibraryJobBusyError`` →
-    HTTP 409），由任务线程在全部写入与发布结束后释放；任务体的第一步是
-    完成中断的已确认消减发布（``ensure_library_writable``）。进程内槽负责
-    状态与反馈，文件锁补齐跨进程边界，内部实现不再重复抢锁。
+    任务在 daemon 线程中串行执行，避免并发写 SQLite；取消在当前文件处理完后生效。每个任务启动时
+    取得 vault 写锁，冲突抛 ``LibraryJobBusyError``；任务开始时先完成中断的消减发布。
     """
 
     _LOCK_ACQUIRE_TIMEOUT_SECS: float = 1.0
@@ -468,7 +443,7 @@ class LibraryJobManager:
         self._job: _Job | None = None
         self._staged: list[Path] = []
         self._cancel = threading.Event()
-        # thread_local=False：请求线程取得、任务线程释放（filelock 默认线程局部）
+        # thread_local=False：请求线程取得、任务线程释放。
         self._write_lock = FileLock(
             str(library_lock_path(vault)),
             thread_local=False,
@@ -487,20 +462,18 @@ class LibraryJobManager:
         try:
             self._write_lock.release()
         except RuntimeError:
-            # 已释放（任务体异常路径的双重收尾）幂等无害
+            # 重复释放（异常路径会二次收尾）无害。
             logger.debug("library write lock already released", exc_info=True)
 
     def _recover_before_write(self) -> None:
-        """任务体第一步（写锁已持有）：完成中断的已确认消减发布。"""
+        """任务体第一步（写锁已持有）：完成上次中断的移除发布。"""
         if self._registry is not None and self._data_dir is not None:
             ensure_library_writable(self._data_dir, self._registry)
 
     def _spawn(self, target: Callable[..., None], job: _Job, *args: object) -> None:
-        """启动任务线程；写锁随任务全部写入与发布结束而释放。
+        """启动任务线程；写锁在任务所有写入与发布结束后释放。
 
-        恢复步骤与任务体同受顶层兜底：任何未预期异常（含消减恢复的明确失败）
-        都必须把任务落到 failed 终态，单任务槽不得因线程带异常死亡而永久 409
-        （与 ``_run_scan`` 的评审 B2 兜底同一失效类）。
+        恢复步骤与任务体的异常都落到 failed 终态，避免任务槽永久返回 409。
         """
 
         def _wrapped() -> None:
@@ -555,11 +528,10 @@ class LibraryJobManager:
     def start_scan(
         self, *, full: bool = False, plans: list[SourcePlan] | None = None
     ) -> LibraryJobResponse:
-        """立即执行一轮来源扫描；与摄取/重建共用单任务槽（决议 #3）。
+        """立即执行一轮来源扫描，与其它资料库任务共用单任务槽。
 
-        ``plans`` 传入时（自动调度路径）任务体只执行既有计划——检测已在槽外
-        完成；``None``（手动路径）由任务体自行计划 + 执行。写锁冲突（另一进程
-        占用）时自动调度静默顺延、手动扫描如实报忙。
+        ``plans`` 非 None 时只执行槽外已算好的计划；None 时由任务体自行计划并执行。
+        写锁冲突时自动调度跳过本轮，手动扫描报忙。
         """
         if self._scan_runner is None:
             raise RuntimeError("scan runner is not configured")
@@ -575,7 +547,7 @@ class LibraryJobManager:
         return response
 
     def try_start_scan(self, *, full: bool = False, plans: list[SourcePlan] | None = None) -> bool:
-        """自动调度入口：槽空闲才启动扫描任务，忙则静默顺延（决议 #3）。"""
+        """槽空闲时启动自动扫描；忙时跳过本轮。"""
         try:
             self.start_scan(full=full, plans=plans)
         except LibraryJobBusyError:
@@ -600,7 +572,7 @@ class LibraryJobManager:
         return response
 
     def start_remove(self, source_id: str) -> LibraryJobResponse:
-        """单来源确认移除任务；资格判定由端点层先行，执行体内锁下复核。"""
+        """单来源确认移除任务；资格由端点层预判，任务体取得写锁后复核。"""
         if self._remove_runner is None:
             raise RuntimeError("remove runner is not configured")
         with self._lock:
@@ -662,13 +634,9 @@ class LibraryJobManager:
             job.items.append(item)
 
     def _finish_with_index(self, job: _Job, *, rebuild: bool, cancelled: bool = False) -> None:
-        """任务收尾：按需衔接索引并落终态；索引失败即任务失败（既有中文指引）。
+        """任务收尾：按需衔接索引并落终态；索引失败时任务失败。
 
-        取消只停止「尚未开始的工作」，已提交事实（已入库/已清理）一律衔接增量
-        索引发布——索引是事实的投影而非新工作，扣住它会让已入库文档在下次内容
-        变更前不可检索（本 change 决议 #3 修订，连带修订 desktop-library 决议
-        #3 的「取消后不衔接索引」）。终态：索引失败 → failed（取消亦不例外，
-        诚呈现指引）；无变更且被取消 → cancelled；否则 cancelled/succeeded。
+        取消只停止尚未开始的工作，已入库或已清理的变更仍发布到索引。
         """
         if not rebuild:
             with self._lock:
@@ -691,8 +659,7 @@ class LibraryJobManager:
                 exc,
                 exc_info=True,
             )
-            # 任务错误面向桌面（HTTP 消费），按 http 面文案成文：指向「设置」页
-            # 而非配置文件路径与命令行参数教程
+            # 错误文案面向桌面用户：指向设置页，不含配置路径与命令行教程。
             message = map_domain_error(exc, api_key_env=self._api_key_env, surface="http").message
             with self._lock:
                 job.state = "failed"
@@ -704,12 +671,9 @@ class LibraryJobManager:
             job.state = "cancelled" if cancelled else "succeeded"
 
     def _refresh_graph_after_index(self, job: _Job, *, cancelled: bool) -> None:
-        """索引发布后按开关自动增量维护图谱（design D4）。
+        """索引发布后按开关增量维护图谱。
 
-        触发条件与索引逐字一致（非 rebuild、有变更——由调用方保证），另加两条
-        刻意分歧：取消的任务不触发（取消 = 停止尚未开始的新工作；图谱陈旧是
-        下轮内容变更或显式更新可自愈的中间态）；刷新失败只落通知、不改终态
-        （旧快照原子写保证可读，下轮凭 chunk 缓存续传）。
+        取消的任务不触发；刷新失败只写通知，不改任务终态，旧图谱保持可读。
         """
         if cancelled or self._graph_refresh_runner is None:
             return
@@ -796,7 +760,7 @@ class LibraryJobManager:
                 discard_staged(path)
             with self._lock:
                 job.current = None
-            # 取消同样衔接索引：已入库部分必须发布，不扣到不确定的下轮（决议 #3 修订）
+            # 取消后仍发布已入库的变更，避免文档暂时无法检索。
             self._finish_with_index(job, rebuild=False, cancelled=True)
             return
         self._finish_with_index(job, rebuild=False)
@@ -805,12 +769,11 @@ class LibraryJobManager:
         self._finish_with_index(job, rebuild=True)
 
     def _run_scan(self, job: _Job, full: bool, plans: list[SourcePlan] | None) -> None:
-        """扫描任务体：计划+执行交由 sync 执行体，进度经观察者适配进任务快照。
+        """扫描任务体：计划与执行交给 sync 执行体，进度经观察者写入任务快照。
 
-        顶层异常兜底为**槽存活**所必需：任务线程消亡而 state 停在 running 会让
-        单任务槽永久 409 直至重启（评审 B2），任何未预期异常归一为任务失败。
+        顶层异常必须转为任务失败，否则任务槽会一直返回 409。
         """
-        assert self._scan_runner is not None  # start_scan 已收窄
+        assert self._scan_runner is not None
         try:
             self._scan_runner(full, plans, _JobObserver(self, job))
         except Exception as exc:
@@ -825,16 +788,14 @@ class LibraryJobManager:
         if self._cancel.is_set():
             with self._lock:
                 job.current = None
-            # 取消同样衔接索引：已入库/已清理部分必须发布（决议 #3 修订）
+            # 取消后仍发布已入库或已清理的变更。
             self._finish_with_index(job, rebuild=False, cancelled=True)
             return
         self._finish_with_index(job, rebuild=False)
 
     def _run_purge(self, job: _Job) -> None:
-        assert self._purge_runner is not None  # start_purge 已收窄
-        # 标记集合只含 user_removed 时，全部收尾都经无模型消减发布完成，
-        # 不需要（也不允许依赖）任务收尾的增量索引同步——后者要解析当前
-        # embedding 通道，BYOK 不可用会把已成功的移除误报为失败（design D3）
+        assert self._purge_runner is not None
+        # user_removed 已由无模型消减发布完成，跳过需要 embedding 的索引同步。
         only_user_removals = self._registry is not None and all(
             tombstone.reason == "user_removed"
             for tombstone in self._registry.list_tombstones().values()
@@ -863,8 +824,8 @@ class LibraryJobManager:
         self._finish_with_index(job, rebuild=False)
 
     def _run_remove(self, job: _Job, source_id: str) -> None:
-        """移除任务体：无模型索引消减已内含，收尾不衔接 provider 相关同步。"""
-        assert self._remove_runner is not None  # start_remove 已收窄
+        """移除任务体；索引消减内含在执行体内，收尾不再触发模型相关同步。"""
+        assert self._remove_runner is not None
         try:
             completed = self._remove_runner(source_id, _JobObserver(self, job))
         except Exception as exc:
@@ -893,7 +854,7 @@ class LibraryJobManager:
 
 
 class _JobObserver:
-    """把任务快照适配成 sync 执行体的 ``ScanObserver`` 回调面。"""
+    """把任务快照适配为 sync 执行体需要的 ``ScanObserver``。"""
 
     def __init__(self, manager: LibraryJobManager, job: _Job) -> None:
         self._manager = manager
@@ -927,11 +888,10 @@ class _JobObserver:
 
 
 class SyncScheduler:
-    """serve 内置轮询调度：间隔读注册表（免重启生效），≤0 关闭自动扫描（决议 #3）。
+    """内置轮询调度：每轮读取扫描间隔，≤0 时关闭自动扫描。
 
-    检测（plan）在槽外执行：有变更才尝试取槽执行，槽忙则丢弃本轮计划静默顺延
-    （下轮重新检测，幂等）。1 秒粒度切片等待使间隔修改即时生效；检测异常只记
-    日志，调度线程不得消亡。daemon 线程随应用 lifespan 启停。
+    检测在任务槽外完成，有变更或待对账时才尝试启动扫描；槽忙则丢弃本轮计划。等待按
+    1 秒切片，间隔修改即时生效；检测异常只记日志，线程不退出。
     """
 
     _JOIN_TIMEOUT_SECS: float = 5
@@ -954,9 +914,7 @@ class SyncScheduler:
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
-        # 每次启停换新 Event 并**以参数绑定进线程**：老线程只读自己那份（已 set）
-        # 引用，stop 超时后即使 start 换新 Event，老线程也必然退出——若像以前那样
-        # 在循环里动态读 self._stop，老线程会读到新 Event 复活成双循环（评审 R3-1）
+        # 每次启停换新 Event，旧线程只监听已停止的旧 Event。
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._loop, args=(self._stop,), daemon=True, name="siku-sync-scheduler"
@@ -988,6 +946,6 @@ class SyncScheduler:
             except Exception:
                 logger.exception("sync plan cycle failed; deferring this round")
                 continue
-            # 检测无变更但存在待对账的检疫移位时，也要进槽跑一轮对账（评审 R1 配套）
+            # 即使没有扫描变更，只要有待对账的检疫移位也要进入任务槽。
             if any(plan.has_work for plan in plans) or needs_reconcile:
                 self._manager.try_start_scan(full=False, plans=plans)

@@ -27,18 +27,13 @@ def _raises(error: Exception):
 def test_serve_fails_fast_on_unreadable_config_with_accurate_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """权限/IO 读不到是第三种成因：既不是不可解析，也不是未配置。
-
-    这条路径可达且止于 fail-fast（实测：serve 在 LLM 解析处就退出，不会走到启动
-    横幅——所以断言落在退出文案上，不去测那条走不到的横幅分支）。
-    """
-    # 打桩 config_file_path(与 test_retrieve_cli/test_api_settings 等四处同款):
-    # 平台无关,绝不触真实用户路径;环境变量钉法会随路径解析实现漂移而失效
+    """权限/IO 读不到是第三种成因：既不是不可解析，也不是未配置。"""
+    # 固定配置路径，避免触碰真实用户配置。
     cfg = tmp_path / "config.toml"
     monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text('[llm]\nmodel = "m"\n', encoding="utf-8")
     cfg.chmod(0o000)
-    # 护栏:真跑到起服就当场失败,绝不让用例把端口绑起来挂住整轮
+    # 若真的起服则立即失败，避免用例挂住端口。
     monkeypatch.setattr(
         "siku.cli.uvicorn.run",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("serve 不应走到起服")),
@@ -67,20 +62,15 @@ def test_serve_rejects_illegal_llm_protocol_flag(
 
 
 def test_cli_protocol_enum_matches_kernel_list() -> None:
-    """CLI 枚举与内核合法名单同源：漂移必须在这里红，而不是让用户看到两套名单。"""
+    """CLI 枚举必须与内核合法名单一致。"""
     assert {member.value for member in LlmProtocol} == set(LLM_PROTOCOLS)
 
 
 def test_serve_startup_warning_names_the_invalid_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """坏取值的启动告警必须点名到底哪个字段（ synthesized 异常只会说「非合法 TOML」）。
-
-    启动面的文案取自捕获到的异常本身：`detail` 是载入点自撰的字段级说明，少了它，
-    用户在启动输出里看不出该改哪一行，也不知道这次的成因是取值而不是语法。
-    """
-    # 打桩 config_file_path(与 test_retrieve_cli/test_api_settings 等四处同款):
-    # 平台无关,绝不触真实用户路径;环境变量钉法会随路径解析实现漂移而失效
+    """坏取值的启动告警必须点名字段。"""
+    # 固定配置路径，避免触碰真实用户配置。
     cfg = tmp_path / "config.toml"
     monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text('[llm]\nprotocol = "gemini-native"\n', encoding="utf-8")
@@ -96,14 +86,8 @@ def test_serve_startup_warning_names_the_invalid_field(
 def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """坏文件 + env 层协议越界叠加：两因分别明示后继续启动（不堵启动面、无裸 traceback）。
-
-    原实现这里归一化失败退出；change fix-supply-protocol-dead-end 收敛为「供给配置
-    错误不堵启动面」——文件层无效告警照旧，协议越界告警点名杠杆，LLM 通道按无效
-    呈现，服务照常起服（uvicorn.run 被调用即到达）。
-    """
-    # 打桩 config_file_path(与 test_retrieve_cli/test_api_settings 等四处同款):
-    # 平台无关,绝不触真实用户路径;环境变量钉法会随路径解析实现漂移而失效
+    """坏文件与 env 协议越界叠加时，两因分别告警后继续启动。"""
+    # 固定配置路径，避免触碰真实用户配置。
     cfg = tmp_path / "config.toml"
     monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text("not [valid toml", encoding="utf-8")
@@ -117,13 +101,12 @@ def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     assert result.exit_code == 0
     assert result.exception is None
     assert len(uvicorn_calls) == 1
-    # CLI 面点名环境变量与配置文件路径，且不得把这个杠杆指到 `--llm-protocol`：该参数
-    # 是枚举型，非法值在解析阶段就被拒（exit 2），根本进不到运行期
+    # 参数是枚举型，非法值解析阶段即被拒，文案不得指向它。
     assert "SIKU_LLM_PROTOCOL" in result.output
     assert "config.toml" in result.output
     assert "--llm-protocol" not in result.output
     assert "Traceback" not in result.output
-    # 文件层的故障仍先行明示(不是静默忽略),两因分别可读
+    # 文件层故障仍先行告警。
     assert "不是合法 TOML" in result.output
     assert "invalid" in result.output
 
@@ -131,12 +114,7 @@ def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
 def test_supply_banner_corrupt_config_is_not_reported_as_unconfigured(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """serve 遇无效配置文件会告警后继续启动，随后通道解析再读同一个坏文件。
-
-    原实现让这两个分支落进 `except ModelNotAvailableError`，于是同一份启动输出里
-    上一行说「配置文件不可解析」、下一行说「embedding=未配置」，自相矛盾且把用户
-    推向其实并不缺配置的通道。
-    """
+    """无效配置文件时，embedding/rerank 播报配置无效，不误报为未配置。"""
     corrupt = ModelConfigFileError(
         "Model supply config file is not valid TOML", "其中 [llm] protocol 取值不在允许范围"
     )
@@ -152,7 +130,6 @@ def test_supply_banner_corrupt_config_is_not_reported_as_unconfigured(
 
 
 def test_version_command() -> None:
-    """version 子命令应正常退出并输出版本号。"""
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert __version__ in result.output

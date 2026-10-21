@@ -1,4 +1,4 @@
-"""浏览/图谱/wiki 只读端点的契约测试（契约先行，见 change design.md 决议 #1）。"""
+"""浏览、图谱和 wiki 只读端点的契约测试。"""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def write_note(
     source_id: str,
     sections: list[tuple[str, str]],
 ) -> Path:
-    """按 Phase 1 投影格式写入一个笔记投影（与 ingest.pipeline._render_note 同构）。"""
+    """按摄取管线格式写入笔记投影。"""
     source_hash = "a" * 64
     lines = [
         "---",
@@ -368,7 +368,7 @@ class TestGraphReadEndpoints:
         assert deep.json()["code"] == "invalid_request"
 
     def test_neighbors_prefers_shallow_layer_over_degree(self, tmp_path: Path) -> None:
-        """跨层截断回归：直连邻居不得被远层高度数节点挤出（决议「同层内择优」）。"""
+        """跨层截断时，直连邻居优先于远层高度数节点。"""
         data_dir = tmp_path / "data"
         entities = [
             entity("c", "中心", "系统"),
@@ -557,8 +557,7 @@ class TestWikiReadEndpoints:
         assert response.json()["title"] == "社区 0007"
 
     def test_unreadable_entry_detail_returns_422_not_404(self, tmp_path: Path) -> None:
-        """条目存在但损坏：单条读取走 422 源数据不可处理口径（与 notes 投影一致），
-        不得误报「wiki 尚未生成」，也不得落入 500 内部错误。"""
+        """条目存在但损坏时返回 422，不误报为未生成。"""
         entries = tmp_path / "data" / "wiki" / "entries"
         entries.mkdir(parents=True, exist_ok=True)
         (entries / "community-0003.md").write_bytes(b"\xff\xfe not utf-8")

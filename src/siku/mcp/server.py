@@ -1,13 +1,7 @@
 """siku MCP 服务器：stdio 传输，进程内直连内核（ADR-0014）。
 
-定位为与 CLI 同级的本地客户端面：装配方式与 ``cli.py`` 同源（每次调用现解析模型
-供给通道、用后关闭 provider），错误口径复用 ``api/messages.py`` 的单一映射来源
-（固定 HTTP 面话术：本面无 CLI 通道覆盖参数，指引不得指向不存在的杠杆；问答运行期
-错误沿用 ``map_ask_error`` 既有文案）。本模块只做三件事：工具实现、错误归一化、
-stdio 主循环——协议细节全部交官方 SDK。
-
-安全边界：不监听网络端口、无鉴权面（与 CLI 同信任域）；协议独占 stdout，
-一切日志走 stderr（``SIKU_LOG_LEVEL`` 语义与 CLI 相同）。
+与 CLI 同级：模型通道每次调用现解析、用后关闭，错误文案复用 ``api/messages.py``。
+不监听网络端口；协议独占 stdout，日志走 stderr。
 """
 
 from __future__ import annotations
@@ -62,19 +56,15 @@ from siku.sync.removal import ensure_library_writable
 
 logger = logging.getLogger(__name__)
 
-# read_document 的服务端结果硬顶：超限明示截断并带总量线索（与图谱有界查询同一哲学）
+# read_document 的结果上限；超限时截断并返回总字符数。
 _READ_DOCUMENT_MAX_CHARS = 20_000
 
-# MCP 写入口的同库互斥等待：与 CLI 写命令同款短超时，真冲突快速如实报忙
+# MCP 写入的锁等待上限，与 CLI 相同。
 _MCP_WRITE_LOCK_TIMEOUT_SECS = 2.0
 
 
 class McpToolError(Exception):
-    """工具层归一化失败：``code`` 稳定、``message`` 为中文指引，不带异常链细节。
-
-    文本形态 ``[code] message`` 经 ToolError 原样上客户端（错误结果），异常链
-    细节只进 stderr 日志。
-    """
+    """工具层错误：稳定 code 与中文指引，文本形态为 ``[code] message``。"""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"[{code}] {message}")
@@ -83,11 +73,9 @@ class McpToolError(Exception):
 
 
 def _mapped(exc: Exception, *, api_key_env: str = DEFAULT_API_KEY_ENV) -> McpToolError:
-    """领域错误 → 稳定错误码 + 中文指引（复用既有映射层，不新写第二份文案）。
+    """领域错误转稳定错误码与中文指引。
 
-    固定 HTTP 面话术：MCP 服务器不提供 CLI 通道覆盖参数，CLI 面指引（
-    ``--embedding-base-url`` 等）在本面是不存在的杠杆；HTTP 面「设置页 + 保存
-    免重启生效」对桌面用户（主要分发形态）可行动，码两面一致。
+    固定使用 HTTP 面文案：MCP 不提供 CLI 通道覆盖参数，指引不能指向不存在的开关。
     """
     mapping = map_domain_error(exc, api_key_env=api_key_env, surface="http")
     return McpToolError(mapping.code, mapping.message)
@@ -109,7 +97,7 @@ def _library_busy() -> McpToolError:
 
 @contextmanager
 def _library_write_guard(vault: Path, data_dir: Path):
-    """MCP 写命令的统一前置：跨进程文件锁 + 已确认消减发布恢复（与 CLI 同口径）。"""
+    """MCP 写命令的统一前置：跨进程写锁与中断移除的恢复。"""
     try:
         with library_write_lock(vault, timeout=_MCP_WRITE_LOCK_TIMEOUT_SECS):
             ensure_library_writable(data_dir, SyncRegistry(library_db_path(data_dir)))
@@ -119,17 +107,15 @@ def _library_write_guard(vault: Path, data_dir: Path):
 
 
 # ---------------------------------------------------------------------------
-# 装配缝：进程内直连内核；测试经 monkeypatch 注入假上游
+# 装配：进程内直连内核；测试经 monkeypatch 注入假上游
 # ---------------------------------------------------------------------------
 
 
 def _search_service(data_dir: Path) -> SearchService:
-    """现解析 embedding/rerank 通道并装配检索服务（provider 由 service.close() 释放）。
+    """现解析 embedding/rerank 通道并装配检索服务。
 
-    MCP 服务器无 CLI 覆盖层：通道经 环境变量 > config.toml 分层解析，每次调用现读，
-    设置变更免重启生效。reranker 缺省自动：通道缺失即 none（一等公民，不报错）。
-    坏配置文件通常在 embedding 解析处（先行）报错；rerank 解析的
-    ``except ModelNotAvailableError`` 与 CLI `_reranker_component` 同构，依赖该顺序。
+    embedding 不可用直接报错；rerank 的 ``ModelNotAvailableError`` 按 none 处理
+    （与 CLI 的 `_reranker_component` 一致）。
     """
     channel = resolve_embedding_channel(ChannelValues())
     embedding = build_embedding_provider(channel)
@@ -160,7 +146,7 @@ def _answer_provider() -> HttpxLlmProvider:
 
 
 # ---------------------------------------------------------------------------
-# 工具实现：进程内可直调（测试面）；注册壳经 _call 归一化错误
+# 工具实现：可供测试直接调用；注册壳经 _call 统一归一化错误
 # ---------------------------------------------------------------------------
 
 
@@ -324,12 +310,12 @@ def tool_ingest(source: str, *, vault: Path, data_dir: Path) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 注册面：参数 schema 由类型注解生成；错误经 ToolError 上客户端
+# 注册面：参数 schema 由类型注解生成，错误经 ToolError 返回客户端
 # ---------------------------------------------------------------------------
 
 
 def _call(tool_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    """统一错误出口：领域错误带码上文，意外异常打码并只留类名进日志。"""
+    """统一错误出口：领域错误带 code 返回，意外异常只记录类名。"""
     request_id = uuid.uuid4().hex
     try:
         result = fn()

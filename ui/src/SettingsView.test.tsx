@@ -158,7 +158,7 @@ describe("设置中心", () => {
 
     expect(await screen.findByText("原配置文件不可解析")).toBeInTheDocument();
     expect(screen.getByText(/以空配置为基底写入了新内容并覆盖该文件/)).toBeInTheDocument();
-    // 告知是一次性的:再次正常保存必须撤下,不得滞留成常驻文案
+    // 告知是一次性的：再次正常保存必须撤下，不得滞留成常驻文案
     mockFetch(calls, {
       get: settings,
       put: { ...settings, warnings: [], invalid_config_file_overwritten: false },
@@ -170,8 +170,7 @@ describe("设置中心", () => {
   });
 
   it("配置文件不可解析(成因码可辨)时给出覆盖自救入口,确认后按空配置出图", async () => {
-    // 回归钉子:读面曾把这张页堵成只剩「重试读取」,而 503 文案承诺「重新保存即可覆盖」;
-    // 入口必须只出现在 invalid_config_file 这一型(权限/IO 读不到时覆盖会毁掉好配置)
+    // 只有内容不可解析时允许覆盖；权限或 IO 故障时文件内容未知。
     const calls: Call[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
       const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
@@ -207,7 +206,7 @@ describe("设置中心", () => {
 
     await screen.findByText("模型供给设置");
     expect(screen.getByText("按空配置显示")).toBeInTheDocument();
-    // 不伪造服务端读数:路径行不出图,表单按空值渲染
+    // 不伪造服务端读数：路径行不出图，表单按空值渲染
     expect(screen.queryByText(/配置写入/)).not.toBeInTheDocument();
     const llm = within(await screen.findByRole("group", { name: "LLM 通道" }));
     expect(llm.getByLabelText("base_url")).toHaveValue("");

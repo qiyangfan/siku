@@ -48,8 +48,7 @@ export type AskReadiness = {
   ready: boolean;
   // 稳定机器 token（如 "llm.api_key"），中文话术由界面生成
   missing: string[];
-  // 跨层合并后取值非法的稳定 token（如 "llm.protocol"）：该通道本服务内不可用，
-  // 保存覆盖不了（来源层优先级更高）；话术由界面生成。旧内核缺失该字段时按空处理
+  // 跨层合并后取值非法的稳定 token；保存覆盖不了，话术由界面生成。
   invalid?: string[];
 };
 
@@ -72,7 +71,7 @@ export type SettingsResponse = {
 
 export type SettingsWriteResponse = SettingsResponse & {
   warnings: string[];
-  /** 本次保存前本机配置文件不可解析，已以空配置为基底原子覆盖（坏文件自救告知）。
+  /** 保存前本机配置文件不可解析，已以空配置为基底原子覆盖（坏文件自救告知）。
    *  契约里该字段带 `default: false` 且不入 `required`，故按可选建模。 */
   invalid_config_file_overwritten?: boolean;
 };
@@ -159,7 +158,7 @@ export type LibraryJob = {
   current: string | null;
   items: LibraryJobItem[];
   error: string | null;
-  // 收尾阶段派生维护的中文通知（图谱自动刷新计数/跳过原因/失败事实）；旧服务端缺失
+  // 图谱自动刷新结果通知；旧服务端可能缺失
   notice?: string | null;
 };
 

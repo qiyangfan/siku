@@ -151,7 +151,7 @@ DEFAULT_VAULT = Path("vault")
 DEFAULT_DATA_DIR = Path("data")
 ALLOWED_CORS_ORIGINS = ("http://127.0.0.1:5173", "http://localhost:5173")
 SNAPSHOT_GENERATOR = "uv run python -m siku.api.contract --refresh"
-# 同库写入口的锁等待：平滑同进程正常交接，真冲突快速如实报忙
+# 同库写入的锁等待上限：正常交接够用，真冲突时快速返回忙。
 _WRITE_LOCK_TIMEOUT_SECS = 1.0
 _LIBRARY_BUSY_RESPONSE = (
     409,
@@ -174,11 +174,7 @@ def _supply_search_service(
     rerank_supply: ChannelValues | None,
     embedding_dimensions: int | None = None,
 ) -> SearchService:
-    """按分层供给配置装配检索服务；embedding 未配置时抛带指引的领域错误。
-
-    rerank 通道未配置时按 reranker=none（ADR-0009 一等公民）处理，不阻塞检索；
-    embedding 通道是检索/问答的必需品，缺失直接报配置指引错误。
-    """
+    """装配检索服务；embedding 缺失时报配置错误，rerank 不可用时按 reranker=none 处理。"""
     embedding_channel = resolve_embedding_channel(embedding_supply)
     embedding = build_embedding_provider(embedding_channel, dimensions=embedding_dimensions)
     reranker = None
@@ -190,12 +186,7 @@ def _supply_search_service(
 
 
 class _SearchSupplyCache:
-    """serve 默认检索装配的进程内缓存：跨请求复用 provider 连接池。
-
-    设置写入后经 :meth:`invalidate` 失效：关闭旧服务持有的 provider 连接池，
-    下一次请求按新配置重建（免重启生效）。锁串行化装配与失效，避免并发请求
-    在半失效状态重复装配。
-    """
+    """进程内缓存检索服务，跨请求复用 provider 连接池；设置写入后经 :meth:`invalidate` 重建。"""
 
     def __init__(
         self,
@@ -230,12 +221,7 @@ class _SearchSupplyCache:
 def _llm_provider_factory(
     llm_supply: ChannelValues | None,
 ) -> Callable[[], HttpxLlmProvider]:
-    """构建每次请求现解析 llm 通道的 provider 工厂。
-
-    CLI 层（``llm_supply``）保持最高优先级，env 与 config.toml 每次现读：
-    设置中心写入后，问答/图谱/wiki 的 LLM 通道免重启生效。provider 仍按请求
-    构造、用后关闭（与既有行为一致）。
-    """
+    """每次请求重新解析 LLM 通道并新建 provider，用后由调用方关闭。"""
 
     def factory() -> HttpxLlmProvider:
         channel = resolve_llm_channel(llm_supply)
@@ -262,11 +248,7 @@ def _supply_index_runner(
     embedding_supply: ChannelValues | None,
     embedding_dimensions: int | None,
 ) -> IndexRunner:
-    """构建每个任务现解析 embedding 通道的索引执行器。
-
-    与 LLM 每请求现解析同口径：设置中心写入后，资料库任务（增量同步与全量重建）
-    免重启生效。provider 按任务构造、用后关闭。
-    """
+    """每个索引任务重新解析 embedding 通道并新建 provider，任务结束即关闭。"""
 
     def runner(rebuild: bool) -> IndexReport:
         channel = resolve_embedding_channel(embedding_supply)
@@ -285,12 +267,7 @@ def _supply_graph_refresh_runner(
     llm_supply: ChannelValues | None,
     registry: SyncRegistry,
 ) -> Callable[[], GraphRefreshOutcome]:
-    """构建每个任务现解析 LLM 通道的图谱自动维护执行器。
-
-    与索引执行器同口径：设置中心写入后免重启生效；开关每轮现读注册表。
-    通道解析延迟到资格闸门之后——开关关闭/快照缺失/身份不符均不解析通道、
-    不产生任何模型调用（策略单一定义于 graph.refresh.maybe_refresh_graph）。
-    """
+    """构建图谱自动维护执行器；开关每轮现读，资格闸门通过后才解析 LLM 通道。"""
 
     def runner() -> GraphRefreshOutcome:
         return maybe_refresh_graph(
@@ -311,7 +288,7 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 
 
 def _paths_overlap(a: str, b: str) -> bool:
-    """判断两个已解析的绝对路径是否存在包含关系或相等（目录重叠）。"""
+    """两个已解析路径相等或存在包含关系时返回 True。"""
     parts_a = Path(a).parts
     parts_b = Path(b).parts
     common = min(len(parts_a), len(parts_b))
@@ -338,12 +315,10 @@ def create_app(
     answer_provider_factory: AnswerProviderFactory | None = None,
     ui_dir: Path | None = None,
 ) -> FastAPI:
-    """创建一个可测试的 localhost API 应用。
+    """创建 localhost API 应用。
 
-    模型供给（ADR-0009）：`llm_supply`/`embedding_supply`/`rerank_supply` 是 CLI
-    层传入的通道参数（缺省时由配置解析回退环境变量与 config.toml）；LLM 与检索
-    的默认工厂在**每次请求时**按分层配置现装配，设置中心写入后免重启生效。
-    显式注入工厂参数时（测试注入 fake）优先，供给参数被忽略。
+    CLI 通道参数与配置按分层解析，设置写入后免重启生效；显式注入的工厂参数优先于
+    供给参数。
     """
     search_cache: _SearchSupplyCache | None = None
     if search_service_factory is not None:
@@ -352,17 +327,14 @@ def create_app(
         search_cache = _SearchSupplyCache(embedding_supply, rerank_supply, embedding_dimensions)
         resolved_search_factory = search_cache.get
     llm_providers = _llm_provider_factory(llm_supply)
-    # serve 的 CLI 层（--llm-*/--embedding-*/--rerank-*）：设置视图的 ask_readiness
-    # 与 llm_env_fallback 必须按请求期同一口径判定，否则「CLI 配齐、请求真能跑」
-    # 的部署会被判为未配置（change fix-model-supply-error-surfacing 决议 #4）
+    # 设置视图需计入 serve 的 CLI 配置层，否则可用通道会显示为未配置。
     cli_supply_layer = ModelSupplyConfig(
         llm=llm_supply or ChannelValues(),
         embedding=embedding_supply or ChannelValues(),
         rerank=rerank_supply or ChannelValues(),
     )
 
-    # 来源目录同步（ADR-0010）：库域状态库 + 扫描执行体 + 单任务槽 + 轮询调度。
-    # 注册表随应用生命周期持有（状态非派生物）；调度线程经 lifespan 启停。
+    # 来源目录同步：注册表随应用持有，轮询调度线程由 lifespan 启停。
     sync_registry = SyncRegistry(library_db_path(data_dir))
     sync_service = SyncService(
         sync_registry,
@@ -373,7 +345,7 @@ def create_app(
     )
 
     def _scan_job_body(full: bool, plans: list[SourcePlan] | None, observer: ScanObserver) -> None:
-        # plans 非 None = 自动路径（检测已在槽外完成）；None = 手动路径（体内计划）
+        # plans 非 None 表示调度器已在槽外完成检测；None 时在任务体内扫描。
         if plans is None:
             sync_service.run_scan_cycle(full=full, observer=observer)
         else:
@@ -425,9 +397,9 @@ def create_app(
     application.state.api_key_env = api_key_env
     application.state.search_supply_cache = search_cache
     application.state.ingest_handler = ingest_handler
-    # 附件哈希的 stat 快路径缓存随应用生命周期存在（正确性锚点见类 docstring）
+    # 附件哈希缓存随应用生命周期存在。
     application.state.digest_cache = AttachmentDigestCache()
-    # state 仅为内省/测试挂同一实例；端点经闭包局部变量引用以保类型
+    # state 仅用于内省与测试；端点经闭包引用同一实例以保留类型。
     application.state.library_jobs = library_jobs
     application.state.sync_registry = sync_registry
     application.state.sync_service = sync_service
@@ -472,8 +444,7 @@ def create_app(
     def ingest(request: IngestRequest) -> IngestResponse | JSONResponse:
         target_vault = request.vault or application.state.vault
         try:
-            # 原始摄取也是同库写入：与资料库任务/移除共享跨进程互斥（spec）；
-            # 仅当写入应用自身 vault 时才做消减恢复（自定义 vault 无对应库域登记）
+            # 摄取与资料库任务共享跨进程写锁；仅应用自身 vault 需要检查清理态。
             with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
                 if target_vault == application.state.vault:
                     ensure_library_writable(application.state.data_dir, sync_registry)
@@ -546,8 +517,7 @@ def create_app(
             return _error_response(
                 422, "invalid_request", "来源目录不存在或不是目录，请检查后重试。"
             )
-        # 单向喂养边界：来源目录不得与 vault 重叠（含把 vault 自身登记为来源），
-        # 否则扫描会把 vault 内部文件（含检疫副本）当上游再次喂入（评审 S3）
+        # 来源目录不得与 vault 重叠，否则扫描会把 vault 内文件（含检疫副本）重新摄取。
         vault_resolved = str(Path(application.state.vault).resolve())
         if _paths_overlap(resolved, vault_resolved):
             return _error_response(
@@ -562,7 +532,7 @@ def create_app(
                 409, "source_already_registered", "该目录已登记为来源，无需重复添加。"
             )
         except sqlite3.IntegrityError:
-            # 并发注册同一真实路径：UNIQUE 约束兜底归一为 409（评审 S2）
+            # 并发注册同一真实路径时由 UNIQUE 约束兜底。
             return _error_response(
                 409, "source_already_registered", "该目录已登记为来源，无需重复添加。"
             )
@@ -582,7 +552,7 @@ def create_app(
         source_id: str, request: LibrarySourceUpdateRequest
     ) -> LibrarySourceInfo | JSONResponse:
         """启停来源目录：停用后扫描跳过该目录，登记与文档不受影响。"""
-        # 启停改变同步归属：与移除/扫描共享同库写锁（锁后重验的前提）
+        # 启停改变同步归属，需与移除、扫描共用同库写锁。
         try:
             with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
                 source = sync_registry.set_source_enabled(source_id, request.enabled)
@@ -634,7 +604,7 @@ def create_app(
     def library_scan_settings_write(
         request: LibraryScanSettingsUpdateRequest,
     ) -> LibraryScanSettingsResponse | JSONResponse:
-        """更新自动扫描间隔与图谱自动刷新开关：调度/收尾每轮现读，免重启生效；负数非法。"""
+        """更新自动扫描间隔与图谱刷新开关；负数非法，设置每轮现读。"""
         if request.interval_secs is not None and request.interval_secs < 0:
             return _error_response(
                 422, "invalid_request", "扫描间隔不能为负数；0 表示关闭自动扫描。"
@@ -666,14 +636,14 @@ def create_app(
 
     @application.post("/api/library/remove", response_model=LibraryJobResponse)
     def library_remove(request: LibraryRemoveRequest) -> LibraryJobResponse | JSONResponse:
-        """单来源确认移除：真实来源 ID + 显式确认；请求不接受文件路径。"""
+        """按来源 ID 确认移除；请求不接受文件路径。"""
         if not request.confirmed:
             return _error_response(
                 422,
                 "remove_confirm_required",
                 "移除需要显式确认：请在请求中携带 confirmed=true。",
             )
-        # 资格判定先行（请求面如实分型）；执行体内取得写锁后再次核对同步登记
+        # 先判定资格；任务体内取得写锁后再核对同步登记。
         try:
             removal_eligibility(
                 sync_registry,
@@ -703,7 +673,7 @@ def create_app(
     def library_ingest(
         files: Annotated[list[UploadFile], File()],
     ) -> LibraryJobResponse | JSONResponse:
-        """导入上传文件并触发单任务槽摄取：暂存落盘 → 逐文件幂等摄取 → 增量索引。"""
+        """暂存上传文件并启动摄取任务，完成后增量索引。"""
         staged: list[Path] = []
         try:
             for upload in files:
@@ -717,7 +687,7 @@ def create_app(
                 discard_staged(path)
             logger.debug("API library staging failed", exc_info=True)
             return _error_response(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
-        # 同请求内重复上传（同内容同名）指向同一路径，去重避免无效重跑
+        # 同内容同名上传会落到同一路径，去重避免重复处理。
         staged = list(dict.fromkeys(staged))
         try:
             return library_jobs.start_ingest(staged)
@@ -768,7 +738,7 @@ def create_app(
         page: Annotated[int, Query(ge=1)] = 1,
         page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     ) -> NotesPageResponse | JSONResponse:
-        """浏览清单：笔记投影分页读取，note_path 字典序稳定排序，只读不落盘。"""
+        """分页读取笔记投影，按 note_path 字典序排序。"""
         try:
             notes, total = list_notes(application.state.vault, page, page_size)
         except Exception as exc:
@@ -786,7 +756,7 @@ def create_app(
 
     @application.get("/api/notes/{source_id}", response_model=NoteDetailResponse)
     def note_detail_view(source_id: str) -> NoteDetailResponse | JSONResponse:
-        """单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点，只读。"""
+        """读取单篇投影的 Markdown 全文（不含 frontmatter）与区块锚点。"""
         try:
             detail = read_note_detail(application.state.vault, source_id)
         except Exception as exc:
@@ -830,7 +800,7 @@ def create_app(
         logger.info("API ask started: request_id=%s", request_id)
         try:
             provider = application.state.answer_provider_factory()
-            assert provider is not None  # 工厂契约：现解析通道，不返回 None
+            assert provider is not None  # 工厂按请求解析通道，不会返回 None
             service = AnswerService(
                 application.state.search_service_factory(application.state.data_dir),
                 provider,
@@ -874,8 +844,8 @@ def create_app(
         extractor: GraphExtractor | None = None
         try:
             extractor = application.state.graph_extractor_factory()
-            assert extractor is not None  # 工厂契约：现解析通道，不返回 None
-            # 图谱构建是同库写入：与移除/摄取互斥，且构建结果不得发布已移除内容
+            assert extractor is not None  # 工厂按请求解析通道，不会返回 None
+            # 图谱构建与移除、摄取共用写锁，避免发布已移除内容。
             with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
                 if target_vault == application.state.vault:
                     ensure_library_writable(application.state.data_dir, sync_registry)
@@ -925,7 +895,7 @@ def create_app(
 
     @application.get("/api/graph/stats", response_model=GraphStatsResponse)
     def graph_stats_view() -> GraphStatsResponse | JSONResponse:
-        """图谱聚合统计：节点/边/社区计数与类型分布，只读现读三件表。"""
+        """读取节点、边与社区计数及类型分布。"""
         try:
             stats = graph_stats(application.state.data_dir)
         except Exception as exc:
@@ -940,7 +910,7 @@ def create_app(
     def graph_overview_view(
         limit: Annotated[int, Query(ge=1, le=500)] = 200,
     ) -> GraphSubgraphResponse | JSONResponse:
-        """初始画布：度数 top-N 节点与集合内诱导边；超限明示截断（服务端硬顶）。"""
+        """返回度数最高的 N 个节点及它们之间的边；超限时标记截断。"""
         try:
             subgraph = graph_overview(application.state.data_dir, limit=limit)
         except Exception as exc:
@@ -956,7 +926,7 @@ def create_app(
         q: Annotated[str, Query(min_length=1)],
         limit: Annotated[int, Query(ge=1, le=100)] = 20,
     ) -> GraphSearchResponse | JSONResponse:
-        """实体搜索：名称大小写不敏感包含匹配，度数降序，截断明示。"""
+        """按名称大小写不敏感包含匹配搜索实体，按度数降序，超限时标记截断。"""
         if not q.strip():
             return _error_response(422, "invalid_request", "请求参数无效，请检查后重试。")
         try:
@@ -975,7 +945,7 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         depth: Annotated[int, Query(ge=1, le=2)] = 1,
     ) -> GraphSubgraphResponse | JSONResponse:
-        """有界邻域展开：自中心 BFS 至 depth，节点数受服务端上限约束并明示截断。"""
+        """返回中心节点的有界 BFS 邻域；节点数超限时标记截断。"""
         try:
             subgraph = graph_neighbors(
                 application.state.data_dir, entity_id, limit=limit, depth=depth
@@ -994,7 +964,7 @@ def create_app(
         summarizer: Summarizer | None = None
         try:
             summarizer = application.state.summarizer_factory()
-            # wiki 写盘同样是同库写入：与移除互斥，不复活已移除内容
+            # wiki 写盘与移除共用写锁，避免复活已移除内容。
             with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
                 ensure_library_writable(application.state.data_dir, sync_registry)
                 result = application.state.wiki_generator(target_data_dir, summarizer)
@@ -1026,7 +996,7 @@ def create_app(
 
     @application.get("/api/wiki/entries", response_model=WikiEntriesResponse)
     def wiki_entries_view() -> WikiEntriesResponse | JSONResponse:
-        """wiki 条目清单：只读派生自 data/wiki/entries，绝不触发生成路径。"""
+        """读取 data/wiki/entries 下的条目清单，不触发生成。"""
         try:
             entries = list_wiki_entries(application.state.data_dir)
         except Exception as exc:
@@ -1043,7 +1013,7 @@ def create_app(
 
     @application.get("/api/wiki/entries/{community_id}", response_model=WikiEntryDetailResponse)
     def wiki_entry_view(community_id: int) -> WikiEntryDetailResponse | JSONResponse:
-        """wiki 单条读取：Markdown 全文与时效元数据，只读不触发生成。"""
+        """读取单条 wiki 的 Markdown 与时效元数据。"""
         try:
             entry = read_wiki_entry(application.state.data_dir, community_id)
         except Exception as exc:
@@ -1058,27 +1028,20 @@ def create_app(
 
     @application.get("/api/settings", response_model=SettingsResponse)
     def read_settings() -> SettingsResponse | JSONResponse:
-        """返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。
+        """返回三通道掩码视图；凭证不回显，环境变量覆盖字段会标注。
 
-        错误面的 `code` 按成因分道（`invalid_config_file` / `config_file_unreadable`），
-        设置页据此决定是否给出「覆盖自救」入口：只有「确证不可解析」能由保存修复，
-        内容未知（权限/IO）不得覆盖。读面刻意不做容忍式 200——请求期每请求现读该文件，
-        容忍会让就绪状态与真实结果分叉（误就绪比死路更糟）。
+        配置文件确证无效时允许保存覆盖；权限或 IO 错误则不允许。
         """
         try:
             config = load_config()
             view = masked_view(
                 config,
                 default_config_path(),
-                # 与请求期 LLM 解析同一口径（含 serve 的 CLI 层），保证
-                # 「响应说回退生效」⇔「生成请求真的走回退」
-                # 同一份已解析的文件层显式传入:回退判定不得再读一次文件
-                # (否则坏文件下视图按空层渲染、回退却另抛一次,两处不同源)
+                # 与请求期使用同一份文件配置计算回退视图，避免再次读取后状态不一致。
                 llm_fallback=llm_env_fallback_channel(llm_supply, config=config),
                 cli=cli_supply_layer,
             )
         except ModelNotAvailableError as exc:
-            # 手改 config.toml 的越界 protocol 不得变成 500：给可行动中文指引
             logger.debug("API settings read failed: error_class=%s", type(exc).__name__)
             mapping = map_domain_error(
                 exc, api_key_env=application.state.api_key_env, surface="http"
@@ -1094,16 +1057,11 @@ def create_app(
 
     @application.put("/api/settings", response_model=SettingsWriteResponse)
     def write_settings(update: SettingsUpdateRequest) -> SettingsWriteResponse | JSONResponse:
-        """校验并合并写入 config.toml（原子 0600），失效检索装配缓存后返回新视图。
+        """合并并原子写入 config.toml（0600），失效检索缓存后返回新视图。
 
-        写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的
-        默认工厂每请求现解析。请求体（含 key）不进日志。
+        保存后免重启生效；请求体（含 key）不进日志。
 
-        坏文件自救（change fix-model-supply-error-surfacing 决议 #3）：现有配置
-        **确证对模型供给无效**（坏 TOML / 非法段 / 字段取值不在允许范围）时以空的文件层
-        为基底继续合并本次提交并原子替换，响应显式告知覆盖事实——否则「读就抛」会把
-        「重新保存覆盖坏文件」这条唯一可由桌面用户操作的出路彻底堵死。仅因权限/IO
-        读不到文件时不覆盖（内容未知，覆盖即丢用户配置）。
+        仅当配置文件确证无效时，才以空文件层合并并覆盖；权限或 IO 错误不覆盖。
         """
         recovered = False
         try:
@@ -1118,15 +1076,12 @@ def create_app(
                 current = ModelSupplyConfig()
                 recovered = True
             merged = apply_update(current, update)
-            # 写入边界已由两处覆盖:提交值经 `_validate_value` 逐字段校验(非法 → 422 不落盘),
-            # 存量文件层经 `load_config` 的取值校验(非法 → 本请求走「无效文件以空层为基底」分支)
             save_config(merged)
         except SettingsValidationError as exc:
             return _error_response(422, "invalid_settings", str(exc))
         except Exception as exc:
             logger.debug("API settings write failed: error_class=%s", type(exc).__name__)
-            # 沿用既有领域映射：文件层无效 → 503 invalid_config_file，
-            # env/命令行层协议越界 → 503 invalid_settings，不可读文件 → 503 且绝不覆盖
+            # 文件层错误、协议越界与文件不可读分别映射为各自的领域错误。
             mapping = map_domain_error(
                 exc, api_key_env=application.state.api_key_env, surface="http"
             )
@@ -1139,23 +1094,15 @@ def create_app(
             payload = masked_view(
                 merged,
                 default_config_path(),
-                # 复用刚写入的层：回退判定不得再读一次文件——通道视图取 merged、
-                # 回退取重读结果就是两套事实源
+                # 使用刚写入的配置计算视图，避免回读文件造成状态不一致。
                 llm_fallback=llm_env_fallback_channel(llm_supply, config=merged),
                 cli=cli_supply_layer,
             )
         except ModelNotAvailableError as exc:
-            # 落盘已成功，谎报「保存失败」会把自救路径变成反复重试的迷宫；但就绪判定
-            # 含 env/cli 层,而写入只写文件层——env 层的越界协议
-            # 在这里同样抛——按 GET 面同一口径给码，并把成功路径本来会携带的事实一并带回：
-            # 是否覆盖了坏文件、embedding 身份变更的重建告警。错误体只有 `{code,message}`
-            # 两个字段（既有契约），这些事实进 message 文本，不新增字段。
+            # 保存已成功；视图失败时仍返回成功事实、重建告警和设置读取面的错误映射。
             logger.debug(
                 "API settings write succeeded, view degraded: error_class=%s", type(exc).__name__
             )
-            # 兜底是 spec 那条 MUST 的载体（「落盘后失败 SHALL NOT 返 internal_error 类 5xx」）:
-            # 文件层的非法值已在载入点被拒,这里可能剩 env/命令行层的协议越界,以及日后新增的
-            # 供给类异常——一律交回映射层给码与指引,不变 500。
             mapping = map_domain_error(
                 exc, api_key_env=application.state.api_key_env, surface="http"
             )
@@ -1177,7 +1124,7 @@ def create_app(
     def test_settings(request: SettingsTestRequest) -> SettingsTestResponse | JSONResponse:
         """对单通道发起最小连通性探测：不持久化，不回显上游错误体。"""
         started = time.perf_counter()
-        # 协议在 try 内赋值：解析失败时 except 的协议感知指引按 None 回落
+        # 解析失败时 protocol 保持 None，异常映射按无协议处理。
         protocol: str | None = None
         try:
             channel, base_url, model, api_key, api_key_env, protocol = resolve_probe_target(request)

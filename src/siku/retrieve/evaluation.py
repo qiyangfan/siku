@@ -174,10 +174,9 @@ def evaluate(
             )
             kind = "hit"
         else:
-            # 空结果类：语料中不存在相关信息，全文通道不得出现"多字词"命中。
-            # 判定语义：查询的多字 token（CJK bigram、非 CJK token）必须没有在
-            # top 结果正文中原样出现；单字 unigram 与向量近邻噪声都不计为命中——
-            # 否则中文单字 OR 召回的碰撞会让任何空题永远失败，门禁失去区分度。
+            # 空结果类：查询中的多字 token（CJK bigram 与非 CJK token）不得出现在
+            # top 结果正文中；单字 unigram 与向量近邻噪声不算命中，否则中文单字 OR
+            # 召回的碰撞会让空题永远失败。
             strong_tokens = {token for token in tokenize(case.query) if len(token) >= 2}
             # 与 BM25 通道同规则：正文先做 NFKC 归一再比较，避免全角字符漏判
             normalized_texts = [normalize_text(result.text).lower() for result in hits]
@@ -227,11 +226,10 @@ def build_config(
     embedding_base_url_host: str,
     reranker_base_url_host: str | None,
 ) -> dict[str, object]:
-    """基线快照的 config 段：模型、通道身份、分词器与检索参数全部入档。
+    """基线快照的 config 段：模型、通道身份、分词器与检索参数。
 
-    通道化语义（ADR-0009）：`provider_kind` 标识通道形态（`api`=embedding+rerank
-    双端点，`rerank-none`=仅 embedding 端点）；主机名不含凭证、端口与路径，基线
-    文件按通道命名，跨通道分数不可比。
+    provider_kind 区分 `api`（embedding+rerank）与 `rerank-none`；主机名不含凭证、
+    端口与路径。跨通道分数不可比。
     """
     return {
         "provider_kind": provider_kind,
@@ -328,17 +326,10 @@ def check_channel_identity(
     baseline: dict[str, object],
     current_config: dict[str, object],
 ) -> None:
-    """通道身份前置校验：基线记录了通道身份且与当前不一致时拒绝比较（ADR-0009）。
-
-    「跨通道分数不可比」不能只靠文件命名约定；显式 `--baseline` 指到他通道文件时
-    必须硬失败。旧版基线（历史 v0，config 无通道字段）跳过本检查，仅保留
-    fixture 指纹门禁。
-    """
+    """基线与当前通道身份不一致时拒绝比较；旧版基线没有通道字段时跳过。"""
     baseline_config = baseline.get("config")
     if not isinstance(baseline_config, dict):
         return
-    # 仅当基线带通道字段（ADR-0009 新增）时才做通道比较；历史 v0 基线只有
-    # 模型/参数字段，跳过本检查，仅保留 fixture 指纹门禁
     if not ({"provider_kind", "embedding_base_url_host"} & set(baseline_config)):
         return
     identity_keys = ("provider_kind", "embedding_model_id", "embedding_base_url_host")
@@ -360,11 +351,7 @@ def check_fixture_fingerprint(
     baseline: dict[str, object],
     fixture_path: Path,
 ) -> None:
-    """门禁前置校验：基线必须与当前 golden set 内容指纹一致，否则拒绝比较。
-
-    指纹不符说明基线标注与当前 fixture 不同源，继续比较会产出静默无效的
-    回归结论；此时应改用配套 fixture 或显式生成新版本基线。
-    """
+    """基线与当前 golden set 指纹不一致时拒绝比较，否则回归结论无效。"""
     fingerprint = fixture_fingerprint(fixture_path)
     baseline_fixture = baseline.get("fixture")
     if not isinstance(baseline_fixture, dict):

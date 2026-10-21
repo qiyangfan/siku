@@ -1,12 +1,6 @@
-"""BYOK 端点 provider：openai 兼容 ``/embeddings`` 与 ``/rerank`` 通用形（httpx 直连）。
+"""通过 httpx 调用 OpenAI 兼容的 embeddings 和 rerank 接口。
 
-与 :class:`siku.graph.providers.HttpxLlmProvider` 同构（ADR-0005/0009）：不引入
-openai SDK，HTTP 层异常一律翻译为检索领域错误，禁止裸 httpx 异常穿透。
-
-凭证解析：显式 ``api_key`` 优先，其次 ``api_key_env`` 环境变量；本地自部署端点
-（Ollama 等）允许无凭证——此时不发送 Authorization 头，凭证错误由端点 401/403
-经错误映射回流为 :class:`~siku.retrieve.errors.ModelCredentialError`（与「未配置」
-分型，ADR-0009 报错可行动）。key 只进请求头，不进日志与异常消息。
+显式凭证优先于环境变量；本地端点可无凭证。HTTP 错误映射为检索领域错误。
 """
 
 from __future__ import annotations
@@ -23,15 +17,14 @@ from siku.retrieve.errors import ModelCredentialError, ProviderError
 
 logger = logging.getLogger(__name__)
 
-# openai 兼容端点批量 input 的保守上限（design.md 端点契约：每批 ≤64 条）
+# embedding 请求的分批大小。
 EMBED_BATCH_LIMIT = 64
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
-# 维度探针固定短文本：向量维度与文本内容无关，只要求端点可达且返回合法 embedding
+# 维度探针用固定短文本，只验证端点可达。
 _DIMENSION_PROBE_TEXT = "dimension probe"
 
-# 维度按 (base_url, model) 进程内缓存：API 检索服务每请求新建 provider，
-# 缓存避免对同一通道反复发起探针请求
+# 维度按 (base_url, model) 进程内缓存，避免每个 provider 重复探测。
 _dimension_cache: dict[tuple[str, str], int] = {}
 
 
@@ -48,13 +41,7 @@ def _auth_headers(api_key: str | None) -> dict[str, str]:
 
 
 def _endpoint_error(channel: str, response: httpx.Response) -> Exception:
-    """按 HTTP 状态映射领域错误：401/403 是凭证被拒，其余是端点调用失败。
-
-    `channel` 传稳定 token（`embedding`/`rerank`），既进结构化字段也用于英文
-    message 的首词。401/403 单独分型为 :class:`ModelCredentialError`：把「凭证
-    被拒」和「未配置」混在同一类里，文案层只会给出错误的指引（ADR-0009 要求
-    报错可行动）。响应体不回显，避免上游把 key 片段写进错误面。
-    """
+    """将 HTTP 错误映射为领域错误，并单独分型凭证拒绝。"""
     label = channel.capitalize()
     if response.status_code in (401, 403):
         return ModelCredentialError(
@@ -78,14 +65,7 @@ def _parse_json(response: httpx.Response, channel: str) -> Any:
 
 
 class ApiEmbeddingProvider:
-    """openai 兼容 ``POST {base_url}/embeddings`` 通道（Ollama /v1、vLLM、LiteLLM、
-    硅基流动、OpenAI 均适用）。
-
-    - 批量输入按 :data:`EMBED_BATCH_LIMIT` 分批，规避端点超长请求；
-    - ``dimensions`` 惰性解析：显式覆盖优先（``--embedding-dimensions``），否则用
-      单条探针请求实测并按通道进程内缓存；
-    - ``transport`` 仅供测试注入 MockTransport，生产路径保持默认。
-    """
+    """调用 OpenAI 兼容的 embeddings 接口；向量维度优先取显式值，否则探测并缓存。"""
 
     def __init__(
         self,
@@ -165,9 +145,7 @@ class ApiEmbeddingProvider:
                 json=payload,
             )
         except (httpx.HTTPError, httpx.InvalidURL, RuntimeError) as exc:
-            # 超时/断连/响应解码失败等全部 HTTP 层异常统一翻译，禁止裸穿透；
-            # InvalidURL（畸形 URL）与 RuntimeError（连接池被设置失效并发关闭）
-            # 不在 HTTPError 体系内，需显式纳入
+            # HTTP 层异常与 InvalidURL、关闭后的连接池一并翻译为 ProviderError。
             raise ProviderError(f"Embedding endpoint request failed: {exc}") from exc
         if response.status_code >= 400:
             raise _endpoint_error("embedding", response)
@@ -191,9 +169,7 @@ class ApiEmbeddingProvider:
             if not isinstance(vector, list) or not vector:
                 raise ProviderError("Embedding endpoint returned an empty or non-list embedding")
             index = row.get("index")
-            # openai 规范带 index 字段。显式 index 必须为非 bool 整数、在范围内且
-            # 不重复；缺失/非法类型按响应顺序兜底。显式与兜底不允许混排——部分行
-            # 带 index 时按位置兜底会静默错位，直接拒绝
+            # index 可缺失，按响应顺序兜底；显式与兜底混排会静默错位，直接拒绝。
             if isinstance(index, bool) or not isinstance(index, int):
                 fallback.append((position, vector))
                 continue
@@ -214,12 +190,7 @@ class ApiEmbeddingProvider:
 
 
 class ApiRerankerProvider:
-    """``POST {base_url}/rerank`` 通用形通道（Jina/Cohere/硅基流动/LiteLLM 同构）。
-
-    请求 ``{model, query, documents, top_n}``，响应 ``results[].{index,
-    relevance_score}``；分数按 index 对齐回原候选顺序，供 SearchService 做
-    等长分数序列排序。vLLM score API 等差异形不在适配范围（经 LiteLLM 代理统一）。
-    """
+    """调用通用 ``/rerank`` 接口，并按响应 index 将分数对齐到输入顺序。"""
 
     def __init__(
         self,
@@ -293,7 +264,7 @@ class ApiRerankerProvider:
                     f"Rerank endpoint returned a non-numeric score at index {index}"
                 )
             if index in seen:
-                # 重复 index 会 last-wins 静默丢分，必须拒绝（与 embedding 侧对称）
+                # 重复 index 会静默覆盖分数，必须拒绝。
                 raise ProviderError(f"Rerank endpoint returned a duplicate index: {index}")
             scores[index] = float(raw_score)
             seen.add(index)

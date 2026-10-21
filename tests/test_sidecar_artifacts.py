@@ -1,7 +1,6 @@
 """构建资源清单与产物检查的单元测试（ADR-0013）。
 
-不下载真实 pandoc：用魔数正确的微型假二进制覆盖架构核对与完整性校验逻辑；
-真实产物的端到端验证走 scripts/check_sidecar_artifacts.py 与干净环境冒烟。
+用微型假二进制覆盖架构核对与完整性校验；真实产物的端到端验证走构建脚本与冒烟。
 """
 
 from __future__ import annotations

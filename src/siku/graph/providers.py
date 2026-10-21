@@ -1,12 +1,7 @@
 """LLM provider 协议与 openai 兼容通道（httpx 直连，不引入 openai SDK）。
 
-BYO key：默认从 `SIKU_LLM_API_KEY` 读取（可 `--api-key-env` 覆盖变量名），
-默认端点为 DeepSeek（graphify + DeepSeek 已验证，ADR-0006）。
-key 校验惰性执行：全部抽取命中缓存时无需配置 key 也能重建图谱产物；
-一旦真正需要调用 LLM，缺失 key 抛 `LlmNotConfiguredError`，绝不静默降级。
-
-HTTP 层异常（五剧本：正常/超长/空返回/限流/断连）一律翻译为领域错误，
-禁止裸 httpx 异常穿透（ADR-0005）。
+BYO key 默认读 `SIKU_LLM_API_KEY`，校验延迟到真正调用：全部命中缓存时无需 key，
+需要调用而缺失时抛 `LlmNotConfiguredError`。HTTP 层异常统一翻译为领域错误（ADR-0005）。
 """
 
 from __future__ import annotations
@@ -35,14 +30,13 @@ DEFAULT_MODEL_ID = "deepseek-chat"
 DEFAULT_API_KEY_ENV = "SIKU_LLM_API_KEY"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
-# LLM 线协议枚举（跨语言契约 token；ADR-0012）。定义在 providers 层避免与
-# model_supply 循环导入，model_supply 转出复用
+# LLM 线协议枚举（跨语言契约 token，ADR-0012）；放在此层避免与 model_supply 循环导入。
 PROTOCOL_OPENAI_CHAT = "openai-chat"
 PROTOCOL_ANTHROPIC = "anthropic"
 PROTOCOL_OPENAI_RESPONSES = "openai-responses"
 LLM_PROTOCOLS = (PROTOCOL_OPENAI_CHAT, PROTOCOL_ANTHROPIC, PROTOCOL_OPENAI_RESPONSES)
 
-# anthropic 协议：版本头与其必填的补全上限（保守缺省；超长由超长剧本报错）
+# anthropic 协议固定版本头与补全上限。
 ANTHROPIC_VERSION_HEADER = "2023-06-01"
 DEFAULT_MAX_TOKENS = 8192
 
@@ -69,13 +63,11 @@ class LlmProvider(Protocol):
 
 
 class HttpxLlmProvider:
-    """多协议 LLM 通道（httpx 直连；openai-chat / anthropic / openai-responses）。
+    """多协议 LLM 通道（httpx 直连）。
 
-    协议差异收敛在 `_build_request` / `_extract_content` 两端（ADR-0012）：
-    端点路径、凭证头、system 位置与文本抽取按协议分发，幂等语义三协议一致
-    （temperature=0、非流式）。`api_key` 显式传入时直接使用（测试注入）；否则按
-    `api_key_env` 在每次调用时惰性解析，保证"全部命中缓存则无需 key"的重建路径。
-    `transport` 仅供测试注入 MockTransport，生产路径保持默认。
+    协议差异收敛在 `_build_request` / `_extract_content`，三个协议都用 temperature=0
+    且非流式。`api_key` 显式传入时直接使用，否则按 `api_key_env` 在调用时惰性读取；
+    `transport` 仅供测试注入。
     """
 
     def __init__(
@@ -99,7 +91,6 @@ class HttpxLlmProvider:
         self._protocol = protocol
         # Client 构造不发起连接，保持"调用时才需要 key/网络"的惰性语义
         self._client = httpx.Client(timeout=timeout_seconds, transport=transport)
-        # 协议身份字段用实例属性
         self.model_id: str = model_id
 
     def complete(self, system: str, user: str) -> str:
@@ -112,9 +103,7 @@ class HttpxLlmProvider:
                 json=payload,
             )
         except (httpx.HTTPError, httpx.InvalidURL, RuntimeError) as exc:
-            # 超时/断连/响应解码失败等全部 HTTP 层异常统一翻译，禁止裸穿透；
-            # InvalidURL（畸形 URL）与 RuntimeError（连接池被关闭后在途调用）
-            # 不在 HTTPError 体系内，需显式纳入
+            # HTTP 层异常与 InvalidURL、关闭后的连接池错误统一归一，禁止裸穿透。
             raise LlmConnectionError(f"LLM request failed: {exc}") from exc
         return self._interpret(response)
 
@@ -132,7 +121,7 @@ class HttpxLlmProvider:
                 {
                     "model": self.model_id,
                     "system": system,
-                    # 协议必填；保守缺省，超长输入由超长剧本报可读错误
+                    # 协议必填字段，超长输入由超长错误处理。
                     "max_tokens": DEFAULT_MAX_TOKENS,
                     "messages": [{"role": "user", "content": user}],
                     "temperature": 0,
@@ -186,8 +175,7 @@ class HttpxLlmProvider:
             raise LlmRateLimitError("LLM service rate limited the request (HTTP 429)")
         body = response.text
         if response.status_code >= 400:
-            # 401/403 先分型：凭证被拒的出路是「核对 key 与端点是否成套」，
-            # 与响应体不可解析/服务端错误不同；不回显上游错误体（可能含凭证片段）
+            # 401/403 单独分型；上游错误体可能含凭证片段，不回显。
             if response.status_code in (401, 403):
                 logger.debug(
                     "llm endpoint rejected credentials: status=%d base_url_host=%s model=%s",

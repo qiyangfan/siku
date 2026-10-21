@@ -1,5 +1,5 @@
-# Phase 5 无签名发布流水线：版本 tag 触发，三平台构建 Tauri 安装产物并上传 Release，
-# 再生成 Homebrew Cask。失败不发布：Release 只在全部平台构建成功后创建。
+# 版本 tag 触发三平台 Tauri 安装包构建与 Release 上传，随后生成 Homebrew Cask。
+# 全部平台构建成功后才创建 Release。
 #
 # 前置条件（一次性，仓库外动作）：
 # - 公开空仓库 qiyangfan/homebrew-tap（可用 env HOMEBREW_TAP_REPO 覆盖）
@@ -91,8 +91,7 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
             libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
-      # BYOK 瘦身后 sidecar 仅数百 MB；保留磁盘回收作为 runner 保险措施
-      # （历史：模型快照 + torch venv 时代合计 ~30GB，曾致构建中途磁盘耗尽）
+      # 回收 runner 磁盘空间，避免构建过程空间不足
       - name: 释放 runner 磁盘空间
         if: runner.os == 'Linux'
         run: |

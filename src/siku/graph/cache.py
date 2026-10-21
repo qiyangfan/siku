@@ -1,9 +1,7 @@
-"""LLM 抽取缓存：SQLite（WAL）持久层，幂等重建闸门的存储基础。
+"""LLM 抽取缓存：SQLite（WAL）持久层，支撑幂等重建。
 
-缓存键 = sha256(chunk_hash + extractor_id + model_id + prompt_version)：
-源与配置未变 → 命中缓存零次 LLM 调用；换模型或 prompt 版本 → 键变化显式重抽。
-同库内以命名空间隔离抽取缓存与社区摘要缓存（摘要键含独立 prompt 版本）。
-SQL 全部参数化（`?` 占位），禁止字符串拼接。
+缓存键含 chunk_id、extractor_id、model_id 与 prompt_version；源或配置变化即换键重抽。
+抽取缓存与社区摘要缓存按命名空间隔离。SQL 全部参数化。
 """
 
 from __future__ import annotations
@@ -22,7 +20,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 NAMESPACE_EXTRACTION = "extraction"
 NAMESPACE_SUMMARY = "summary"
-# 上次成功构建的抽取器身份：自动维护的资格闸门据此比对（design D3）
+# 最近一次成功构建的抽取器身份，供自动维护检查配置是否匹配。
 GRAPH_IDENTITY_KEY = "graph_build_identity"
 GRAPH_IDENTITY_FIELDS = ("extractor_id", "model_id", "prompt_version")
 
@@ -59,11 +57,7 @@ def extraction_cache_key(
     model_id: str,
     prompt_version: str,
 ) -> str:
-    """一个 chunk 的抽取缓存键（design.md 规定的四元组）。
-
-    `chunk_key` 传入 chunk_id：其派生（derive_chunk_id）已内嵌 source/anchor/
-    ordinal/正文，作为"源未变"的判定等价且更强——正文或结构任一变化即换键重抽。
-    """
+    """一个 chunk 的抽取缓存键；chunk_id 已内嵌源与正文指纹，内容变化即换键。"""
     return build_cache_key(chunk_key, extractor_id, model_id, prompt_version)
 
 
@@ -75,8 +69,7 @@ class ExtractionCache:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            # 数据目录被文件占位/父目录只读：与 wiki 命令同场景对齐，
-            # 归一为领域错误给中文重建指引，不裸抛 FileExistsError
+            # 数据目录被文件占位或不可写时归一为领域错误，不裸抛 FileExistsError。
             raise GraphStoreCorruptError(
                 f"Cannot create graph data directory {path.parent}: {exc}; "
                 "check filesystem permissions or remove the blocking file"
@@ -93,8 +86,7 @@ class ExtractionCache:
             )
             connection.commit()
         except sqlite3.Error as exc:
-            # 文件级损坏（垃圾字节/非 SQLite 文件/连接失败）归一为领域错误：
-            # 缓存是派生物，删除 data/graph 后即可全量重建
+            # 缓存是派生物；文件损坏时归一为领域错误，删除 data/graph 即可重建。
             if connection is not None:
                 connection.close()
             raise GraphStoreCorruptError(

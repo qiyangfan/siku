@@ -1,8 +1,7 @@
-"""Phase 3 幂等闸门测试（自动化证据，design.md《抽取缓存与幂等》）。
+"""图谱幂等与全量重建测试。
 
-闸门一：同语料 + 同抽取配置，第二次构建 LLM 调用次数为 0，统计与首轮一致；
-闸门二：删除 parquet 本体与 wiki 产物后全量重建，产物字节级 diff 为空。
-任何一次多余的 LLM 调用都会因剧本耗尽直接失败，无法静默通过。
+同语料同配置的第二次构建零 LLM 调用、统计一致；删除产物后全量重建，产物字节级
+diff 为空。多余调用会因剧本耗尽直接失败。
 """
 
 from __future__ import annotations
@@ -202,10 +201,9 @@ def snapshot_graph_artifacts(data_dir: Path) -> dict[str, bytes]:
 
 class TestAutoRefreshMatchesExplicit:
     def test_auto_refresh_artifacts_match_explicit_update(self, tmp_path: Path) -> None:
-        """自动增量刷新与显式更新的图谱产物 diff 为空（spec：自动与显式产物一致）。
+        """自动增量刷新与显式更新的图谱产物必须逐字节一致。
 
-        自动路径不得引入独立的增量算法：与显式更新同一 build_graph 入口、
-        同一缓存、同一确定性合并与社区发现。
+        自动路径复用同一 build_graph 入口、缓存与确定性合并。
         """
         write_corpus(tmp_path)
         build_all(tmp_path)  # 首轮显式构建（A+B，4 次抽取）

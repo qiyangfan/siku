@@ -180,8 +180,7 @@ class TestSummaryCache:
         assert result.llm_calls == 0
 
     def test_index_links_are_short_titles_without_entry_body(self, tmp_path: Path) -> None:
-        # 回归锚点：总目 index 的链接文本必须是短标题单行 bullet，
-        # 绝不嵌入条目正文（此前曾把整篇条目塞进链接导致 Markdown 断裂）
+        # 总目链接只包含短标题，不嵌入条目正文，避免生成无效 Markdown。
         _write_note(tmp_path / VAULT)
         build_graph(tmp_path / VAULT, tmp_path / "data", FakeGraphExtractor(respond=_respond))
         generate_wiki(tmp_path / "data", CommunitySummarizerForTest(script=["摘要一", "摘要二"]))
@@ -196,7 +195,7 @@ class TestSummaryCache:
         assert "## 摘要" in entry
 
     def test_summary_lands_under_parquet_stored_key(self, tmp_path: Path) -> None:
-        # 跨阶段同源断言（真实链路）：build_graph 计算并写入 parquet 的键，
+        # 检查 build_graph 写入 parquet 的键，
         # wiki 阶段必须以同一个键写缓存——缓存条目落在 parquet 存储键之下
         _write_note(tmp_path / VAULT)
         build_graph(tmp_path / VAULT, tmp_path / "data", FakeGraphExtractor(respond=_respond))

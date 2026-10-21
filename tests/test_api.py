@@ -337,11 +337,7 @@ def test_ask_model_not_available_maps_to_settings_guidance(tmp_path: Path) -> No
 def test_ask_env_layer_protocol_violation_maps_to_invalid_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """env 层协议越界在问答端点保持 503 invalid_settings（change
-    fix-supply-protocol-dead-end：读面转数据，请求面归一零漂移）。
-
-    不注入 fake 工厂：answer provider 走真实分层解析才能触达同一故障。
-    """
+    """环境变量中的非法协议值在问答端点映射为 503 invalid_settings。"""
     monkeypatch.setattr(
         "siku.model_supply.config_file_path", lambda: tmp_path / "nonexistent" / "config.toml"
     )
@@ -514,8 +510,7 @@ def _cli_message(error: Exception) -> str:
 
 
 class TestDualSurfaceErrorCopy:
-    """双面文案（change fix-model-supply-error-surfacing 决议 #2）：同一映射来源，
-    按调用面分别成文——HTTP 面禁现配置文件路径与命令行参数教程，CLI 面零漂移。"""
+    """同一错误映射按调用面生成指引：HTTP 面不显示配置文件路径或 CLI 参数。"""
 
     _CLI_ONLY_MARKERS = ("config.toml", "--embedding-base-url", "--rerank-base-url")
 
@@ -561,10 +556,7 @@ class TestDualSurfaceErrorCopy:
         assert "config.toml" in message
 
     def test_invalid_file_value_detail_names_the_field(self) -> None:
-        """文件层非法取值的文案必须指到字段与合法名单：否则用户不知道到底哪一行要改。
-
-        detail 由服务端自撰，只给字段名与允许值，不回显用户原值（与凭证不回显同一纪律）。
-        """
+        """文件层非法取值的文案要点名字段与合法值。"""
         error = ModelConfigFileError(
             "Model supply config file has an invalid value",
             "其中 [llm] protocol 取值不在允许范围，仅支持 " + " / ".join(LLM_PROTOCOLS),
@@ -576,13 +568,7 @@ class TestDualSurfaceErrorCopy:
         assert map_domain_error(error, api_key_env="K", surface="http").status_code == 503
 
     def test_illegal_protocol_copy_names_only_levers_that_carry_it(self) -> None:
-        """运行期协议越界：三面同码，文案各点自己那张面真实存在的杠杆。
-
-        `--llm-protocol` 是枚举参数（非法值 exit 2 进不来），embedding/rerank 的环境变量层
-        没有 protocol 字段——所以 HTTP 面不出现命令行参数教程，CLI 面不出现「设置」页；
-        llm 枚举越界时两面都点的杠杆只有 `SIKU_LLM_PROTOCOL`，通道不支持 protocol 时则是
-        「程序传入的通道配置」。
-        """
+        """协议越界时，各面文案只提该面真实存在的配置来源。"""
         error = ProtocolConfigError("internal english", "llm_enum")
         http = _http_message(error)
         cli = _cli_message(error)
@@ -590,7 +576,7 @@ class TestDualSurfaceErrorCopy:
         assert map_domain_error(error, api_key_env="K", surface="http").status_code == 503
         assert "SIKU_LLM_PROTOCOL" in http
         assert "SIKU_LLM_PROTOCOL" in cli
-        # 双面红线：CLI 参数教程不出现在 HTTP 面，「设置」页不出现在 CLI 面
+        # HTTP 面不出现 CLI 参数教程，CLI 面不出现设置页。
         assert "--llm-protocol" not in http
         assert "config.toml" not in http
         assert "「设置」页" not in cli

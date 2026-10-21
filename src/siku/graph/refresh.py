@@ -1,9 +1,8 @@
 """图谱自动维护策略：内容变更收尾后按开关增量刷新**已存在**的图谱。
 
-授权模型（design D1）：自动 = 维护已存在快照。快照不存在、抽取身份变更、
-LLM 通道不可用 → 一律跳过并给出可执行原因；SHALL NOT 自动创建图谱、
-SHALL NOT 自动全量重抽、SHALL NOT 自动重建已失效快照。执行体与显式更新
-同一入口（`build_graph` 非 rebuild），产物与显式一致（diff 为空闸门不稀释）。
+自动路径只维护已存在且身份匹配的图谱。缺少快照、抽取身份变化或 LLM 不可用时，
+跳过并说明原因；不会自动创建图谱、全量重抽或重建失效快照。自动和显式构建共用
+``build_graph`` 入口。
 """
 
 from __future__ import annotations
@@ -26,11 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 def llm_extractor_factory(llm_supply: ChannelValues | None = None) -> Callable[[], GraphExtractor]:
-    """按分层配置现解析 LLM 通道的抽取器工厂（serve 任务收尾与 CLI 共用）。
-
-    每次调用现解析：设置中心/env 写入后免重启生效。返回的抽取器由调用方
-    负责关闭（`maybe_refresh_graph` 的 finally 已收尾）。
-    """
+    """按分层配置现解析 LLM 通道；返回的抽取器由调用方关闭。"""
 
     def factory() -> GraphExtractor:
         channel = resolve_llm_channel(llm_supply)
@@ -89,9 +84,8 @@ def maybe_refresh_graph(
 ) -> GraphRefreshOutcome:
     """按开关与前提决定是否自动增量刷新图谱。
 
-    决策顺序固定：开关 → 快照存在 → 通道可解析 → 身份一致 → 执行。任一前置
-    不满足即跳过；抽取执行期的异常由调用方（任务收尾）兜底为失败通知，
-    不改变内容变更任务的成功终态（spec：刷新失败不改变任务终态）。
+    决策顺序：开关 → 快照存在 → 通道可解析 → 身份一致 → 执行。任一前提不满足即跳过；
+    执行期异常由调用方兜底为通知，不改变内容变更任务的终态。
     """
     if not auto_refresh_enabled:
         return GraphRefreshOutcome(refreshed=False, code="disabled")
@@ -110,7 +104,7 @@ def maybe_refresh_graph(
     try:
         recorded = read_build_identity(data_dir)
         if recorded is None:
-            # 升级路径：快照在但无身份记录（本版本之前的构建）——无法验证身份，
+            # 旧快照没有身份记录时无法验证配置，
             # 跳过并指引一次显式更新来启用自动维护
             return GraphRefreshOutcome(
                 refreshed=False,
@@ -149,11 +143,7 @@ def maybe_refresh_graph(
 
 
 def full_reextract_warning(vault: Path, data_dir: Path, extractor: GraphExtractor) -> str | None:
-    """显式构建前的身份变更预告：将全量重抽时返回中文告警，否则 None。
-
-    身份记录缺失（首次构建/缓存被清）不预告：那是显式首建的固有成本；
-    危险的是换模型后的**静默**全量重抽——旧身份存在且与当前不一致即预告。
-    """
+    """显式构建将全量重抽时返回告警；身份记录缺失不预告。"""
     recorded = read_build_identity(data_dir)
     if recorded is None or identity_matches(recorded, extractor):
         return None

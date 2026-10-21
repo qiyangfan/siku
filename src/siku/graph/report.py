@@ -1,4 +1,4 @@
-"""体检报告：图谱量级与缓存命中的门禁证据（Phase 3 闸门材料）。
+"""体检报告：图谱量级与缓存命中情况。
 
 报告只承载稳定字段与告警码，不包含时间戳等非稳定内容；
 环境元数据（模型/prompt 版本）只进报告，不进图谱产物。
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# design.md：图规模超过 10⁵ 边属 ADR-0003 复核信号
+# ADR-0003 的复核阈值：图谱超过 10⁵ 条边时评估存储结构。
 SCALE_WARN_EDGES = 100_000
 
 

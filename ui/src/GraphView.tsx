@@ -93,8 +93,7 @@ export function GraphView({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [building, setBuilding] = useState(false);
   const [buildNote, setBuildNote] = useState<string | null>(null);
-  // 各异步操作独立序号防竞态：慢响应不得覆盖同类新操作；
-  // 跨操作不共用序号，避免被否决方的 loading 旗标永久卡死
+  // 各异步操作独立序号：慢响应不得覆盖新操作，也避免 loading 旗标互相卡死。
   const loadSeqRef = useRef(0);
   const searchSeqRef = useRef(0);
   const expandSeqRef = useRef(0);
@@ -206,8 +205,7 @@ export function GraphView({
       if (seq !== buildSeqRef.current) {
         return;
       }
-      // 空语料同样落空产物（内核 save_graph 无条件执行），必须照常刷新：
-      // 早退会让已建态残留旧画布，与磁盘产物不一致
+      // 空语料也会落空产物，必须照常刷新，否则旧画布与磁盘不一致。
       const warningSuffix =
         report.warnings.length > 0 ? `，${report.warnings.length} 条告警` : "";
       setBuildNote(

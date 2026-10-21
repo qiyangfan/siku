@@ -1,13 +1,8 @@
-"""手动资料移除的编排与同库写入口的统一前置（change remove-manual-library-document）。
+"""手动资料移除的编排与同库写入口的统一前置。
 
-三个职责：
-
-1. ``ensure_library_writable``：同库写入口（持锁后）的统一前置——先完成或
-   明确失败于中断的已确认消减发布，再放行普通写入。普通构建不会误删可恢复
-   暂存对，无消减标记的崩溃残片按既有口径清理。
-2. 快照失效：移除成功收尾中使旧可读图谱/Wiki 失效，保留可复用抽取缓存，
-   不调用模型。
-3. ``SyncService.run_removal`` 的完整收尾管线与清单资格判定错误类型。
+``ensure_library_writable`` 先完成或明确失败于中断的移除索引消减，再放行写入。
+移除成功时使旧图谱/Wiki 快照失效，保留抽取缓存且不调用模型。其他职责是移除资格
+判定、错误类型与移除标记常量。
 """
 
 from __future__ import annotations
@@ -48,13 +43,9 @@ def user_removed_ids(registry: SyncRegistry) -> set[str]:
 
 
 def ensure_library_writable(data_dir: Path, registry: SyncRegistry) -> None:
-    """同库写入口的第一步（须在持有写锁时调用）。
+    """同库写入口的第一步（须持锁）：有移除标记时完成中断的索引消减。
 
-    有已确认消减标记且存在可配对暂存产物 → 完成确定的向前发布；产物存在但
-    不能配对且确有消减标记 → 明确失败（不盲删、不误判为旧索引损坏）。无消减
-    标记时，任何暂存残片都是普通构建/消减中途中断留下的崩溃残片——直接清理
-    放行（幂等），不得让缺 commit 标记的半成品砖化包括 ``siku index --rebuild``
-    在内的全部写入口。
+    无移除标记时，暂存残片视为崩溃残留直接清理，避免半成品卡住所有写入口。
     """
     pending = user_removed_ids(registry)
     if not pending:
@@ -67,12 +58,7 @@ def ensure_library_writable(data_dir: Path, registry: SyncRegistry) -> None:
 
 
 def invalidate_derived_snapshots(data_dir: Path) -> None:
-    """使旧可读图谱与 Wiki 快照失效；保留 graph/cache.sqlite3 抽取/摘要缓存。
-
-    读取面沿既有「未构建」语义给出重建提示；不自动调用模型重建。缓存只在
-    后续显式重建时按当前事实层存在的 chunk 键复用（键含 note_path/source_hash，
-    已移除资料不会复活）。
-    """
+    """删除旧图谱与 Wiki 快照，保留抽取/摘要缓存；读取面按未构建提示重建。"""
     for path in graph_file_paths(data_dir):
         path.unlink(missing_ok=True)
     wiki_dir = wiki_dir_path(data_dir)

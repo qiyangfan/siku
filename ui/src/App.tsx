@@ -61,7 +61,7 @@ const MOBILE_MORE_NAV: Array<{ name: ViewName; label: string }> = [
   { name: "settings", label: "设置" },
 ];
 
-// ask_readiness.missing 的稳定 token → 中文说明（展示层职责，内核只出机器 token）
+// missing token 的中文说明；内核只出机器 token。
 const MISSING_LABELS: Record<string, string> = {
   "llm.api_key": "LLM 通道的 API key",
   "embedding.base_url": "embedding 通道的 base_url",
@@ -73,9 +73,7 @@ function describeMissing(missing: string[]): string {
   return `还差：${parts.join("、")}。`;
 }
 
-// 就绪字段缺失或形状非法（旧内核、代理改写）一律按「不可得」处理：fail-open。
-// ready=false 但 missing 为空属后端不应产生的矛盾形状，同样按不可得对待，
-// 避免置灰后展示「还差：。」的空指引。
+// 就绪字段缺失或形状非法时按「不可得」处理：不置灰，避免展示空指引。
 function normalizeReadiness(value: unknown): AskReadiness | null {
   if (typeof value !== "object" || value === null) {
     return null;
@@ -117,9 +115,9 @@ function App() {
   const [localError, setLocalError] = useState<string | null>(null);
   const [focusQuestion, setFocusQuestion] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  // 问答请求序号：实体联动预填时递增，使在途旧回答作废（防旧答案挂新问题下）
+  // 问答请求序号；递增可作废在途旧回答。
   const askSeqRef = useRef(0);
-  // 知识纪元：资料库移除等使派生知识失效的操作递增，触发建议等派生缓存重取
+  // 资料库移除等操作后递增，触发派生缓存重取。
   const [knowledgeEpoch, setKnowledgeEpoch] = useState(0);
   const handleKnowledgeInvalidated = useCallback(() => {
     setKnowledgeEpoch((epoch) => epoch + 1);
@@ -148,9 +146,7 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  // 就绪判定在内核（ask_readiness），问答视图可见时拉取：覆盖初次进入与
-  // 从设置页/手工编辑 config.toml 回到问答的场景。获取失败置 null → fail-open
-  // 不置灰，保留提交后错误提示的既有兜底路径。
+  // 问答视图可见时拉取就绪状态；失败置 null，不阻塞提交。
   const refreshReadiness = useCallback(async () => {
     try {
       const settings = await getSettings();
@@ -248,8 +244,7 @@ function App() {
 
   const prefillQuestion = useCallback((nextQuestion: string) => {
     setQuestion(nextQuestion);
-    // 预填新问题必须清掉上一轮答案与状态：旧回答卡挂在下方会被误读为新问题的答案；
-    // 递增序号使在途旧回答的响应作废，防止其迟到后挂在新问题下
+    // 预填新问题先清旧答案；递增序号作废在途回答。
     askSeqRef.current += 1;
     setAnswer(null);
     setAskState("idle");
@@ -267,7 +262,7 @@ function App() {
   // 未就绪门控：置灰提交 + 引导卡片；readiness 为 null（加载中/获取失败）不阻塞
   const askBlocked = readiness !== null && !readiness.ready;
   const moreView = MOBILE_MORE_NAV.some((item) => item.name === view);
-  // 移动端可见集 = 全量导航去掉走 ⋮ 菜单的项：增删视图只改两张表，不会静默错位
+  // 移动端可见集 = 全量导航去掉 ⋮ 菜单项。
   const mobileNavItems = NAV_ITEMS.filter(
     (item) => !MOBILE_MORE_NAV.some((more) => more.name === item.name),
   );

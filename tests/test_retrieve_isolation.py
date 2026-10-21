@@ -1,10 +1,7 @@
-"""依赖隔离测试：核心安装不得在 import 时触碰 torch 系重依赖（架构红线 #4）。
+"""依赖隔离测试：核心安装不得在 import 时触碰 torch 系重依赖。
 
-ADR-0009 后模型经 BYOK 端点供给，内核不含任何模型运行时；lancedb 升为核心
-依赖（ADR-0003 三件套），不再列入拦截名单。本测试在子进程内用 meta-path
-拦截器把 torch 系导入变成 ImportError，模拟"只装核心依赖"的环境，断言
-CLI、检索领域层与模型供给配置层都能完整导入。
-Phase 3 起 pyarrow 属核心依赖，不列入拦截名单。
+子进程内用 meta-path 拦截器把 torch 系导入变成 ImportError，断言 CLI、检索领域层与
+模型供给配置层都能完整导入。lancedb 与 pyarrow 是核心依赖，不在拦截名单。
 """
 
 from __future__ import annotations

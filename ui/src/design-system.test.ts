@@ -196,8 +196,7 @@ describe("暗色取值对比度守卫", () => {
   });
 
   it("暗 wash 上的文字 ≥4.5:1；红族钉 3 阶，4 阶不达标的差异用断言钉住", () => {
-    // 逐族标定（design D3）：红族 wash 文字必须 3 阶，4 阶只有 3.84:1——
-    // 钉住该差异，防止后来者按「一个阶位通吃四族」简化回 4 阶
+    // 红色浅底上的文字使用第 3 阶；第 4 阶对比度只有 3.84:1。
     expect(dark["--color-danger"]).toBe(red[3]);
     expect(dark["--color-danger-wash"]).toBe(red[9]);
     expect(contrastRatio(dark["--color-danger"], dark["--color-danger-wash"])).toBeGreaterThanOrEqual(4.5);

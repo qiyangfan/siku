@@ -1,9 +1,4 @@
-//! siku 桌面壳（Tauri 2）。
-//!
-//! 本 crate 是进程与窗口适配层，不是第二个应用内核（ADR-0001）：Rust 只负责
-//! 选择 loopback 端口、启动/回收 Python sidecar、轮询 `GET /api/health` 并在
-//! 健康检查通过后把窗口导航到 sidecar 同源提供的问答 UI。问题、答案、引用、
-//! 索引状态与错误全部由既有 HTTP API 提供，前端与 Rust 均不得绕过。
+//! Tauri 桌面壳负责窗口、sidecar 生命周期和健康检查；业务请求经 loopback HTTP API 处理。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -17,17 +12,17 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{Emitter, Manager, WindowEvent};
 
-/// 健康检查总超时：覆盖 PyInstaller 目录自解压与 FastAPI 冷启动，首次启动留足余量
+/// 健康检查总超时；覆盖首次启动的自解压与冷启动。
 const HEALTH_TIMEOUT_SECS: u64 = 60;
-/// 单次 HTTP 探测超时与轮询间隔
+/// 单次探测超时与轮询间隔。
 const HEALTH_REQUEST_TIMEOUT_SECS: u64 = 2;
 const HEALTH_POLL_INTERVAL_MS: u64 = 250;
-/// 运行期间的健康检查间隔与故障阈值，短暂抖动不触发恢复页
+/// 运行期检查间隔与故障阈值；短暂抖动不触发恢复页。
 const MONITOR_INTERVAL_SECS: u64 = 2;
 const HEALTH_FAILURE_LIMIT: u8 = 5;
 /// 优雅退出等待窗口：stdin EOF + SIGTERM 后给 uvicorn 的收尾时间
 const GRACEFUL_SHUTDOWN_SECS: u64 = 8;
-/// 冻结决议 #3：平台应用数据目录下的 `siku/` 子目录
+/// 平台应用数据目录下的 `siku/` 子目录。
 const DATA_ROOT_DIR: &str = "siku";
 /// Rust → 壳状态页的启动事件名
 const STARTUP_EVENT: &str = "siku-startup";
@@ -41,8 +36,7 @@ enum StartupEvent {
     Failed { message: String },
 }
 
-/// 运行中的 sidecar 进程；stdin 句柄必须保活——关闭它即是给 `--watch-stdin`
-/// sidecar 的第一个优雅退出信号
+/// 运行中的 sidecar 进程；关闭 `_stdin` 即向 sidecar 发出优雅退出信号。
 struct SidecarProcess {
     generation: u64,
     child: Child,
@@ -51,7 +45,7 @@ struct SidecarProcess {
     _job: std::os::windows::io::OwnedHandle,
 }
 
-/// 启动代际与 sidecar 句柄必须在同一把锁下更新，避免过期启动覆盖新进程。
+/// 启动代际与 sidecar 句柄同锁更新，避免过期启动覆盖新进程。
 #[derive(Default)]
 struct SidecarRegistry {
     generation: u64,
@@ -208,7 +202,7 @@ impl Default for SidecarState {
 
 fn main() {
     tauri::Builder::default()
-        // 单实例隔离（冻结决议：重复启动不得遗留孤儿进程或端口争用）
+        // 重复启动不得遗留孤儿进程或争用端口。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_focus();
@@ -267,16 +261,16 @@ fn main() {
 }
 
 fn ensure_data_dirs(app: &tauri::AppHandle) {
-    // 数据目录不可用属极端平台异常：不 panic，留待 run_startup 走失败页
+    // 数据目录不可用时不 panic，留给启动流程走失败页。
     if let Some(root) = data_root() {
         for subdir in ["vault", "data"] {
             let _ = std::fs::create_dir_all(root.join(subdir));
         }
     }
-    let _ = app; // 目录布局与窗口无关；预留 AppHandle 以便未来在此注入更多初始化
+    let _ = app; // 目录布局与窗口无关；保留参数供后续初始化
 }
 
-/// 平台应用数据目录下的 siku 根目录（冻结决议 #3，不依赖当前工作目录）
+/// 平台应用数据目录下的 siku 根目录，不依赖当前工作目录。
 fn data_root() -> Option<PathBuf> {
     dirs::data_dir().map(|dir| dir.join(DATA_ROOT_DIR))
 }
@@ -314,7 +308,7 @@ fn resolve_sidecar(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String>
     ))
 }
 
-/// 选择未占用的 loopback 端口；极少数绑定失败场景返回 Err 走失败页而非 panic
+/// 选择未占用的 loopback 端口；绑定失败返回 Err 走失败页。
 fn pick_free_loopback_port() -> Result<u16, String> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|_| "unable to bind an ephemeral loopback port".to_string())?;
@@ -324,10 +318,10 @@ fn pick_free_loopback_port() -> Result<u16, String> {
         .map_err(|_| "bound listener has no local address".to_string())
 }
 
-/// 每次应用进程启动首轮 truncate 日志，同会话内的重试改为追加，保留失败现场
+/// 首次启动截断日志，同会话内的重试改为追加，保留失败现场。
 static LOG_TRUNCATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// 以独立进程组启动 sidecar：关闭时按组回收，杜绝 PyInstaller 引导层的孤儿子进程
+/// 以独立进程组启动 sidecar，关闭时按组回收。
 fn spawn_sidecar(
     sidecar_exe: &PathBuf,
     ui_dir: &PathBuf,
@@ -538,7 +532,7 @@ fn emit_startup_event(app: &tauri::AppHandle, generation: u64, event: StartupEve
     true
 }
 
-/// 仅在代际仍有效时回收之前启动的 sidecar。
+/// 仅回收仍登记在有效启动代际中的 sidecar。
 fn stop_previous_sidecar(app: &tauri::AppHandle, generation: u64) -> bool {
     let process = {
         let state = app.state::<SidecarState>();
@@ -791,8 +785,7 @@ fn run_startup(app: tauri::AppHandle, generation: u64, shell_page_url: String) {
             }
             return;
         }
-        // 身份缓解：要求响应体是 siku 健康形状（{"status":"ok",...}）而非任意 200，
-        // 降低把临时占用端口的其他本地服务误认为 siku 服务的风险
+        // 要求响应体是 siku 健康形状（{"status":"ok",...}），避免把占用端口的其他服务当成 siku。
         let healthy = health_is_ok(&agent, &health_url);
         if healthy {
             if !emit(StartupEvent::Succeeded { url: app_url }) {
@@ -952,7 +945,7 @@ mod tests {
     #[test]
     fn pick_free_loopback_port_returns_valid_ports() {
         // 释放后的端口是否可立即重绑属 OS 调度行为（可能被其他进程抢占），
-        // 不做脆断言；真实的“释放→sidecar 立即绑定”链路由安装后冒烟覆盖
+        // 不做脆断言；端口释放后 sidecar 立即绑定由安装后冒烟检查。
         let first = pick_free_loopback_port().expect("ephemeral port available");
         let second = pick_free_loopback_port().expect("ephemeral port available");
         assert!(first > 0);

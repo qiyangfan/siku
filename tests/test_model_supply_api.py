@@ -1,8 +1,6 @@
-"""serve 默认装配链路测试：create_app 无注入工厂时的 BYOK 供给行为。
+"""serve 默认供给装配测试：create_app 无注入工厂时的 BYOK 行为。
 
-覆盖独立评审 P1-2：默认 `_supply_search_factory` 走真实分层解析与 provider
-装配（fake 只替换 provider 构造点），含未配置指引、装配缓存（连接池不按请求
-泄漏，对应 P1-1）与 reranker=none 自动路径。
+默认走真实分层解析与 provider 装配，覆盖未配置指引、装配缓存与 reranker=none 路径。
 """
 
 from __future__ import annotations
@@ -83,12 +81,7 @@ def supply_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _RecordingFak
 def test_unconfigured_embedding_returns_actionable_guidance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """未配置 embedding：默认工厂给出可行动指引，不静默降级。
-
-    HTTP 面文案按调用面成文（change fix-model-supply-error-surfacing 决议 #2）：
-    localhost API 的消费者是桌面/WebUI，没有命令行语境，指引必须指向「设置」页，
-    而不是 config.toml 路径与 CLI 参数教程。
-    """
+    """未配置 embedding 时默认工厂给出指向设置页的指引，不静默降级。"""
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
@@ -108,7 +101,7 @@ def test_unconfigured_embedding_returns_actionable_guidance(
 def test_default_factory_builds_service_from_supply(
     supply_env: _RecordingFakes, tmp_path: Path
 ) -> None:
-    """默认工厂按供给配置装配 provider：检索全链路（真实索引存储 + fake 端点）。"""
+    """默认工厂按供给配置装配 provider，并使用真实索引和 fake 端点。"""
     client = TestClient(create_app(data_dir=tmp_path / "data", embedding_supply=_SUPPLY))
     response = client.post("/api/search", json={"query": "知识图谱"})
     assert response.status_code == 200
@@ -122,7 +115,7 @@ def test_default_factory_builds_service_from_supply(
 def test_default_factory_is_cached_across_requests(
     supply_env: _RecordingFakes, tmp_path: Path
 ) -> None:
-    """装配缓存回归（P1-1）：provider 只构造一次，连接池不按请求重建。"""
+    """多次请求复用 provider，避免重复创建连接池。"""
     client = TestClient(
         create_app(
             data_dir=tmp_path / "data",

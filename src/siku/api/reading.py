@@ -1,17 +1,7 @@
-"""浏览/图谱/wiki 三个只读视图的读取面：纯派生查询，绝不写回任何产物。
+"""浏览、图谱与 wiki 的只读读取面：只查询既有产物，不写回、不触发生成。
 
-全部输入来自既有事实源（`vault/notes/` 投影、图谱 parquet 三件表、
-`data/wiki/entries/` 条目），读取路径不触碰任何生成器（红线 3：只读边界）。
-
-读取面错误语义边界（归一化映射见 messages.map_read_error）：
-- **整库级损坏**（派生存储整体不可读，如图谱 parquet 损坏）→ 409 状态前置
-  `graph_store_corrupt`：全部读取均不可用，唯一出路是整库重建；
-- **单条目级损坏**（一条投影/条目不可读，其余可用）→ 422 源数据不可处理
-  （`note_parse_error` / `wiki_entry_parse_error`）：按条目粒度恢复；
-- **清单面降级**：清单是浏览入口，单条损坏（含权限等 OSError）跳过并日志
-  留痕，不拖垮其余条目，不落 500。精确错误在单条读取且身份可知时呈现——
-  wiki 条目按编号寻址，读失败 → 422；notes 损坏投影的 frontmatter 不可解析、
-  身份不可知，单篇读取按 404 不存在处理。
+错误语义：整库损坏映射为 409，单条目损坏映射为 422；清单遇到单条损坏时跳过并
+记日志，不拖垮其余条目。
 """
 
 from __future__ import annotations
@@ -33,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n.*?\r?\n---[ \t]*\r?\n?", re.DOTALL)
 _SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-# 与 wiki/render.entry_file_name 的 %04d 生成规则逐字对齐（design.md 决议 #1）
+# 与 ``wiki.render.entry_file_name`` 使用相同的编号格式。
 _ENTRY_FILE_RE = re.compile(r"community-([0-9]{4})\.md\Z")
 
 
@@ -59,8 +49,6 @@ class WikiEntryReadError(Exception):
 
 @dataclass(frozen=True)
 class NoteSummaryData:
-    """笔记投影清单条目（frontmatter 元数据）。"""
-
     source_id: str
     source_name: str
     note_path: str
@@ -70,7 +58,7 @@ class NoteSummaryData:
 
 @dataclass(frozen=True)
 class NoteDetailData(NoteSummaryData):
-    """单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点序列。"""
+    """Markdown 全文（不含 frontmatter）与区块锚点。"""
 
     anchors: list[str]
     content: str
@@ -78,8 +66,6 @@ class NoteDetailData(NoteSummaryData):
 
 @dataclass(frozen=True)
 class GraphStatsData:
-    """图谱聚合统计。"""
-
     nodes: int
     edges: int
     communities: int
@@ -88,8 +74,6 @@ class GraphStatsData:
 
 @dataclass(frozen=True)
 class GraphNodeData:
-    """画布节点：度数与社区着色依据。"""
-
     entity_id: str
     name: str
     type: str
@@ -99,8 +83,6 @@ class GraphNodeData:
 
 @dataclass(frozen=True)
 class GraphEdgeData:
-    """画布边：两端实体 id 与关系类型。"""
-
     source: str
     target: str
     type: str
@@ -108,7 +90,7 @@ class GraphEdgeData:
 
 @dataclass(frozen=True)
 class GraphSubgraphData:
-    """有界子图查询结果：截断标记与候选总数由服务端裁决。"""
+    """有界子图；结果超限时由服务端截断并标记。"""
 
     nodes: list[GraphNodeData]
     edges: list[GraphEdgeData]
@@ -119,7 +101,7 @@ class GraphSubgraphData:
 
 @dataclass(frozen=True)
 class GraphSearchData(GraphSubgraphData):
-    """实体搜索结果：附查询词与生效上限。"""
+    """实体搜索结果，附查询词与生效上限。"""
 
     query: str
     limit: int
@@ -127,7 +109,7 @@ class GraphSearchData(GraphSubgraphData):
 
 @dataclass(frozen=True)
 class WikiEntryData:
-    """wiki 条目清单条目：时效元数据取条目文件 mtime。"""
+    """条目文件 mtime 即生成时间。"""
 
     community_id: int
     title: str
@@ -136,8 +118,6 @@ class WikiEntryData:
 
 @dataclass(frozen=True)
 class WikiEntryDetailData:
-    """wiki 单条读取：Markdown 全文 + 时效元数据。"""
-
     community_id: int
     title: str
     content: str
@@ -175,7 +155,6 @@ def read_note_detail(vault: Path, source_id: str) -> NoteDetailData:
 
 
 def graph_stats(data_dir: Path) -> GraphStatsData:
-    """图谱聚合统计：节点/边/社区计数与实体类型分布（类型名字典序）。"""
     entities, relations, communities = load_graph(data_dir)
     types: Counter[str] = Counter(entity.type for entity in entities)
     return GraphStatsData(
@@ -187,12 +166,11 @@ def graph_stats(data_dir: Path) -> GraphStatsData:
 
 
 def graph_overview(data_dir: Path, *, limit: int) -> GraphSubgraphData:
-    """初始画布：度数 top-N 节点与集合内诱导边；超限明示截断。"""
+    """取度数最高的 N 个节点及它们之间的边；超限时标记截断。"""
     entities, relations, communities = load_graph(data_dir)
     degrees = _degree_map(relations)
     community_of = _community_map(communities)
-    # 度数用 .get 兜底：被提及但未进入任何关系的孤立实体是合法产物
-    # （merge.py 入表全部提及实体、自环边丢弃），排序键不可直接索引
+    # 被提及但无关系的孤立实体合法，度数按 0 处理。
     ordered = sorted(entities, key=lambda item: (-degrees.get(item.entity_id, 0), item.entity_id))
     selected = ordered[:limit]
     selected_ids = {node.entity_id for node in selected}
@@ -206,13 +184,13 @@ def graph_overview(data_dir: Path, *, limit: int) -> GraphSubgraphData:
 
 
 def graph_search(data_dir: Path, *, query: str, limit: int) -> GraphSearchData:
-    """实体名大小写不敏感包含匹配：度数降序 → 名称 → entity_id，截断明示。"""
+    """按名称大小写不敏感包含匹配，按度数、名称、id 排序，超限时标记截断。"""
     entities, relations, communities = load_graph(data_dir)
     needle = query.strip().casefold()
     degrees = _degree_map(relations)
     community_of = _community_map(communities)
     candidates = [entity for entity in entities if needle in entity.name.casefold()]
-    # 孤立实体（无关系）度数按 0 兜底，与 overview 同口径
+    # 孤立实体度数按 0 处理，与 overview 一致。
     candidates.sort(key=lambda item: (-degrees.get(item.entity_id, 0), item.name, item.entity_id))
     selected = candidates[:limit]
     return GraphSearchData(
@@ -227,11 +205,7 @@ def graph_search(data_dir: Path, *, query: str, limit: int) -> GraphSearchData:
 
 
 def graph_neighbors(data_dir: Path, entity_id: str, *, limit: int, depth: int) -> GraphSubgraphData:
-    """有界邻域：自中心逐层 BFS，名额按层序优先、层内择优分配，截断明示。
-
-    深度 1 的直连邻居优先于深度 2 的候选（design.md 决议「同层内择优」），
-    防止远层高度数节点挤掉直连邻居。
-    """
+    """从中心节点逐层 BFS；名额按层分配，避免远层高度数节点挤掉直连邻居。"""
     entities, relations, communities = load_graph(data_dir)
     degrees = _degree_map(relations)
     community_of = _community_map(communities)
@@ -282,7 +256,7 @@ def list_wiki_entries(data_dir: Path) -> list[WikiEntryData]:
     try:
         paths = list(entries_dir.iterdir())
     except OSError as exc:
-        # 目录在扫描窗口内被移除或暂不可读（OSError 一律）：按未生成口径降级，不落 500
+        # 目录消失或不可读时按未生成处理，不报 500。
         raise WikiMissingError(
             f"Wiki entries directory vanished during scan: {entries_dir}"
         ) from exc
@@ -309,7 +283,7 @@ def list_wiki_entries(data_dir: Path) -> list[WikiEntryData]:
 
 
 def read_wiki_entry(data_dir: Path, community_id: int) -> WikiEntryDetailData:
-    """wiki 单条读取；只读文件，绝不触发生成路径。"""
+    """读取单条 wiki 条目，不触发生成。"""
     path = _entries_dir_or_raise(data_dir) / entry_file_name(community_id)
     if not path.is_file():
         raise WikiEntryNotFoundError(f"Unknown wiki entry: {community_id}")
@@ -323,10 +297,9 @@ def read_wiki_entry(data_dir: Path, community_id: int) -> WikiEntryDetailData:
 
 
 def _scan_records(vault: Path) -> list[DocumentRecord]:
-    """扫描全部投影 frontmatter；单条损坏跳过留痕，不拖垮清单与单篇读取。
+    """扫描全部投影 frontmatter；单条损坏跳过，避免整个清单不可用。
 
-    与检索索引的 scan_note_frontmatters（全量 fail-fast，缺一不可）刻意不同：
-    浏览面宁可少列一条也不整体不可用。损坏投影的身份不可知，按不存在处理。
+    与索引的全量扫描不同：浏览面宁可少列一条，也不整体失败。
     """
     notes_dir = vault / "notes"
     if not notes_dir.is_dir():
@@ -334,7 +307,7 @@ def _scan_records(vault: Path) -> list[DocumentRecord]:
     try:
         note_paths = sorted(path for path in notes_dir.rglob("*.md") if path.is_file())
     except OSError as exc:
-        # 目录在扫描窗口内被移除或暂不可读（OSError 一律）：按空库降级，下次刷新自愈
+        # 目录消失或不可读时按空库处理，下次刷新恢复。
         logger.warning("Notes directory scan failed: path=%s detail=%s", notes_dir, exc)
         return []
     records: list[DocumentRecord] = []
@@ -409,12 +382,7 @@ def _entries_dir_or_raise(data_dir: Path) -> Path:
 
 
 def _read_entry(path: Path) -> str:
-    """读单条目全文；读失败（损坏/权限/竞态删除）折叠为 WikiEntryReadError。
-
-    不得折叠为 WikiMissingError：条目存在但读不了与「wiki 未生成」是两回事，
-    误报 404 会把数据问题伪装成未生成。与 notes 投影单篇读失败同走
-    422「源数据不可处理」口径（收敛 design.md 遗留的 500 不一致）。
-    """
+    """读取条目全文；失败折叠为 WikiEntryReadError，与“wiki 未生成”区分。"""
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -431,7 +399,7 @@ def _entry_title(content: str, community_id: int) -> str:
 
 
 def _generated_at(path: Path) -> str:
-    """条目 mtime 转本地时区 ISO 串；stat 失败（竞态删除）与读失败同折 422 口径。"""
+    """把条目 mtime 转为本地时区 ISO 串；stat 失败按读取失败处理。"""
     try:
         mtime = path.stat().st_mtime
     except OSError as exc:

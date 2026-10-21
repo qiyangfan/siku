@@ -1,4 +1,4 @@
-"""问答链路错误。"""
+"""问答错误。"""
 
 from __future__ import annotations
 

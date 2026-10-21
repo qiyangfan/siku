@@ -1,15 +1,10 @@
-"""检索链路的错误体系。
-
-约定：异常 message 面向开发者用英文（根 AGENTS.md 铁律），
-CLI 层按错误类映射为简体中文的用户可读文案。
-错误分类必须稳定，供 CLI 与未来 HTTP 层做归一化映射。
-"""
+"""检索领域错误；上层将其映射为中文指引。"""
 
 from __future__ import annotations
 
 
 class RetrievalError(RuntimeError):
-    """检索链路失败的领域错误基类。"""
+    """检索处理失败的领域错误基类。"""
 
 
 class NoteParseError(RetrievalError):
@@ -45,22 +40,11 @@ class FtsUnavailableError(RetrievalError):
 
 
 class ModelNotAvailableError(RetrievalError):
-    """模型端点未配置、凭证被拒或端点不可用（BYOK，ADR-0009）。
-
-    三种语义由子类分型（change `fix-model-supply-error-surfacing` 决议 #1）：
-    文案层按子类出不同指引，而所有既有 `except ModelNotAvailableError` 处理器
-    （reranker=none 判定、settings 读写、serve 启动）行为零回退。
-    """
+    """模型端点未配置或不可用；具体原因由子类区分。"""
 
 
 class ModelCredentialError(ModelNotAvailableError):
-    """端点拒绝了当前凭证（HTTP 401/403），与「未配置」不是一回事。
-
-    `channel` 是结构化通道标识（`llm`/`embedding`/`rerank`），供文案层据此指
-    引「核对这一通道的 key 与端点是否成套」，而不是让用户去补全 base_url/model。
-    走 args 位置参（照 `ProtocolConfigError.kind` 先例）以保住基类 `__reduce__`
-    的 copy/deepcopy/pickle 圆厂。凭证值绝不进 message。
-    """
+    """端点以 HTTP 401/403 拒绝凭证；``channel`` 标识端点通道，错误消息不含凭证。"""
 
     def __init__(self, message: str, channel: str) -> None:
         super().__init__(message, channel)
@@ -68,19 +52,9 @@ class ModelCredentialError(ModelNotAvailableError):
 
 
 class ModelConfigFileError(ModelNotAvailableError):
-    """配置文件对模型供给无效：内容不可解析，或某字段取值不在允许范围。
+    """配置文件内容不可解析或字段值越界；与内容未知、不可覆盖的读错误区分。
 
-    与「文件读不到」（OSError，内容未知）刻意分型：前者用户可以「重新保存」覆盖
-    自救，后者覆盖即丢配置，必须继续报错。change
-    `fix-model-supply-error-surfacing` 决议 #3。
-
-    非法取值归入本类而不是另造一种运行期状态：文件层是唯一的外部输入源，坏值在
-    载入点（`model_supply.load_config`）就该拒——否则「无效配置」会以合法对象的形态
-    流到解析、就绪判定与前端，逼每一层都加一条善后分支。
-
-    `detail` 是服务端自撰的**字段级**补充说明（例如「[llm] protocol 仅支持 …」），
-    供文案指明到底哪一处要改；它 MUST NOT 回显用户原值（同 `ModelCredentialError`
-    不回显凭证的纪律），走 args 位置参以保住基类 `__reduce__` 的 copy/pickle 圆厂。
+    ``detail`` 提供字段级提示，不回显用户原值。
     """
 
     def __init__(self, message: str, detail: str | None = None) -> None:
@@ -89,13 +63,7 @@ class ModelConfigFileError(ModelNotAvailableError):
 
 
 class ModelConfigFileUnreadableError(ModelNotAvailableError):
-    """配置文件读不到（权限/IO 故障）——内容未知，与「不可解析」不同类。
-
-    不可解析=知道文件是坏的，可以覆盖自救；读不到=不知道文件里有什么，覆盖即
-    毁掉可能完好的配置，因此本类不得进入覆盖路径，文案也不得说「通道未配置」
-    （通道可能配得好好的，只是文件读不出来）。change 的 model-supply 决议 #3
-    要求两型分家，此前共用基类等式于把「读不到」顶替成「未配置」。
-    """
+    """配置文件因权限或 IO 错误无法读取，内容未知且不可覆盖。"""
 
 
 class ProviderError(RetrievalError):

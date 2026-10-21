@@ -1,7 +1,6 @@
 """sync.service 契约测试：扫描周期执行、超替检疫、复链与确认式清理。
 
-全部走真实摄取管线（.md 内置抽取器）与真实 SQLite/LanceDB 索引（fake embedding），
-验证「借文件布局退出检索」在真实派生物重建语义下成立。
+全部走真实摄取管线与真实 SQLite/LanceDB 索引（fake embedding）。
 """
 
 from __future__ import annotations
@@ -153,8 +152,7 @@ def test_content_change_supersedes_and_quarantines_old_version(tmp_path: Path) -
 
 
 def test_content_rollback_clears_tombstone_and_quarantine_copy(tmp_path: Path) -> None:
-    """评审 B1 回归：内容回退（A→B→A）后，旧 id 以在役身份回归——其 tombstone
-    必须清除、检疫副本必须删除，否则清单把在役文档显示为已替代且 purge 会误删。"""
+    """内容回退后旧 id 回归：tombstone 与检疫副本都必须清除，否则 purge 会误删。"""
     service, registry, vault = make_service(tmp_path)
     feed = tmp_path / "feed"
     feed_write(feed, "a.md", b"# A v1")
@@ -182,7 +180,7 @@ def test_content_rollback_clears_tombstone_and_quarantine_copy(tmp_path: Path) -
 def test_purge_failure_retains_tombstone_for_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """评审 A3 回归：unlink 失败时保留 tombstone，滞留文件不失去清理入口。"""
+    """删除失败时保留 tombstone，使滞留文件仍可清理。"""
     service, registry, _vault = make_service(tmp_path)
     feed = tmp_path / "feed"
     feed_write(feed, "a.md", b"# A v1")
@@ -212,7 +210,7 @@ def test_purge_failure_retains_tombstone_for_retry(
 
 
 def test_plan_cycle_is_read_only_and_reconcile_runs_in_execute(tmp_path: Path) -> None:
-    """评审 R1 回归：plan_cycle 纯只读（含待对账情形），对账只在 execute_cycle 执行。"""
+    """plan_cycle 保持只读；待对账的文件只在 execute_cycle 中移位。"""
     service, registry, vault = make_service(tmp_path)
     feed = tmp_path / "feed"
     feed_write(feed, "a.md", b"# A v1")
@@ -247,8 +245,7 @@ def test_plan_cycle_is_read_only_and_reconcile_runs_in_execute(tmp_path: Path) -
 
 
 def test_same_name_same_content_in_two_subdirs_are_independent(tmp_path: Path) -> None:
-    """评审 R2 回归：不同子目录的同名同内容文件是两份独立文档（身份含相对路径），
-    其一变更超替不得波及另一份的在役状态。"""
+    """不同子目录的同名同内容文件身份独立，互不影响。"""
     service, registry, vault = make_service(tmp_path)
     feed = tmp_path / "feed"
     feed_write(feed, "a/todo.md", b"# template")
@@ -279,8 +276,7 @@ def test_same_name_same_content_in_two_subdirs_are_independent(tmp_path: Path) -
 
 
 def test_cross_source_same_relative_path_same_content_independent(tmp_path: Path) -> None:
-    """评审 R3-2 回归：不同来源目录的同名同内容文件是两份独立文档，其一变更
-    超替不得波及另一份的在役状态（身份含来源命名空间）。"""
+    """不同来源目录的同名同内容文件身份独立，互不影响。"""
     service, registry, vault = make_service(tmp_path)
     feed_a = tmp_path / "feedA"
     feed_b = tmp_path / "feedB"

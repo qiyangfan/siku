@@ -26,12 +26,7 @@ runner = CliRunner()
 
 @pytest.fixture(autouse=True)
 def _isolate_host_supply(monkeypatch: pytest.MonkeyPatch) -> None:
-    """隔离宿主机 env 与 config.toml：CLI 命令内 resolve_* 现读宿主状态。
-
-    不隔离时，宿主机的 ``SIKU_LLM_API_KEY``（env 前缀映射为 api_key 字段）
-    会让严格断言失败并把真实 key 打进测试输出；损坏的宿主 config.toml 则令
-    serve/graph/wiki 用例非确定性崩溃。
-    """
+    """隔离宿主机 env 与 config.toml，避免真实 key 进入输出或宿主配置影响用例。"""
     for name in list(os.environ):
         if name.startswith(("SIKU_LLM_", "SIKU_EMBEDDING_", "SIKU_RERANK_")):
             monkeypatch.delenv(name, raising=False)
@@ -83,11 +78,7 @@ def test_serve_defaults_to_loopback_and_warns_on_explicit_public_bind(
 def test_serve_tolerates_env_layer_protocol_violation_and_disables_llm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """上层协议越界不堵启动面（change fix-supply-protocol-dead-end）：
-
-    serve 明示告警后继续启动，LLM 通道按无效播报、api_key_env 回落缺省；
-    llm_supply 原样透传，请求期各面按既有 503 invalid_settings 归一失败。
-    """
+    """env 层协议越界不阻止启动：LLM 通道按无效播报。"""
     monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
     captured: dict[str, object] = {}
 
@@ -306,7 +297,7 @@ def test_serve_keeps_legacy_vault_data_and_ui_defaults(
     monkeypatch: object,
     tmp_path: Path,
 ) -> None:
-    """旧默认值回归：不传新路径参数时，行为与 Phase 4 完全一致。"""
+    """不传路径参数时沿用默认 vault、数据目录和 UI 路径。"""
     captured: dict[str, object] = {}
 
     def fake_create_app(**kwargs: object) -> object:
@@ -473,11 +464,7 @@ def test_serve_watch_stdin_wiring_marks_uvicorn_server_on_eof(
 def test_serve_starts_and_warns_when_config_file_is_unparseable(
     monkeypatch: object, tmp_path: Path
 ) -> None:
-    """坏配置文件不得堵死启动面（change fix-model-supply-error-surfacing 决议 #3）：
-
-    桌面 sidecar 就是 `siku serve --with-ui`，启动即退出会让「设置页重新保存覆盖」
-    这条自救路径无从可达。明示告警（非静默）+ 以空文件层继续启动。
-    """
+    """坏配置文件不阻止启动，以便设置页覆盖保存。"""
     broken = tmp_path / "config.toml"
     broken.write_text("not [valid toml", encoding="utf-8")
     monkeypatch.setattr(  # type: ignore[attr-defined]
@@ -496,8 +483,7 @@ def test_serve_starts_and_warns_when_config_file_is_unparseable(
 
     result = runner.invoke(app, ["serve", "--port", "8123"])
     assert result.exit_code == 0, result.output
-    # 告警必须真的出现并指认文件层（文案统一为「对模型供给无效」后不再是「不可解析」，
-    # 断言改为抓成因本身：不是合法 TOML + 文案里给出真实 config.toml 路径）
+    # 告警应指出配置文件无效及其路径。
     assert "不是合法 TOML" in result.output
     assert "config.toml" in result.output
     assert len(created) == 1

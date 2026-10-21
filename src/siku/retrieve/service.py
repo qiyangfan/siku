@@ -1,14 +1,8 @@
 """混合召回与重排服务：BM25 + 向量 → RRF 融合 → reranker（可选）→ 稳定排序。
 
-固定阶段顺序（design.md《混合召回与重排》，不得被参数改变）：
-1. 预分词 BM25 与 embedding 向量双路召回，各取 candidate_k；
-2. 等权 Reciprocal Rank Fusion（默认 rrf_k=60），相同候选去重；
-3. 配置了 reranker 时，融合分数前 candidate_k 进入 reranker；
-4. 按 (rerank_score 降序, hybrid_score 降序, chunk_id 升序) 稳定排序取 top_k。
-
-reranker=none（ADR-0009 一等公民，自部署端点无 rerank API 场景）时跳过阶段 3，
-按 (hybrid_score 降序, chunk_id 升序) 直接排序；rerank_score 回填最终排序所用的
-融合分数，保持 SearchResult / OpenAPI 契约零漂移。
+固定阶段顺序：双路各取 candidate_k → 等权 RRF → 重排候选 → top_k。
+reranker=none 时跳过重排，按融合分数排序，并把它回填到 rerank_score，保持结果契约
+不变。
 """
 
 from __future__ import annotations
@@ -129,11 +123,7 @@ class SearchService:
         return index, vector_store
 
     def close(self) -> None:
-        """释放持有的 provider 连接池（serve 设置失效重建缓存时调用）。
-
-        索引/向量库在每次检索内开合，不持长连接；这里只负责两个 provider 的
-        httpx 连接池。provider 无 close（如测试 fake）时静默跳过。
-        """
+        """释放两个 provider 的连接池；索引与向量库在每次检索内开合。"""
         for provider in (self._embedding, self._reranker):
             release = getattr(provider, "close", None)
             if callable(release):

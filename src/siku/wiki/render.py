@@ -1,8 +1,6 @@
-"""wiki 条目与总目索引渲染：纯确定性字符串拼接 + 原子写入。
+"""wiki 渲染：确定性字符串拼接 + 原子写入。
 
-渲染不含时间戳等非稳定字段（环境元数据只进体检报告）；
-每条结论都携带 chunk/source_hash/结构锚点，可回链 `vault/attachments/` 原件。
-写入前清空条目目录，保证 wiki 目录状态与当前社区划分一一对应。
+结论携带 chunk、源哈希与结构锚点，可回链 `vault/attachments/` 原件。
 """
 
 from __future__ import annotations
@@ -73,7 +71,7 @@ def _render_anchors(anchors: Sequence[SourceAnchor]) -> str:
 
 
 def _render_anchor(anchor: SourceAnchor) -> str:
-    """锚点渲染为可定位凭证：投影路径 · 结构锚点 · chunk · 源哈希前 8 位。"""
+    """锚点渲染为可定位信息：投影路径 · 结构锚点 · chunk · 源哈希前 8 位。"""
     digest = anchor.source_hash[:8]
     return f"{anchor.note_path} · {anchor.anchor} · chunk {anchor.chunk_id} · 源 {digest}"
 
@@ -96,11 +94,10 @@ def write_wiki(
     entry_files: Mapping[str, str],
     index_content: str,
 ) -> None:
-    """原子写入 wiki 目录：`entry_files` 为 (条目文件名 -> 条目全文)。
+    """原子写入 wiki 目录；`entry_files` 为 (条目文件名 -> 条目全文)。
 
-    条目写入临时目录后整体换装，index.md 走临时文件替换；换装把"部分条目"
-    窗口压缩到单次 `os.replace`，崩溃窗口内短暂并存属派生物可重跑自愈范畴
-    （与 parquet 三件表的既有口径一致）。
+    条目先写临时目录再整体换装，index.md 走临时文件替换；崩溃窗口内可能短暂
+    并存新旧条目，属派生物可重跑的范围。
     """
     wiki_dir = wiki_dir_path(data_dir)
     entries_dir = wiki_dir / ENTRIES_DIR_NAME

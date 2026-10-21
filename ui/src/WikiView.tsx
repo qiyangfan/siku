@@ -30,7 +30,7 @@ function connectionFallback(caught: unknown): string {
     : "无法连接本地服务，请确认 siku serve --with-ui 正在运行。";
 }
 
-// 非法输入由 datetime 单源按原样回退,本包装保持既有签名语义
+// 非法输入由 datetime 单源按原样回退，本包装保持既有签名语义
 function formatGeneratedAt(iso: string): string {
   return formatDateTime(iso);
 }
@@ -56,8 +56,7 @@ export function WikiView({ onGoToSettings }: { onGoToSettings: () => void }) {
   const [graphMissingKnown, setGraphMissingKnown] = useState(false);
   const [flowNote, setFlowNote] = useState<string | null>(null);
   const [generateError, setGenerateError] = useState<string | null>(null);
-  // 各异步操作独立序号防竞态：慢响应不得覆盖同类新操作；
-  // 跨操作不共用序号，避免被否决方的 loading 旗标永久卡死
+  // 各异步操作独立序号：慢响应不得覆盖新操作，也避免 loading 旗标互相卡死。
   const listingSeqRef = useRef(0);
   const detailSeqRef = useRef(0);
   const generateSeqRef = useRef(0);
@@ -101,8 +100,7 @@ export function WikiView({ onGoToSettings }: { onGoToSettings: () => void }) {
       if (seq !== generateSeqRef.current) {
         return false;
       }
-      // 200 即证明图谱产物存在：无论是否 empty_graph 都先清除历史缺失旗标，
-      // 防空态卡残留「图谱尚未构建」的过期引导（如构建成功但零社区的场景）
+      // 无论是否 empty_graph，成功响应都要清除过期的图谱缺失状态。
       setGraphMissingKnown(false);
       if (report.empty_graph) {
         setFlowNote("图谱中没有可摘要的社区，未产出 wiki 条目。");
@@ -149,8 +147,7 @@ export function WikiView({ onGoToSettings }: { onGoToSettings: () => void }) {
         return;
       }
       if (report.empty_corpus) {
-        // 空语料已落空产物，继续生成 wiki 只会得到 empty_graph，
-        // 就地停在可行动的引导上（导入笔记）比报「无可摘要社区」更有用
+        // 空语料继续生成只会得到 empty_graph，应停在导入引导。
         setFlowNote("语料为空：图谱为空、无可生成内容；请先在「资料库」导入笔记。");
         return;
       }
@@ -312,13 +309,11 @@ export function WikiView({ onGoToSettings }: { onGoToSettings: () => void }) {
         </p>
       )}
       {generateError !== null && <Alert color="red" role="alert">{generateError}</Alert>}
-      {/* 已建态重新生成遇图谱产物缺失：graphMissingKnown 只驱动空态卡片切换，
-          此处若不显式给出反馈就是静默失败（违反「失败 SHALL 展示 message」） */}
+      {/* 已建态遇图谱产物缺失：此处必须显式反馈，否则就是静默失败 */}
       {graphMissingKnown && listing !== null && (
         <Alert color="red" role="alert">图谱产物缺失：请先在「图谱」视图构建图谱，再重新生成 wiki。</Alert>
       )}
-      {/* 已建态数据保留时 loadError 无渲染落点（全屏错误卡仅在 listing===null）：
-          生成成功但清单刷新失败必须显式告警，防清单静默陈旧 */}
+      {/* 生成成功但清单刷新失败必须显式告警，防清单静默陈旧 */}
       {loadError !== null && (
         <Alert className="status-card" color="red" role="alert" title="wiki 清单刷新失败">
           <p>{loadError}</p>

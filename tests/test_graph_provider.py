@@ -1,7 +1,7 @@
-"""LLM provider 的行为测试：五剧本 fake 语义 + openai 兼容通道（httpx）。
+"""LLM provider 行为测试：fake 剧本语义与 openai 兼容通道。
 
-真实通道不打网络：用 httpx.MockTransport 注入响应，
-验证 HTTP 层异常全部翻译为领域错误（无裸 SDK 异常穿透）。
+真实通道用 httpx.MockTransport 注入响应，不发起网络请求；HTTP 层异常必须全部
+翻译为领域错误。
 """
 
 import json
@@ -41,7 +41,7 @@ def _chat_response(content: str) -> httpx.Response:
 
 
 class TestScriptedLlmProviderScripts:
-    """五剧本 fake：抽取链路在 CI 中只可能遇到这五种 LLM 行为。"""
+    """五剧本 fake：图谱抽取测试只会遇到这五种 LLM 行为。"""
 
     def test_normal_script_returns_content(self) -> None:
         provider = ScriptedLlmProvider(script=['{"entities": []}'])
@@ -348,8 +348,7 @@ def test_all_provider_errors_share_graph_domain_base() -> None:
 
 
 class TestLlmAuthFailureTyping:
-    """LLM 端点 401/403 与通用服务失败分型（change fix-model-supply-error-surfacing
-    决议 #1）：凭证被拒不得落进「未返回可验证结果」的通用文案。"""
+    """LLM 端点 401/403 与通用服务失败分型；凭证错误使用专属指引。"""
 
     @pytest.mark.parametrize("status", [401, 403])
     def test_rejection_maps_to_auth_error(self, status: int) -> None:

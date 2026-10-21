@@ -171,7 +171,7 @@ class TestBuildGraph:
     def test_failed_build_keeps_previous_identity(self, tmp_path: Path) -> None:
         write_note(tmp_path / VAULT)
         build_graph(tmp_path / VAULT, tmp_path / "data", default_extractor())
-        # 换模型后构建失败：身份记录保持旧值（产物未变则身份未变，design D3）
+        # 换模型后构建失败：产物未变时身份记录也保持不变。
         provider = ScriptedLlmProvider(
             model_id="another-model", script=[LEGAL_OUTPUT, RATE_LIMITED]
         )

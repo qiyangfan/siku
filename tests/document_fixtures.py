@@ -1,7 +1,6 @@
 """测试用真实文档夹具生成（reportlab / python-pptx / openpyxl / pandoc）。
 
-生成的都是可被真实解析器读取的结构合法文档，用于抽取契约测试；不手工
-捏造二进制字节，避免「夹具只对自己伪造的解析器成立」。
+生成结构合法、可被真实解析器读取的文档，不伪造二进制字节。
 """
 
 from __future__ import annotations

@@ -37,8 +37,7 @@ def merge_extractions(pairs: Sequence[tuple[ChunkRecord, GraphExtraction]]) -> M
     surface_forms: dict[str, set[str]] = {}
     edge_anchor_lists: dict[tuple[str, str, str], list[SourceAnchor]] = {}
     edge_evidences: dict[tuple[str, str, str], str] = {}
-    # 首见提及方向（展示口径）：身份按规范化端点对去重，方向与展示保留
-    # 首次陈述语义（"张三 居住于 北京"不因 id 排序被反转）
+    # 展示方向保留首见提及方向，避免有向谓词因 id 排序被反转。
     edge_direction: dict[tuple[str, str, str], tuple[str, str]] = {}
     display_names: dict[str, str] = {}
 
@@ -50,7 +49,7 @@ def merge_extractions(pairs: Sequence[tuple[ChunkRecord, GraphExtraction]]) -> M
             entity_id = entity_id_from_name(normalized)
             entity_by_name[mention.name] = entity_id
             if normalized not in entity_names:
-                # 首见表面形态与类型即实体展示口径（顺序稳定 → 结果确定）
+                # 首见表面形态与类型作为展示口径，输入顺序稳定则结果确定。
                 entity_names[normalized] = mention.name
                 entity_types[normalized] = mention.type
                 display_names[entity_id] = mention.name
@@ -67,17 +66,14 @@ def merge_extractions(pairs: Sequence[tuple[ChunkRecord, GraphExtraction]]) -> M
                 relation_mention.target_name, entity_by_name, chunk.chunk_id
             )
             if mention_source_id == mention_target_id:
-                # 自环边不进入图谱：社区发现与 wiki 语义下均无信息量
+                # 自环边无信息量，不进图谱。
                 continue
-            # 图谱是无向图（networkx.Graph）：同型互反边（A→B 与 B→A 同类型）
-            # 是同一条边，身份键按 entity_id 规范化排序，保证边数口径全局一致；
-            # 展示方向保留首见提及方向（顺序稳定 → 结果确定），
-            # 避免"居住于/就职于"类有向谓词被人读出反向事实
+            # 无向图中同型互反边视为同一条，身份键按 id 排序；展示方向保留首见方向。
             first_id, second_id = sorted((mention_source_id, mention_target_id))
             edge_key = (first_id, second_id, relation_mention.type)
             edge_anchor_lists.setdefault(edge_key, [])
             edge_direction.setdefault(edge_key, (mention_source_id, mention_target_id))
-            # 首见证据即该边的展示证据（顺序稳定 → 结果确定）
+            # 首见证据作为展示证据。
             edge_evidences.setdefault(edge_key, relation_mention.evidence)
             if chunk_anchor not in edge_anchor_lists[edge_key]:
                 edge_anchor_lists[edge_key].append(chunk_anchor)

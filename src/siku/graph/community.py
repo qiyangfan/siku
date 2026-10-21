@@ -57,11 +57,7 @@ def internal_relation_triples(
 
 
 class SummaryIdentity(NamedTuple):
-    """摘要器完整身份：三元组共同进入摘要缓存键（与 GraphExtractor 同构）。
-
-    可插拔摘要器换任一身份维度（含 prompt 版本）都必须换键重摘，
-    禁止静默复用旧身份下的摘要缓存。
-    """
+    """摘要器完整身份；任一字段变化都会换键重算，不复用旧缓存。"""
 
     summarizer_id: str = SUMMARIZER_ID
     model_id: str = DEFAULT_MODEL_ID
@@ -76,11 +72,10 @@ def summary_cache_key(
     internal_triples: Sequence[Sequence[str]],
     identity: SummaryIdentity = DEFAULT_SUMMARY_IDENTITY,
 ) -> str:
-    """社区摘要缓存键：内容指纹 + summarizer 完整身份（SummaryIdentity）。
+    """社区摘要缓存键：成员与内部关系指纹 + 摘要器身份。
 
-    指纹必须覆盖摘要 prompt 的全部输入：成员的展示名与类型是"首见序"的
-    函数、不是 entity_id 的函数，语料改版后实体集与关系不变而展示口径变化时
-    必须换键重摘（否则 wiki 条目渲染新口径、摘要却是旧 prompt 产物）。
+    成员的展示名与类型也是摘要输入，必须进指纹；它们随语料首见顺序变化，语料改版后
+    即使实体集不变也需要重摘。
     """
     ordered_triples = sorted([list(triple) for triple in internal_triples])
     fingerprint = json.dumps(

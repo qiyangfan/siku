@@ -100,7 +100,7 @@ def test_scan_settings_read_write_and_validation(tmp_path: Path) -> None:
     assert invalid.status_code == 422
     assert invalid.json()["code"] == "invalid_request"
 
-    # 调度线程每轮现读注册表 → 免重启生效（决议 #3）
+    # 调度线程每轮读取注册表，设置修改后无需重启。
 
     assert SyncRegistry(library_db_path(tmp_path / "data")).get_scan_interval() == 60
 
@@ -114,7 +114,7 @@ def test_graph_auto_refresh_toggle_read_write_and_validation(tmp_path: Path) -> 
         "interval_secs": DEFAULT_SCAN_INTERVAL_SECS,
         "graph_auto_refresh": True,
     }
-    # 收尾链每轮现读注册表 → 免重启生效（决议 #3）
+    # 收尾流程每轮读取注册表，设置修改后无需重启。
     assert SyncRegistry(library_db_path(tmp_path / "data")).get_graph_auto_refresh() is True
 
     # 仅更新另一字段时开关保持（部分更新）
@@ -233,7 +233,7 @@ def test_scan_returns_409_when_slot_busy(tmp_path: Path) -> None:
 
 
 def test_scan_runner_crash_fails_job_and_releases_slot(tmp_path: Path) -> None:
-    """评审 B2 回归：任务体未预期异常 → 任务失败落终态，单任务槽不被卡死。"""
+    """任务体异常时落入失败终态并释放单任务槽。"""
     from siku.api.library import LibraryJobManager
 
     def exploding_runner(full: bool, plans: object, observer: object) -> None:
@@ -286,8 +286,7 @@ def test_scheduler_lifespan_auto_scans_registered_source(tmp_path: Path) -> None
 
 
 def test_scheduler_restart_does_not_resurrect_old_thread(tmp_path: Path) -> None:
-    """评审 R3-1 回归：stop 超时后再 start，老线程绑定旧 Event 必然退出，
-    不会读到新 Event 复活成双循环。"""
+    """重启调度器后旧线程应退出，不与新线程并存。"""
     from siku.api.library import LibraryJobManager, SyncScheduler
 
     registry = SyncRegistry(library_db_path(tmp_path / "data"))
@@ -336,7 +335,6 @@ def test_scheduler_restart_does_not_resurrect_old_thread(tmp_path: Path) -> None
 
 
 def test_cancelled_scan_still_publishes_committed_changes(tmp_path: Path) -> None:
-    """取消只停止未开始的工作：已入库事实必须经索引收尾发布（决议 #3 修订）。"""
     from siku.api.library import LibraryJobManager
 
     runner, calls = make_index_runner()

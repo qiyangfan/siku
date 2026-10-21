@@ -224,7 +224,7 @@ def ingest_path(
         if extractor is None:
             legacy_target = legacy_office_target(path.suffix.lower())
             if legacy_target is not None:
-                # 旧二进制 Office 格式：给出转换指引而非静默忽略/伪失败
+                # 旧二进制 Office 格式给出转换指引，不静默忽略。
                 raise LegacyOfficeFormatError(
                     f"The legacy binary format {path.suffix} is not supported;"
                     f" convert {path.name} to {legacy_target} and import it again."

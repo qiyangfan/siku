@@ -1,10 +1,7 @@
-"""检索链路共享的可编程 fake provider（核心测试设施，CI 永不打真实模型）。
+"""检索测试共享的可编程 fake provider（CI 不调用真实模型）。
 
-剧本（宪法·测试范式五剧本的检索子集）：
-- normal：确定性向量/分数；
-- empty：返回空批次（违反契约，领域层须转成 ProviderError）；
-- overlong：超长文本输入，正常返回（模拟模型截断行为）；
-- error：直接抛 ProviderError（模拟模型异常/断连）。
+normal 返回确定性向量；empty 返回空批次；overlong 正常返回超长输入；error 直接抛
+ProviderError。空批次由领域层转成 ProviderError。
 """
 
 from __future__ import annotations

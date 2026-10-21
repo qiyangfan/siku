@@ -1,16 +1,10 @@
-"""检索索引的无模型按来源消减（change remove-manual-library-document）。
+"""检索索引的无模型按来源消减。
 
-移除已确认来源时不能走 ``sync_index``：它要求当前 embedding 通道可用并校验
-模型元数据一致，凭证失效或已换配置会把删除阻断。本模块复用既有「临时构建 →
-全量校验 → 原子切换」机制做**只减不增**的复制：读取旧索引已存的模型/维度/
-通道元数据，只复制剩余来源的 SQLite 文档/块/FTS5 数据与向量行，形成一致的
-新提交——零模型调用、不检查当前 BYOK 可达性、不更换索引模型元数据。
+移除来源时不能走 ``sync_index``（它要求 embedding 通道可用且模型一致）。本模块复制
+旧索引中剩余来源的 SQLite、FTS5 与向量行，保留原模型元数据，全程零模型调用。
 
-两段式发布与恢复（design D3）：已验证的消减暂存对（临时 SQLite + 临时向量
-目录 + 同一 commit 凭证）先于不可逆清理形成；发布顺序仍是先向量后 SQLite。
-两步之间中断时，暂存对保留在原位，任何同库写入口先经
-``recover_pending_reduction`` 完成确定的向前发布，再做普通完整性预检；
-普通构建不得清掉可恢复暂存对。
+消减暂存对（临时 SQLite + 临时向量目录 + 同一 commit 凭证）在不可逆清理前形成；
+中断后由 ``recover_pending_reduction`` 向前发布，普通构建不得清理可恢复的暂存对。
 """
 
 from __future__ import annotations
@@ -66,11 +60,10 @@ def _staged_paths(data_dir: Path) -> tuple[Path, Path]:
 def stage_index_reduction(
     data_dir: Path, remove_source_ids: frozenset[str] | set[str]
 ) -> StagedReduction | None:
-    """为已确认移除的来源构建已验证的消减暂存对；无既有索引返回 None。
+    """为已确认移除的来源构建消减暂存对；无既有索引返回 None。
 
-    复制剩余来源的全部文档/块/FTS5/向量行并保留原模型元数据；校验通过后以
-    新 commit 凭证封存暂存对，不做发布。任何一步失败都清理半成品并抛出，
-    旧索引保持可查询。
+    复制剩余来源的文档、块、FTS5 与向量行，保留原模型元数据；校验通过后封存，
+    不做发布。失败时清理半成品，旧索引保持可查询。
     """
     final_db = database_path(data_dir)
     final_vectors = vectors_dir_path(data_dir)
@@ -86,8 +79,7 @@ def stage_index_reduction(
         manifest = old_index.source_manifest()
         removed_present = sorted(set(remove_source_ids) & set(manifest))
         if not removed_present:
-            # 目标已不在索引中（重试场景下恢复路径已完成发布）：无需消减，
-            # 顺带清掉不可能配对的崩溃残片；finally 中的二次 close 幂等无害
+            # 目标已不在索引中（重试时恢复路径已完成发布）：清理残片并返回。
             old_index.close()
             _remove_staged_pair(tmp_db, tmp_vectors)
             return None
@@ -202,11 +194,10 @@ def _check_commit_consistency_standalone(index: SqliteIndex, final_vectors: Path
 
 
 def inspect_staged_reduction(data_dir: Path) -> StagedReduction | None:
-    """读取已存在的已验证暂存对；无任何暂存产物返回 None。
+    """读取已验证的消减暂存对；无产物返回 None。
 
-    暂存对的两件产物允许一件已被发布步骤移走（先向量后 SQLite 的切换顺序使
-    「只剩暂存 SQLite」成为合法中间态）。存在的产物必须携带同一 commit 凭证，
-    否则视为损坏半成品抛 ``IndexCorruptError``（仅无已确认消减标记的场景允许清理）。
+    允许只剩暂存 SQLite（向量已先切换）；存在的产物必须携带同一 commit 凭证，
+    否则视为损坏半成品。
     """
     tmp_db, tmp_vectors = _staged_paths(data_dir)
     if not tmp_db.is_file() and not tmp_vectors.is_dir():
@@ -285,16 +276,10 @@ def _remove_staged_pair(tmp_db: Path, tmp_vectors: Path) -> None:
 
 
 def recover_pending_reduction(data_dir: Path) -> bool:
-    """完成中断的已确认消减发布；返回是否推进了状态。
+    """完成中断的消减发布；返回是否推进了状态。
 
-    必须在持有同库写锁时调用（所有同库写入口的第一步）。判定规则（design D3）：
-
-    - 无暂存产物：无事可做（正常路径）。
-    - 可配对：按最终产物的 commit 状态完成确定的向前发布——
-      两者都未换 → 双切换；向量已换而 SQLite 未换 → 用暂存 SQLite 补齐；
-      都已换 → 无操作（只待文件/快照收尾的重试），清理残留。
-    - 不能配对或缺件无法向前：明确失败（IndexCorruptError），不盲删、
-      不误判为旧索引损坏。
+    必须在持有同库写锁时调用。可配对时按最终 commit 状态向前补齐；不能配对或
+    缺件无法向前时明确报损坏，不盲删、不误判为旧索引损坏。
     """
     staged = inspect_staged_reduction(data_dir)
     if staged is None:

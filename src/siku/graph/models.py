@@ -52,7 +52,7 @@ class GraphExtraction:
 
 @dataclass(frozen=True)
 class SourceAnchor:
-    """图谱结论回链原文的锚点：定位 `vault/attachments/` 原件的完整凭证。"""
+    """图谱结论回链原文的定位信息：chunk、原件哈希、投影路径与锚点。"""
 
     chunk_id: str
     source_hash: str

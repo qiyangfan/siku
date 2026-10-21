@@ -449,7 +449,7 @@ def test_cancel_stops_after_current_file(tmp_path: Path) -> None:
     assert final["state"] == "cancelled"
     assert final["done"] == 2
     assert final["total"] == 3
-    # 取消同样衔接索引：已入库部分必须发布，不扣到不确定的下轮（决议 #3 修订）
+    # 取消后仍发布已入库的变更。
     assert calls == [False]
     assert not staged_dir_for(payload_c).exists()  # 未处理文件的暂存也清理
 
@@ -521,7 +521,7 @@ def test_index_failure_fails_job_with_existing_guidance(tmp_path: Path) -> None:
     assert [source["ingest_status"] for source in listing(client)["sources"]] == ["ingested"]
 
 
-# -- 图谱自动维护收尾链（add-graph-auto-refresh：design D4）--
+# -- 图谱自动维护收尾链 --
 
 REFRESHED_OUTCOME = GraphRefreshOutcome(
     refreshed=True,
@@ -652,7 +652,7 @@ def test_cancelled_ingest_does_not_refresh_graph(tmp_path: Path) -> None:
     release.set()
     final, _ = poll_until_finished(client, str(job["job_id"]))
 
-    # 取消仍发布索引（决议 #3），但不触发图谱自动维护（取消 = 停止新工作）
+    # 取消后仍发布索引，但不启动新的图谱维护。
     assert final["state"] == "cancelled"
     assert index_calls == [False]
     assert graph_calls == []

@@ -1,10 +1,8 @@
 """来源目录同步的执行层：扫描周期编排、超替检疫与确认式清理。
 
-``run_scan_cycle`` 把 ``scanner`` 的计划落地：改名/复链/缺失只动登记与标记；
-入库走确定性暂存 copy-in → 既有幂等摄取管线；内容变更对旧文档做超替
-（tombstone + 移入 ``vault/superseded/`` 检疫目录，借文件布局退出检索，ADR-0010
-决议 #2）。``run_purge`` 是唯一物理删除路径，必须由携带确认标记的显式触发进入。
-本模块不 import ``siku.api``（sync → api 的组装关系由 api 层单向完成）。
+计划落地：改名/复链/缺失只动登记与标记；入库走确定性暂存 copy-in 后交给幂等摄取；
+内容变更对旧文档做超替（tombstone + 移入 ``vault/superseded/``）。``run_purge`` 是
+唯一物理删除路径，须显式确认。本模块不 import ``siku.api``。
 """
 
 from __future__ import annotations
@@ -38,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # 附件/投影文件名中嵌入的 source_id 后缀（ingest pipeline _artifact_stem 约定）
 _SOURCE_ID_SUFFIX = re.compile(r"--([0-9a-f]{8,64})$")
-# superseded 文档的检疫目录：借文件布局退出索引（决议 #2）
+# superseded 文档移入此目录后不再进入索引。
 QUARANTINE_DIR_NAME = "superseded"
 STAGING_ROOT = Path(tempfile.gettempdir()) / "siku-uploads"
 _IO_CHUNK = 1024 * 1024
@@ -93,17 +91,7 @@ def stage_file(
     dir_id: str,
     staging_root: Path = STAGING_ROOT,
 ) -> StagedCopy:
-    """把上游文件按内容哈希确定性暂存（与手动上传同一身份派生方式）。
-
-    暂存路径 = ``<sha256 前 12 位>/<完整 dir_id>/<来源内相对路径>``：内容哈希
-    之上叠加**来源身份**与**来源内相对路径**两个维度（评审 R2/R3-2 修正）——
-    不同来源目录（乃至同源不同子目录）的同名同内容文件是**两份独立文档**，
-    否则共享 id 会让对其一的超替/缺失语义串扰到另一份。来源维度用完整 32 位
-    dir_id 而非截断：截断省的只是临时目录名的两个字符，却把可预见的身份合并
-    故障类留在系统里，正确性不为审美让路。同一路径同内容重导入仍得到同
-    source_id，既有管线幂等 skip 语义不变。返回的哈希以**实际落盘字节**为准
-    （规划与执行之间的内容漂移由下轮扫描按登记哈希再次检出并超替，最终一致）。
-    """
+    """按内容哈希确定性暂存；路径含来源 ID 与相对路径，不同目录的同名文件身份独立。"""
     digest = hashlib.sha256()
     staging_root.mkdir(parents=True, exist_ok=True)
     scratch = staging_root / f".stage-{uuid4().hex}.tmp"
@@ -166,12 +154,7 @@ class SyncService:
     # ---- 扫描周期 ----
 
     def plan_cycle(self, full: bool = False) -> list[SourcePlan]:
-        """变更检测（只读 diff + 哈希）：不占用任务槽，可由调度线程直接调用。
-
-        本方法**必须保持纯只读**（不触碰 vault 字节）：调度线程与槽内任务并发
-        调用，任何文件移位都会与槽内摄取/清理竞态——中断检疫移位的对账属 vault
-        变更，归 `execute_cycle` 在槽内执行（评审 R1）。
-        """
+        """只读检测并生成计划，不修改 vault；检疫移位由 `execute_cycle` 在槽内执行。"""
         plans: list[SourcePlan] = []
         for source in self._registry.list_sources():
             if not source.enabled:
@@ -199,15 +182,12 @@ class SyncService:
         return False
 
     def has_pending_work(self, plans: list[SourcePlan]) -> bool:
-        """是否存在需要进任务槽执行的变更（决议 #3：无变更不取槽）。"""
         return any(plan.has_work for plan in plans)
 
     def execute_cycle(self, plans: list[SourcePlan], observer: ScanObserver) -> None:
-        """在任务槽内执行既有计划；动作粒度向观察者回报。
+        """在任务槽内执行计划；先补移中断的检疫移位，并丢弃陈旧计划。
 
-        对账（补移中断的检疫移位）是 vault 变更，必须在本槽内先于计划执行。
-        槽外形成的计划不是执行授权：进入本方法即重验来源登记（须仍登记且
-        启用），已解除登记/停用来源的陈旧计划整组丢弃，顺延到下一轮重新检测。
+        槽外形成的计划不是执行授权：执行前重验来源仍登记且启用，否则整组丢弃。
         """
         self._reconcile_superseded()
         plans = self._drop_stale_plans(plans)
@@ -217,7 +197,6 @@ class SyncService:
                 return
 
     def _drop_stale_plans(self, plans: list[SourcePlan]) -> list[SourcePlan]:
-        """锁后重验：来源已解除登记或停用的计划不得执行（change 决议 D4）。"""
         registered = {source.id: source.enabled for source in self._registry.list_sources()}
         kept: list[SourcePlan] = []
         for plan in plans:
@@ -396,7 +375,7 @@ class SyncService:
             if staged is not None:
                 discard_staged(staged.path)
 
-        # 两个 except 分支均已 return：到达此处必有暂存副本与摄取报告
+        # 前置分支均已返回，这里必有暂存副本与摄取报告。
         assert staged is not None
         assert report is not None
 
@@ -424,14 +403,12 @@ class SyncService:
         if ingest.old_entry is not None:
             self._supersede_old_version(ingest, new_source_id, observer)
 
-        # 内容回退（A→B→A）会让旧 id 以在役身份重新入库：必须清除其 tombstone 并
-        # 删除同 id 的检疫副本，否则「正在检索的文档」会被呈现为已替代、且 purge
-        # 会连带删掉在役文件（评审 B1）
+        # 内容回退（A→B→A）会让旧 id 重新入库；清除其 tombstone 和检疫副本，避免
+        # 清理流程误删仍在使用的文件。
         self._registry.delete_tombstones([new_source_id])
         self._remove_quarantined_copies(new_source_id)
 
-        # 登记的是**上游文件**的 stat 与实际落盘字节的哈希：stat 快选以下一轮
-        # 扫描的上游 stat 为锚，混入暂存副本的 mtime 会导致每文件多一轮重哈希
+        # 登记上游 stat 与内容哈希，避免下轮扫描重算。
         self._registry.upsert_entry(
             SyncEntry(
                 dir_id=dir_id,
@@ -449,7 +426,7 @@ class SyncService:
     ) -> None:
         """旧版本 tombstone + 检疫移位；先写标记后移文件，中断由下轮对账自愈。"""
         old_entry = ingest.old_entry
-        if old_entry is None:  # 防御：类型上不可达，显式收窄
+        if old_entry is None:  # 类型收窄
             return
         self._registry.add_tombstone(
             doc_source_id=old_entry.doc_source_id,
@@ -490,10 +467,8 @@ class SyncService:
     def _move_doc_to_quarantine(self, doc_source_id: str) -> bool:
         """把文档的附件与投影移入检疫目录，返回是否移动了文件。
 
-        检疫布局保留原角色分层：``superseded/attachments/`` 与
-        ``superseded/notes/``。Markdown 源的原件与投影同名（``<stem>--<id>.md``），
-        平铺会让后者 os.replace 覆盖前者丢失原件字节，分层是正确性要求而非整洁
-        偏好（决议 #2 apply 期修正）。
+        原件与 Markdown 投影可能同名，因此分别放入 ``attachments/`` 和 ``notes/``，
+        避免移动时互相覆盖。
         """
         moved = False
         for path in _doc_files(self._vault, doc_source_id):
@@ -513,14 +488,11 @@ class SyncService:
         *,
         source_ids: set[str] | None = None,
     ) -> int:
-        """物理删除已标记文档；唯一删除路径，须经确认由显式触发进入。
+        """物理删除已标记文档；唯一删除路径，须经确认进入。
 
-        ``source_ids=None`` 处理全部已标记来源（既有全量契约）；传入集合时只
-        处理选定的来源（单项移除入口），不扩大为全量清理。``user_removed``
-        标记无论经哪个入口到达，都必须走同一完整收尾管线（文件 + 索引消减 +
-        快照失效）后才清除标记；missing/superseded 保持既有文件删除口径。
-        某文档有文件删除失败时**保留其 tombstone**：若照常清除标记，滞留的检疫
-        文件将永远失去清理入口（评审 A3）。部分成功的文档计 failed，不计入删除数。
+        ``source_ids=None`` 处理全部已标记来源，传入集合时只处理选定来源。
+        ``user_removed`` 必须走完整收尾（文件、索引消减、快照失效）后才清除标记。
+        删除失败时保留 tombstone 供重试。
         """
         tombstones = self._registry.list_tombstones()
         if source_ids is None:
@@ -577,14 +549,13 @@ class SyncService:
             )
         return removed
 
-    # ---- 手动移除（change remove-manual-library-document） ----
+    # ---- 手动移除 ----
 
     def run_removal(self, source_id: str, observer: ScanObserver) -> bool:
         """确认移除一个手动来源；完整收尾后才清除标记，失败保留可重试状态。
 
-        必须在持有同库写锁时调用（锁由任务/命令入口统一获取）。取消只作用于
-        物理删除开始之前：本次新增的确认标记与未发布暂存产物一并撤销；此前
-        已部分执行的重试确认状态不撤销（design D5）。
+        必须在持有同库写锁时调用。取消只在物理删除开始前生效：新增标记和未发布
+        暂存产物会撤销，已有重试标记会保留。
         """
         removal_eligibility(self._registry, self._vault, self._data_dir, source_id)
         tombstone = self._registry.list_tombstones().get(source_id)
@@ -615,9 +586,7 @@ class SyncService:
         rel_path = source_id
         for path in paths:
             try:
-                # 定位结果必须仍在受管根内（符号链接越界防御，双层校验）：
-                # 两侧都 resolve 后比较——vault 可能是相对路径（CLI 默认布局），
-                # 未解析路径与绝对根的 is_relative_to 恒为 False 会误拒一切文件
+                # 两侧都 resolve 后比较；vault 可能是相对路径，未解析时 is_relative_to 会误拒。
                 if path.is_symlink() or not path.resolve().is_relative_to(vault_root):
                     logger.warning("refusing removal outside managed roots: %s", path)
                     delete_failed = True

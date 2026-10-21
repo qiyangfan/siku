@@ -1,6 +1,4 @@
-// 日期时间展示单源:固定 zh-CN + 公历 24 小时制(走查发现 2026-09 ④核销)。
-// 禁裸 `toLocaleString()`——其随宿主系统 locale 漂移,英文系统呈现美式 12 小时制,
-// 与全中文产品口径相悖;非法输入按原样回退,由调用方保证可读性。
+// 固定使用 zh-CN、公历和 24 小时制；非法输入原样返回。
 const DATE_TIME_FORMAT = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric",
   month: "2-digit",

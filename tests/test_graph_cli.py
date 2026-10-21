@@ -1,7 +1,7 @@
-"""graph/wiki CLI 行为测试：人类/JSON 输出、缺 key 指引、图谱缺失、空语料、rebuild 路径。
+"""graph/wiki CLI 行为测试：人类/JSON 输出、缺 key 指引、图谱缺失、空语料与 rebuild。
 
-LLM 注入通过 monkeypatch 替换 siku.cli 的 LlmGraphExtractor/CommunitySummarizer；
-缺 key 路径走真实 LlmGraphExtractor（惰性校验，不打任何网络）。
+LLM 通过 monkeypatch 替换 siku.cli 的 LlmGraphExtractor/CommunitySummarizer；缺 key
+路径走真实抽取器（惰性校验，不发网络请求）。
 """
 
 from __future__ import annotations
@@ -77,12 +77,7 @@ class StubSummarizer:
 
 @pytest.fixture(autouse=True)
 def _hermetic_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """隔离宿主环境的 LLM 通道回退：图/wiki 身份测试不允许被 ambient 端点改写。
-
-    宿主机若导出了 DASHSCOPE_API_KEY 等变量，resolve_llm_channel 会整组回退到
-    通义端点，使建图摘要身份（model_id）偏离 fake 预期的 deepseek-chat，测试
-    随身份校验失败而假红。全部用例自管 LLM 环境，进入本模块即清空回退源。
-    """
+    """隔离宿主环境的 LLM 通道回退，避免真实端点改写图谱身份。"""
     for name in (
         "SIKU_LLM_BASE_URL",
         "SIKU_LLM_MODEL",
@@ -244,8 +239,7 @@ class TestGraphPreWarning:
     def test_model_change_prewarns_full_reextract_on_stderr(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """换模型后显式构建预告全量重抽规模（design D3）：stderr 告知，
-        stdout 保持纯净 JSON（--json 稳定输出契约不被污染）。"""
+        """换模型后预告全量重抽：告警写 stderr，stdout 保持纯 JSON。"""
         write_corpus(tmp_path / VAULT)
         with monkeypatch.context() as scoped:
             scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())

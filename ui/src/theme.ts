@@ -74,8 +74,7 @@ const SEMANTIC_RED = "#a43d3d";
 const INK = "#182230";
 const CANVAS = "#f6f8fb";
 
-// 暗色取值（design D3）：亮色值的明度反转、同族色相，经对比度实测标定
-// （守卫见 design-system.test.ts「暗色取值对比度守卫」），不在两态间另起色相。
+// 暗色值沿用亮色的色相，并按对比度调整明度。
 const DARK_INK = "#e6ecf3";
 const DARK_CANVAS = "#10161d";
 const DARK_SURFACE = "#182230";
@@ -85,10 +84,8 @@ const DARK_BORDER = "#2a3644";
 const DARK_BORDER_STRONG = "#3a4a5c";
 
 /**
- * 覆盖 Mantine 默认 green/yellow/red 色阶：Alert/Badge 的 color 属性与下方
- * CSS 语义 token 从此同源，杜绝「Mantine 默认鲜亮板」与「siku muted 语义色」
- * 两套体系并存。阶位口径：1=浅底(wash)、2=描边、6=核心、7=加深、9=浅底上的
- * 文字；1↔9 与 1↔6 的对比度由 design-system.test.ts 守卫（≥4.5:1）。
+ * 覆盖 Mantine 默认的 green/yellow/red 色阶，使组件颜色与 CSS 语义 token 同源。
+ * 阶位：1=浅底、2=描边、6=核心、7=加深、9=浅底文字；浅底与文字对比度至少为 4.5:1。
  */
 const SUCCESS_RAMP: MantineColorsTuple = [
   "#eef7f2",
@@ -145,9 +142,7 @@ export const GRAPH_COMMUNITY_COLORS = [
 export const GRAPH_UNASSIGNED_COLOR = "#7b8798";
 
 /**
- * 画布绘制读不到 CSS 变量的常量例外（共两处，登记防漏改）：
- * ①社区分类色板与未分配灰——本就随 community_id 常量化，暗底可读性另立；
- * ②边线与节点标签色——随主题取亮暗两值，经本函数单点供给。
+ * 画布绘制无法读取 CSS 变量，这里集中提供边线与标签色（亮暗两套）。
  */
 export function graphCanvasThemeColors(colorScheme: "light" | "dark"): { edge: string; label: string } {
   return colorScheme === "dark"
@@ -172,10 +167,7 @@ export const theme = createTheme({
   primaryColor: "siku",
   colors: {
     siku: primary,
-    // 用 siku 语义 ramp 顶替默认色板：组件写 color="green|yellow|red" 即得语义色，
-    // 不存在「顺手写默认色名却拿到 Mantine 原色」的回退路径。
-    // gray 有意豁免：中性系无语义角色，且 Mantine 默认 gray 同时驱动次级按钮、
-    // 输入框描边等组件 chrome，覆盖会波及全部默认件外观
+    // 用 siku 语义色阶替换 Mantine 默认 green/yellow/red；gray 保留默认以避免影响通用外观。
     green: SUCCESS_RAMP,
     yellow: WARNING_RAMP,
     red: DANGER_RAMP,
@@ -200,8 +192,7 @@ export const theme = createTheme({
 });
 
 export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
-  // 两态共用块只留度量与排印刻度；方案相关 token（色彩/投影）分流进 light/dark，
-  // 否则暗色只能整体覆盖、无法两态并存（design D2）
+  // 共享变量只放度量和排印；颜色与投影分别配置于 light 和 dark。
   variables: {
     "--font-display": FONT_DISPLAY,
     "--font-caption": FONT_SIZE_SCALE.xs,
@@ -245,7 +236,7 @@ export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
   },
   light: {
     "--color-ink": INK,
-    // 辅助字对比度达标口径（≥4.5:1，UI 闸门硬底线）：曾在浅灰画布上仅 3.1–3.9:1
+    // 辅助文字与画布的对比度至少为 4.5:1。
     "--color-ink-soft": "#47525f",
     "--color-ink-faint": "#545f6e",
     "--color-canvas": CANVAS,
@@ -255,8 +246,7 @@ export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
     "--color-accent": currentTheme.colors.siku[6],
     "--color-accent-strong": currentTheme.colors.siku[7],
     "--color-accent-wash": currentTheme.colors.siku[0],
-    // 语义色一律取自上方被覆盖的 Mantine 色阶（阶位口径见 ramp 注释），
-    // 与组件 color="green|yellow|red" 天然同色；design-system.test.ts 守卫同源性
+    // 语义色取自上方覆盖的 Mantine 色阶，与组件 color 属性保持一致。
     "--color-success": currentTheme.colors.green[6],
     "--color-warning": currentTheme.colors.yellow[6],
     "--color-warning-wash": currentTheme.colors.yellow[1],
@@ -269,11 +259,8 @@ export const cssVariablesResolver: CSSVariablesResolver = (currentTheme) => ({
     "--mantine-color-body": CANVAS,
     "--mantine-color-text": INK,
   },
-  // 暗色取值经对比度逐族标定（design D3，守卫见 design-system.test.ts）：
-  // 核心语义色取各自 ramp 亮色阶位（success 4 / warning 3 / danger 3），
-  // 红 3 阶是 wash 文字达标线（4 阶仅 3.84:1），不能用统一阶位通吃。
-  // 余量最薄配对：accent 对 accent-wash 仅 4.6:1（评审实测 4.597），调 siku
-  // ramp 时这条最先破线——动 ramp 前先看对比度守卫
+  // 暗色语义色按各自色阶选择，确保文字与浅底对比度至少为 4.5:1。
+  // 红色使用第 3 阶（第 4 阶对比度仅 3.84:1）；accent 与浅底约为 4.6:1。
   dark: {
     "--color-ink": DARK_INK,
     "--color-ink-soft": DARK_INK_SOFT,

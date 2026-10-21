@@ -4,9 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>siku 四库</title>
-    <!-- 主题初始化脚本与 @mantine/core 的 ColorSchemeScript 同源（design-system.test.ts
-         防漂移守卫）：auto 态读系统偏好，手动值（库默认存储键）优先于系统，
-         与主应用同一事实源 -->
+    <!-- 与主应用共用主题存储；auto 状态跟随系统偏好。 -->
     <script>
 try {
   var _colorScheme = window.localStorage.getItem("mantine-color-scheme-value");
@@ -52,8 +50,7 @@ try {
         --focus-outline-offset: 0.125rem;
         --shadow-card: 0 0.75rem 2rem rgb(24 34 48 / 0.06);
       }
-      /* 暗色块与主应用 resolver dark 块同源同值（theme.ts design D3）；
-         以库初始化脚本写的 data-mantine-color-scheme 为准，auto 态即系统偏好 */
+      /* 暗色值与主应用一致，由初始化脚本设置主题属性。 */
       :root[data-mantine-color-scheme="dark"] {
         color-scheme: dark;
         --color-ink: #e6ecf3;
@@ -193,7 +190,7 @@ try {
       </div>
     </div>
     <script>
-      // 壳状态页只消费 Rust 发来的启动事件；重试=重新加载本页（触发壳重新编排启动）
+      // 重试通过重载页面触发 Rust 重新启动 sidecar。
       const { listen } = window.__TAURI__.event;
       const statusEl = document.getElementById("status");
       const spinnerEl = document.getElementById("spinner");
@@ -233,7 +230,7 @@ try {
         if (payload.state === "starting") {
           statusEl.textContent = "正在启动本地服务…";
         } else if (payload.state === "succeeded") {
-          // 同源加载：问答页由内核 sidecar 提供，业务数据继续走既有 HTTP API
+          // 问答页由 sidecar 提供，业务请求仍经 HTTP API。
           window.location.replace(payload.url);
         } else if (payload.state === "failed") {
           showError(payload.message);

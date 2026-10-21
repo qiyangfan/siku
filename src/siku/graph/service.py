@@ -1,6 +1,6 @@
 """图谱构建编排：扫描 chunk → 缓存优先抽取 → 合并 → 社区发现 → parquet 落盘。
 
-编排纪律（design.md）：
+编排约束：
 - 逐 chunk 抽取成功即写缓存，中断后重跑自动续传；
 - 全部产物在抽取完成后一次性落盘，失败不写半成品图谱；
 - `--rebuild` 忽略缓存强制重抽；换模型/换 prompt 版本由缓存键变化显式失效。
@@ -65,11 +65,10 @@ def build_graph(
     rebuild: bool = False,
     summary_identity: SummaryIdentity = DEFAULT_SUMMARY_IDENTITY,
 ) -> GraphBuildResult:
-    """构建图谱并落盘三件 parquet，返回体检报告。
+    """构建图谱并原子落盘三件 parquet，返回体检报告。
 
     `summary_identity` 是社区摘要缓存键的摘要器身份，必须与后续 `siku wiki`
-    所用摘要器一致（CLI 两命令均默认 DeepSeek，常量同源）；
-    wiki 阶段直接消费 parquet 中存储的键并校验身份一致性。
+    使用的摘要器一致。
     """
     chunks = load_chunks(vault)
     cache = ExtractionCache(cache_file_path(data_dir))
@@ -109,8 +108,7 @@ def build_graph(
                 community_id=community_id,
                 member_entity_ids=members,
                 level=0,
-                # 键指纹须覆盖摘要 prompt 全部输入（成员展示名/类型在内），
-                # 与 wiki 阶段的过期校验共用同一函数（community.py 单一定义点）
+                # 摘要键与 wiki 阶段的过期校验共用同一函数。
                 summary_cache_key=summary_cache_key(
                     [entity_by_id[member] for member in members],
                     internal_relation_triples(merged.relations, set(members)),
@@ -120,7 +118,7 @@ def build_graph(
             for community_id, members in enumerate(member_groups)
         )
         save_graph(data_dir, merged.entities, merged.relations, communities)
-        # 产物发布成功才记录抽取器身份：自动维护的资格闸门据此比对（design D3）；
+        # 产物发布成功才记录抽取器身份，供自动维护检查配置是否匹配；
         # 构建失败不落身份，避免把旧产物的身份误记为当前通道
         cache.put_build_identity(
             extractor.extractor_id, extractor.model_id, extractor.prompt_version

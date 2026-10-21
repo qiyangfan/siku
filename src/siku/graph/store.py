@@ -1,8 +1,7 @@
 """图谱本体 parquet 落盘与加载：entities/relations/communities 三件。
 
-图谱本体只用 parquet（ADR-0003 三件套边界内），写读全部确定性排序，
-产物字节级稳定——"删本体重建 diff 为空"闸门的存储前提。写入走
-临时文件 + `os.replace` 原子替换，崩溃不留半成品。
+写读全部确定性排序，产物字节级稳定；写入走临时文件 + `os.replace` 原子替换，
+崩溃不留半成品。
 """
 
 from __future__ import annotations
@@ -47,7 +46,7 @@ _RELATIONS_SCHEMA = pa.schema(
         pa.field("source_entity", pa.string(), nullable=False),
         pa.field("target_entity", pa.string(), nullable=False),
         pa.field("type", pa.string(), nullable=False),
-        # 首见原文证据：wiki 条目与社区摘要 prompt 的消费方（design.md 关系证据要求）
+        # 首见原文证据供 wiki 条目和社区摘要使用。
         pa.field("evidence", pa.string(), nullable=False),
         pa.field("anchors", pa.list_(_ANCHOR_SCHEMA), nullable=False),
     ]
@@ -177,8 +176,7 @@ def load_graph(
         for row in entity_rows
     )
     for row in relation_rows:
-        # 引用完整性校验：混版三件表（实体缺失被关系引用）是可检测的损坏，
-        # 静默回退为裸 id 会把脏数据带进 wiki 产物
+        # 关系引用了不存在的实体说明三件表混版，报损坏而不是静默回退裸 id。
         for endpoint in (row["source_entity"], row["target_entity"]):
             if endpoint not in entity_names:
                 raise GraphStoreCorruptError(
@@ -199,7 +197,6 @@ def load_graph(
         for row in relation_rows
     )
     for community_index, row in enumerate(community_rows):
-        # 引用完整性校验：社区成员必须存在于实体表（混版损坏显式暴露）
         for member_id in row["member_entity_ids"]:
             if member_id not in entity_names:
                 raise GraphStoreCorruptError(

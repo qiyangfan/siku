@@ -1,10 +1,4 @@
-"""检索模块的稳定领域模型。
-
-这些类型是 CLI、未来的 HTTP 层与测试共同依赖的稳定契约：
-- `ChunkRecord`/`DocumentRecord` 描述从 `vault/notes/` 解析出的事实；
-- `IndexReport` 是 `siku index` 的机器可读统计；
-- `SearchResult`/`SearchOptions` 是混合召回的输出与参数契约。
-"""
+"""检索模块的稳定领域模型：投影记录、索引统计与检索结果/参数契约。"""
 
 from __future__ import annotations
 

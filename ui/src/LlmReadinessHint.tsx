@@ -3,10 +3,8 @@ import { Button, Group } from "@mantine/core";
 import { getSettings, type AskReadiness } from "./api";
 
 /**
- * wiki/图谱空态的模型就绪提示（信息层，不做门控）：LLM 凭证缺失时说明缺项并给
- * 「去设置」入口；就绪时说明可直接构建。就绪判定复用 ask_readiness 的稳定
- * 机器 token（本组件只关心 llm.api_key）；读取失败或形状不可得时静默省略
- * （fail-open），不阻塞空态卡片的主行动按钮。
+ * wiki/图谱空态的模型就绪提示（不门控）；缺少 LLM 凭证时给出设置入口，
+ * 读取失败时静默省略。
  */
 export function LlmReadinessHint({ onGoToSettings }: { onGoToSettings: () => void }) {
   const [readiness, setReadiness] = useState<AskReadiness | null>(null);

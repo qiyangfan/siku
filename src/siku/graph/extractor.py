@@ -45,11 +45,11 @@ class LlmGraphExtractor:
         *,
         api_key_env: str = DEFAULT_API_KEY_ENV,
     ) -> None:
-        # 默认走 openai 兼容通道（BYO key）；测试注入 ScriptedLlmProvider
+        # 默认走 openai 兼容通道（BYO key）。
         self._provider: LlmProvider = (
             provider if provider is not None else HttpxLlmProvider(api_key_env=api_key_env)
         )
-        # 协议身份字段用实例属性（provider 配置在实例生命周期内不变）
+        # provider 配置在实例生命周期内不变。
         self.model_id: str = self._provider.model_id
 
     def extract(self, chunk: ChunkRecord) -> GraphExtraction:

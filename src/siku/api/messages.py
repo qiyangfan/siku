@@ -1,14 +1,7 @@
 """CLI 与 HTTP API 共用的领域错误文案和归一化映射。
 
-只读读取面（浏览/图谱/wiki 清单与单条）的错误无 CLI 对应路径，但同样集中在
-本模块（map_read_error）成文：全部错误码与文案保持单一映射来源，端点禁止
-内联字面量。错误语义边界见 api/reading.py 模块 docstring。
-
-双面文案（change `fix-model-supply-error-surfacing` 决议 #2）：映射来源仍是同一个
-函数，但按调用面（`surface`）分别成文——HTTP 面的消费者是桌面/WebUI，没有命令行
-语境，指引一律指向「设置」页并说明保存后免重启生效，MUST NOT 出现配置文件路径与
-CLI 参数教程；CLI 面保留文件与参数级指引（缺省 `surface="cli"`，既有文案零漂移）。
-状态码与错误码两面一致，差异只在话术。
+读取面错误也集中在此成文，端点不得内联错误字面量；边界见 api/reading.py。
+HTTP 指引面向设置页，CLI 指引面向终端，两者共用状态码与错误码。
 """
 
 from __future__ import annotations
@@ -123,23 +116,15 @@ def map_ask_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
             "LLM 未返回可验证的问答结果：请检查配置后重试。",
         )
     if isinstance(exc, ModelNotAvailableError):
-        # 问答面的模型端点错误一律走 HTTP 文案（指向「设置」页）：凭证被拒、
-        # 配置文件不可解析与未配置三种语义在 map_domain_error 内已分型分文，
-        # 这里不再自行拼一份口径，避免第二套事实源。
+        # 统一交给通用映射：端点错误的各种语义已在那里分型。
         return map_domain_error(exc, api_key_env=api_key_env, surface="http")
     return map_domain_error(exc, api_key_env=api_key_env, surface="http")
 
 
 def protocol_error_mapping(exc: ProtocolConfigError, *, surface: ErrorSurface) -> ErrorMapping:
-    """运行期协议越界的单一映射：HTTP 读取面、连通性探测面与 CLI 面共用。
+    """映射 HTTP、探测和 CLI 的协议错误，并按配置来源生成指引。
 
-    状态码与错误码三面一致（`503` / `invalid_settings`），差异只在话术（模块 docstring
-    的双面口径）。文案点名的杠杆必须只有真正能触发它的那一个：文件层的非法取值已在
-    `load_config` 载入点被拒（归 `invalid_config_file`）、`--llm-protocol` 是枚举参数
-    （非法值在解析阶段就被拒）、embedding/rerank 的环境变量层没有 protocol 字段——所以
-    这里只剩「LLM 通道 + `SIKU_LLM_PROTOCOL`」与「程序传入的通道配置」两种来源。指错杠杆
-    等于让用户去改一个没坏的地方：原先的「在设置页重新保存即可覆盖」正是这样把环境变量层
-    的坏值说成了页面能修，而页面保存覆盖不了优先级更高的那一层。
+    文件值在载入时校验，命令行枚举由参数解析拒绝；此处处理环境变量或程序传入的非法值。
     """
     if exc.kind == "channel_unsupported":
         if surface == "http":
@@ -179,10 +164,8 @@ def map_domain_error(
 ) -> ErrorMapping:
     """将领域错误映射为稳定状态码、错误码和中文文案。
 
-    `surface` 决定话术面向哪张用户面（缺省 `"cli"` 保持既有命令行文案零漂移）：
-    `"http"` 一律指向「设置」页并说明保存后免重启生效，MUST NOT 出现配置文件路径
-    与 CLI 参数教程。分型分支（凭证被拒 / 配置文件不可解析）MUST 排在通用类之前——
-    它们是通用类的子类，`isinstance` 首个命中即返回，顺序即优先级。
+    `surface="http"` 的指引指向设置页，`surface="cli"` 的指引面向终端。
+    凭证与配置文件错误是通用错误的子类，必须先于基类匹配。
     """
     if isinstance(exc, ScannedPdfIngestError):
         return ErrorMapping(
@@ -237,7 +220,7 @@ def map_domain_error(
             "API key（如 DeepSeek），再重新执行本命令。",
         )
     if isinstance(exc, LlmAuthError):
-        # 凭证被拒先于通用 LLM 服务失败：出路与「响应不可解析」完全不同
+        # 凭证被拒的出路与响应不可解析不同，先单独返回。
         if surface == "http":
             return ErrorMapping(
                 503,
@@ -298,7 +281,7 @@ def map_domain_error(
             "图谱产物缺失：请先执行 siku graph 构建图谱，再生成 wiki。",
         )
     if isinstance(exc, GraphStoreCorruptError):
-        # 整库级派生产物损坏 → 409 状态前置（单条目级损坏走 422，边界见 reading.py）
+        # 整库损坏返回 409；单条目损坏走 422。
         return ErrorMapping(
             409,
             "graph_store_corrupt",
@@ -310,7 +293,7 @@ def map_domain_error(
             409, "graph_artifacts_stale", "图谱产物与当前摘要配置不一致：请重新执行 siku graph。"
         )
     if isinstance(exc, ModelCredentialError):
-        # 子类分支 MUST 在 ModelNotAvailableError 之前，否则被通用文案吞掉
+        # 先于 ProviderError 匹配，避免落入通用文案。
         label = _channel_label(exc.channel)
         if surface == "http":
             return ErrorMapping(
@@ -329,8 +312,7 @@ def map_domain_error(
             f"或用 --{exc.channel}-api-key-env 指定后重试。",
         )
     if isinstance(exc, ModelConfigFileUnreadableError):
-        # 与「不可解析」分家：这里文件内容未知，覆盖会毁掉可能完好的配置，
-        # 而「未配置」文案会让用户去补一个其实配好了的通道
+        # 文件内容未知，覆盖会毁掉可能完好的配置，也不能按「未配置」指引。
         if surface == "http":
             return ErrorMapping(
                 503,
@@ -349,9 +331,7 @@ def map_domain_error(
             "不影响已摄取语料与索引。",
         )
     if isinstance(exc, ModelConfigFileError):
-        # 本类现在覆盖「文件层无效」的两种形态:内容不可解析,以及字段取值不在允许范围
-        # （非法值在载入点就被拒,见 model_supply._reject_invalid_file_protocols）。
-        # 两者出路相同:重新保存覆盖,或删除后重配。`detail` 是服务端自撰的字段级补充。
+        # 本类覆盖不可解析与取值非法两种形态，出路相同；detail 是字段级补充。
         hint = f"{exc.detail}。" if exc.detail else ""
         if surface == "http":
             return ErrorMapping(
@@ -484,15 +464,7 @@ def map_domain_error(
 
 
 def map_read_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
-    """只读读取面（浏览/图谱/wiki 清单与单条）的错误归一化映射。
-
-    读取面错误无 CLI 对应路径，「与 CLI 共享同一映射来源」在此落为：全部读
-    错误码与文案只在本函数成文，端点禁止内联字面量。读上下文对同一领域错误
-    的语义可与写路径不同并在此显式成文——GraphArtifactsMissingError 对读请求
-    是 404 资源未生成，对写请求才是 409 状态前置；其余领域错误回落
-    map_domain_error 的 HTTP 面（含 409 graph_store_corrupt / 422 note_parse_error；
-    读取面只有 HTTP 消费者，故固定 surface="http"）。
-    """
+    """读取面错误归一化；图谱产物缺失返回 404，其余复用 HTTP 面通用映射。"""
     if isinstance(exc, NoteNotFoundError):
         return ErrorMapping(404, "note_not_found", "请求的笔记不存在：可能已被移除或重新摄取。")
     if isinstance(exc, GraphEntityNotFoundError):
@@ -522,15 +494,12 @@ def map_read_error(exc: Exception, *, api_key_env: str) -> ErrorMapping:
 
 
 def retrieval_error_message(exc: RetrievalError) -> str:
-    """返回 CLI 使用的检索错误文案。"""
     return map_domain_error(exc, api_key_env="SIKU_LLM_API_KEY").message
 
 
 def graph_error_message(exc: GraphError, api_key_env: str) -> str:
-    """返回 CLI 使用的图谱错误文案。"""
     return map_domain_error(exc, api_key_env=api_key_env).message
 
 
 def ingest_error_message(exc: IngestError) -> str:
-    """返回 CLI 使用的摄取错误文案。"""
     return map_domain_error(exc, api_key_env="SIKU_LLM_API_KEY").message

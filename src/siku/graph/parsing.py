@@ -1,8 +1,7 @@
 """LLM 输出到 `GraphExtraction` 的解析器：严格 JSON 校验与引用解析。
 
-prompt 约定 relations 用实体下标引用两端；部分兼容端点会直接给实体名，
-解析器两种都接受（未知名称视为引用越界）。全部不合法输入一律转
-`GraphExtractionError`（用户可读，指明 chunk 与问题），空抽取是合法结果。
+关系端点接受实体下标或实体名，未知名称视为引用越界。非法输入统一转
+`GraphExtractionError` 并带上 chunk 信息；空抽取是合法结果。
 """
 
 from __future__ import annotations

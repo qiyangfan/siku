@@ -133,7 +133,7 @@ function jobOutcome(job: LibraryJob): { tone: "ok" | "error"; text: string } | n
     return { tone: "ok", text: `清理完成：已物理移除 ${removed} 项失效文档。` };
   }
   if (job.kind === "scan") {
-    // 检疫移位等动作与入库动作都以 updated 呈现，按「动作数」诚实计数
+    // 检疫移位与入库都呈现为 updated，按动作数计数。
     const failedText = job.failed > 0 ? `，${job.failed} 项失败` : "";
     return { tone: "ok", text: `扫描完成：处理 ${job.done} 项动作${failedText}。` };
   }
@@ -159,7 +159,7 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 来源目录管理区：默认折叠，首次展开才请求（避免干扰主清单的首屏）
+  // 来源目录管理区：默认折叠，展开才请求（避免干扰主清单的首屏）
   const [syncSectionOpen, setSyncSectionOpen] = useState(false);
   const [syncSources, setSyncSources] = useState<LibrarySyncSource[] | null>(null);
   const [syncLoadFailed, setSyncLoadFailed] = useState(false);

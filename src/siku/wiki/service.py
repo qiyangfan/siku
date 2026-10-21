@@ -1,8 +1,6 @@
-"""wiki 生成编排：加载图谱三件表 → 逐社区摘要（缓存优先）→ 渲染写盘。
+"""wiki 生成编排：加载图谱 → 逐社区摘要（缓存优先）→ 渲染写盘。
 
-摘要失败（五剧本任一）即中止且不写任何 wiki 文件；
-成功摘要逐社区入缓存（summary 命名空间，键含独立 prompt 版本），
-wiki 全量重建时零次 LLM 调用。
+摘要失败即中止，不写任何 wiki 文件；成功摘要按社区入缓存，全量重建时零次 LLM 调用。
 """
 
 from __future__ import annotations
@@ -54,9 +52,7 @@ def generate_wiki(data_dir: Path, summarizer: Summarizer) -> WikiResult:
                 if relation.source_entity_id in member_ids
                 and relation.target_entity_id in member_ids
             ]
-            # 缓存键以图谱构建阶段写入 parquet 的为准（单一事实源）；
-            # wiki 阶段用同一函数现算键做一致性校验：摘要身份与图谱构建时
-            # 不一致（换摘要模型/旧版本产物）时显式失效，禁止静默复用旧缓存
+            # 用同一函数现算缓存键；摘要器身份与图谱构建时不一致就报过期，禁止复用旧缓存。
             triples = internal_relation_triples(relations, member_ids)
             identity = SummaryIdentity(
                 summarizer_id=summarizer.summarizer_id,

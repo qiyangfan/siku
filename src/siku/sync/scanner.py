@@ -155,13 +155,10 @@ def plan_source(
         if outcome == "refresh":
             plan.stat_refresh.append((path_str, stat.st_size, stat.st_mtime_ns, digest))
             continue
-        # 恢复但内容已变的 unlinked 文件也落入 fresh：走超替入库，
-        # missing 标记由执行期翻转为 superseded
+        # 恢复但内容已变的 unlinked 文件按超替入库，missing 标记执行期转为 superseded。
         fresh[path_str] = (digest, stat.st_size, stat.st_mtime_ns)
 
-    # 登记中消失的 linked 文件：先与「真新文件」配对为改名（同内容哈希），否则记
-    # 缺失。配对只考虑无登记（old_entry is None）的 fresh 路径：若允许与内容变更
-    # 的已登记文件配对，会吞掉该文件的超替语义并引发登记主键冲突（评审 A1）。
+    # 消失的 linked 文件先与真新文件按同哈希配对为改名，否则记缺失；内容变更不参与改名。
     new_only = {path_str: stats for path_str, stats in fresh.items() if path_str not in entries}
     renamed: set[str] = set()
     for path_str, entry in entries.items():

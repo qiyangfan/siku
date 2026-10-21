@@ -1,13 +1,8 @@
 """检索用确定性中文预分词器。
 
-方案：零依赖的确定性 unigram+bigram 预分词——中文按连续汉字 run 同时产出
-单字与相邻二元 token，英文/数字/型号（含连字符、点、下划线、斜杠）保留为
-整体小写 token，标点与多余空白归一化丢弃。查询与索引进 FTS5 前必须经过
-同一 tokenizer（ADR-0003 红线：禁止裸 FTS5 上中文）。
-
-选型理由：词典分词（jieba 等）引入额外依赖与词典资产，而 unigram+bigram
-在混合召回架构下只承担"关键词精确召回"职责，语义召回由向量通道承担；
-若 bigram 方案成为检索瓶颈，按 ROADMAP 触发器重开 FTS5 分词器选型。
+中文连续汉字同时产出单字与相邻二元 token；英文、数字与型号保留整体并转小写。
+查询与索引必须经过同一 tokenizer（ADR-0003：禁止裸 FTS5 上中文）。词典分词的
+语义召回由向量通道承担；若 bigram 成为瓶颈，再按 ROADMAP 触发器重选。
 """
 
 from __future__ import annotations
@@ -25,7 +20,6 @@ TOKENIZER_VERSION = "cjk-uni-bigram-v1"
 # CJK 统一表意文字（含扩展 A 与兼容区）；假名/谚文等暂不在 BM25 分词范围
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
-# 英文/数字/型号 token：字母数字开头，可含 - . _ / @ 的连续序列
 _TOKEN_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/@-]*")
 # token 尾部允许出现的连接符，剥除避免把句尾标点吸进 token
 _TOKEN_TRAILING = "._/@-"

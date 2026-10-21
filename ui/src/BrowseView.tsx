@@ -28,8 +28,7 @@ export function BrowseView() {
   const [listError, setListError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  // 各异步操作独立序号防竞态：慢响应不得覆盖同类新操作；
-  // 跨操作不共用序号，避免被否决方的 loading 旗标永久卡死
+  // 各异步操作独立序号：慢响应不得覆盖新操作，也避免 loading 旗标互相卡死。
   const pageSeqRef = useRef(0);
   const detailSeqRef = useRef(0);
 

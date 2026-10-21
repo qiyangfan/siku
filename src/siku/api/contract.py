@@ -21,7 +21,7 @@ def refresh_snapshot(path: Path = DEFAULT_SNAPSHOT_PATH) -> None:
 
 
 def main() -> None:
-    """解析契约刷新命令。"""
+    """解析 --refresh 并刷新契约快照。"""
     parser = argparse.ArgumentParser(description="刷新 siku OpenAPI 契约快照")
     parser.add_argument("--refresh", action="store_true", help="显式刷新 contracts/openapi.json")
     args = parser.parse_args()

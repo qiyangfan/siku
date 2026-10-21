@@ -1,13 +1,8 @@
-"""同库写入的跨进程互斥（change remove-manual-library-document）。
+"""同库写入的跨进程互斥。
 
-同一个真实 vault 的全部写入入口——资料库导入、原始摄取、扫描写入阶段、
-purge、索引/图谱/Wiki 构建、确认移除、影响同步归属的来源启停/解除登记——
-共享一把平台文件锁（filelock），覆盖 HTTP 与 CLI 的不同进程。锁文件放在
-``vault/.siku/``（固定非语料位置，不进清单推导，也不被来源目录喂养）。
-
-进程内 LibraryJobs 单任务槽继续承担状态与反馈；本锁补齐跨进程边界。
-任务获得写入权后保持到全部写入与发布结束；入口统一取锁，内部共享实现
-不重复抢锁（同进程同路径复用同一 FileLock 实例，filelock 自身可重入）。
+资料库导入、摄取、扫描、清理、索引/图谱/Wiki 构建、移除与来源启停共享一把
+``vault/.siku/library.lock`` 文件锁，覆盖 HTTP 与 CLI 进程。锁路径固定且不进语料
+清单；进程内单任务槽仍负责状态与反馈。
 """
 
 from __future__ import annotations
@@ -27,7 +22,6 @@ class LibraryWriteBusyError(RuntimeError):
 
 
 def library_lock_path(vault: Path) -> Path:
-    """写锁文件在该 vault 下的固定非语料位置。"""
     return vault / LOCK_DIR_NAME / LOCK_FILE_NAME
 
 

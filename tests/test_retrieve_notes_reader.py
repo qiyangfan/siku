@@ -78,7 +78,7 @@ class TestReadNote:
         assert chunks[0].text == "行一带 多空格 行二 制表"
 
     def test_h1_stripped_after_leading_blank_line(self, tmp_path: Path) -> None:
-        # Phase 1 投影在 frontmatter 结束标记后总输出一个空行再写 H1 标题
+        # 投影在 frontmatter 后保留一个空行，再写 H1 标题。
         note = tmp_path / VAULT / "notes" / "blank.md"
         note.parent.mkdir(parents=True)
         note.write_text(

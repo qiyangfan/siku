@@ -1,8 +1,6 @@
-"""检索 CLI 行为测试：index/search/evaluate-retrieval 的人类与 JSON 输出、错误路径。
+"""检索 CLI 行为测试：index/search/evaluate-retrieval 的输出与错误路径。
 
-CLI 走真实 sync/search 链路（fake provider 注入通过 monkeypatch 替换
-``_embedding_component``/``_reranker_component`` 装配点），保证命令层与领域层
-一起被覆盖；未配置指引路径走真实分层解析（config 指向不存在的路径）。
+CLI 走真实 sync/search 流程，仅替换 provider 装配点；未配置指引走真实分层解析。
 """
 
 from __future__ import annotations

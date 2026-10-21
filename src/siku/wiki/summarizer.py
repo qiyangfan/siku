@@ -1,8 +1,6 @@
-"""社区摘要器：成员实体与内部关系交 LLM 生成简体中文摘要。
+"""社区摘要器：成员实体与内部关系交 LLM 生成中文摘要。
 
-复用抽取缓存机制（`cache.sqlite3` 的 summary 命名空间），
-键含独立 prompt 版本；摘要失败按五剧本语义抛领域错误，
-空摘要绝不落盘、绝不入缓存。
+摘要按 summary 命名空间缓存，键含独立 prompt 版本；空摘要不落盘、不入缓存。
 """
 
 from __future__ import annotations
@@ -66,7 +64,7 @@ class CommunitySummarizer:
         self._provider: LlmProvider = (
             provider if provider is not None else HttpxLlmProvider(api_key_env=api_key_env)
         )
-        # 协议身份字段用实例属性（provider 配置在实例生命周期内不变）
+        # provider 配置在实例生命周期内不变。
         self.model_id: str = self._provider.model_id
 
     def summarize(self, members: Sequence[Entity], relations: Sequence[Relation]) -> str:
@@ -75,7 +73,7 @@ class CommunitySummarizer:
         )
         summary = content.strip()
         if not summary:
-            # provider 已保证非空，此处为纵深防御：空摘要绝不外流
+            # 纵深防御：provider 理论上已保证非空。
             raise LlmEmptyResponseError("Community summarizer returned an empty summary")
         return summary
 

@@ -285,7 +285,7 @@
       },
       "put": {
         "summary": "Library Scan Settings Write",
-        "description": "更新自动扫描间隔与图谱自动刷新开关：调度/收尾每轮现读，免重启生效；负数非法。",
+        "description": "更新自动扫描间隔与图谱刷新开关；负数非法，设置每轮现读。",
         "operationId": "library_scan_settings_write_api_library_scan_settings_put",
         "requestBody": {
           "content": {
@@ -363,7 +363,7 @@
     "/api/library/remove": {
       "post": {
         "summary": "Library Remove",
-        "description": "单来源确认移除：真实来源 ID + 显式确认；请求不接受文件路径。",
+        "description": "按来源 ID 确认移除；请求不接受文件路径。",
         "operationId": "library_remove_api_library_remove_post",
         "requestBody": {
           "content": {
@@ -402,7 +402,7 @@
     "/api/library/ingest": {
       "post": {
         "summary": "Library Ingest",
-        "description": "导入上传文件并触发单任务槽摄取：暂存落盘 → 逐文件幂等摄取 → 增量索引。",
+        "description": "暂存上传文件并启动摄取任务，完成后增量索引。",
         "operationId": "library_ingest_api_library_ingest_post",
         "requestBody": {
           "content": {
@@ -560,7 +560,7 @@
     "/api/notes": {
       "get": {
         "summary": "Notes List View",
-        "description": "浏览清单：笔记投影分页读取，note_path 字典序稳定排序，只读不落盘。",
+        "description": "分页读取笔记投影，按 note_path 字典序排序。",
         "operationId": "notes_list_view_api_notes_get",
         "parameters": [
           {
@@ -614,7 +614,7 @@
     "/api/notes/{source_id}": {
       "get": {
         "summary": "Note Detail View",
-        "description": "单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点，只读。",
+        "description": "读取单篇投影的 Markdown 全文（不含 frontmatter）与区块锚点。",
         "operationId": "note_detail_view_api_notes__source_id__get",
         "parameters": [
           {
@@ -768,7 +768,7 @@
     "/api/graph/stats": {
       "get": {
         "summary": "Graph Stats View",
-        "description": "图谱聚合统计：节点/边/社区计数与类型分布，只读现读三件表。",
+        "description": "读取节点、边与社区计数及类型分布。",
         "operationId": "graph_stats_view_api_graph_stats_get",
         "responses": {
           "200": {
@@ -787,7 +787,7 @@
     "/api/graph/overview": {
       "get": {
         "summary": "Graph Overview View",
-        "description": "初始画布：度数 top-N 节点与集合内诱导边；超限明示截断（服务端硬顶）。",
+        "description": "返回度数最高的 N 个节点及它们之间的边；超限时标记截断。",
         "operationId": "graph_overview_view_api_graph_overview_get",
         "parameters": [
           {
@@ -830,7 +830,7 @@
     "/api/graph/search": {
       "get": {
         "summary": "Graph Search View",
-        "description": "实体搜索：名称大小写不敏感包含匹配，度数降序，截断明示。",
+        "description": "按名称大小写不敏感包含匹配搜索实体，按度数降序，超限时标记截断。",
         "operationId": "graph_search_view_api_graph_search_get",
         "parameters": [
           {
@@ -883,7 +883,7 @@
     "/api/graph/neighbors/{entity_id}": {
       "get": {
         "summary": "Graph Neighbors View",
-        "description": "有界邻域展开：自中心 BFS 至 depth，节点数受服务端上限约束并明示截断。",
+        "description": "返回中心节点的有界 BFS 邻域；节点数超限时标记截断。",
         "operationId": "graph_neighbors_view_api_graph_neighbors__entity_id__get",
         "parameters": [
           {
@@ -985,7 +985,7 @@
     "/api/wiki/entries": {
       "get": {
         "summary": "Wiki Entries View",
-        "description": "wiki 条目清单：只读派生自 data/wiki/entries，绝不触发生成路径。",
+        "description": "读取 data/wiki/entries 下的条目清单，不触发生成。",
         "operationId": "wiki_entries_view_api_wiki_entries_get",
         "responses": {
           "200": {
@@ -1004,7 +1004,7 @@
     "/api/wiki/entries/{community_id}": {
       "get": {
         "summary": "Wiki Entry View",
-        "description": "wiki 单条读取：Markdown 全文与时效元数据，只读不触发生成。",
+        "description": "读取单条 wiki 的 Markdown 与时效元数据。",
         "operationId": "wiki_entry_view_api_wiki_entries__community_id__get",
         "parameters": [
           {
@@ -1044,7 +1044,7 @@
     "/api/settings": {
       "get": {
         "summary": "Read Settings",
-        "description": "返回三通道文件层掩码视图：key 不回显，env 覆盖字段标注。\n\n错误面的 `code` 按成因分道（`invalid_config_file` / `config_file_unreadable`），\n设置页据此决定是否给出「覆盖自救」入口：只有「确证不可解析」能由保存修复，\n内容未知（权限/IO）不得覆盖。读面刻意不做容忍式 200——请求期每请求现读该文件，\n容忍会让就绪状态与真实结果分叉（误就绪比死路更糟）。",
+        "description": "返回三通道掩码视图；凭证不回显，环境变量覆盖字段会标注。\n\n配置文件确证无效时允许保存覆盖；权限或 IO 错误则不允许。",
         "operationId": "read_settings_api_settings_get",
         "responses": {
           "200": {
@@ -1061,7 +1061,7 @@
       },
       "put": {
         "summary": "Write Settings",
-        "description": "校验并合并写入 config.toml（原子 0600），失效检索装配缓存后返回新视图。\n\n写入成功即免重启生效：检索通道经缓存失效在下一次请求重建，LLM 通道的\n默认工厂每请求现解析。请求体（含 key）不进日志。\n\n坏文件自救（change fix-model-supply-error-surfacing 决议 #3）：现有配置\n**确证对模型供给无效**（坏 TOML / 非法段 / 字段取值不在允许范围）时以空的文件层\n为基底继续合并本次提交并原子替换，响应显式告知覆盖事实——否则「读就抛」会把\n「重新保存覆盖坏文件」这条唯一可由桌面用户操作的出路彻底堵死。仅因权限/IO\n读不到文件时不覆盖（内容未知，覆盖即丢用户配置）。",
+        "description": "合并并原子写入 config.toml（0600），失效检索缓存后返回新视图。\n\n保存后免重启生效；请求体（含 key）不进日志。\n\n仅当配置文件确证无效时，才以空文件层合并并覆盖；权限或 IO 错误不覆盖。",
         "operationId": "write_settings_api_settings_put",
         "requestBody": {
           "content": {
@@ -1180,8 +1180,7 @@
           "source_hash",
           "text"
         ],
-        "title": "AskCitationResponse",
-        "description": "问答回答中的来源引用。"
+        "title": "AskCitationResponse"
       },
       "AskReadinessView": {
         "properties": {
@@ -1210,7 +1209,7 @@
           "missing"
         ],
         "title": "AskReadinessView",
-        "description": "问答就绪状态：missing/invalid 为稳定的 `<channel>.<field>` 机器 token（无凭证明文）。\n\n`missing` 是缺项；`invalid` 是跨层合并后取值非法（如环境变量层协议越界）。\n判定口径与请求期通道解析同源（rerank 可选不阻塞）；中文话术由 UI 依据\ntoken 生成，内核不承载展示文案。"
+        "description": "问答就绪状态；`missing`/`invalid` 使用稳定的 `<channel>.<field>` token。\n\n`missing` 表示缺项，`invalid` 表示跨层合并后取值非法。判定与请求期通道解析\n同源；中文提示由 UI 根据 token 生成。"
       },
       "AskRequest": {
         "properties": {
@@ -1239,8 +1238,7 @@
         "required": [
           "question"
         ],
-        "title": "AskRequest",
-        "description": "单轮问答请求。"
+        "title": "AskRequest"
       },
       "AskResponse": {
         "properties": {
@@ -1285,8 +1283,7 @@
           "retrieval",
           "model"
         ],
-        "title": "AskResponse",
-        "description": "带来源的单轮问答响应。"
+        "title": "AskResponse"
       },
       "AskRetrievalResponse": {
         "properties": {
@@ -1309,8 +1306,7 @@
           "candidate_k",
           "result_count"
         ],
-        "title": "AskRetrievalResponse",
-        "description": "问答响应中的检索摘要。"
+        "title": "AskRetrievalResponse"
       },
       "Body_library_ingest_api_library_ingest_post": {
         "properties": {
@@ -1391,7 +1387,7 @@
         },
         "type": "object",
         "title": "ChannelSettingsUpdate",
-        "description": "单通道提交值：省略字段 = 保持现值；null/空白 = 显式清空；非空 = 设置。\n\n``api_key`` 以 ``SecretStr`` 承载，repr/日志展开均为掩码，只在非空时落盘。"
+        "description": "单通道提交值：省略字段表示保持现值，null 或空白表示清空，非空表示设置。\n\n``api_key`` 只在非空时落盘，repr 与日志中均为掩码。"
       },
       "ChannelSettingsView": {
         "properties": {
@@ -1460,7 +1456,7 @@
           "env_overrides"
         ],
         "title": "ChannelSettingsView",
-        "description": "单通道配置的掩码视图：key 只以是否已设置的布尔标记表示。\n\n`protocol` 仅 LLM 通道消费；embedding/rerank 正常配置下为 None，\n手改文件的越界值在解析/提交校验期报错，不在视图层吞掉。"
+        "description": "单通道掩码视图；`api_key` 只以 `api_key_set` 表示是否已设置。\n\n`protocol` 仅 LLM 通道使用；非法值在解析或提交校验时拒绝，不在视图层吞掉。"
       },
       "GraphEdgeResponse": {
         "properties": {
@@ -1483,8 +1479,7 @@
           "target",
           "type"
         ],
-        "title": "GraphEdgeResponse",
-        "description": "画布边：两端实体 id 与关系类型。"
+        "title": "GraphEdgeResponse"
       },
       "GraphExtractorResponse": {
         "properties": {
@@ -1507,8 +1502,7 @@
           "model",
           "prompt_version"
         ],
-        "title": "GraphExtractorResponse",
-        "description": "图谱抽取器身份。"
+        "title": "GraphExtractorResponse"
       },
       "GraphNodeResponse": {
         "properties": {
@@ -1548,8 +1542,7 @@
           "degree",
           "community_id"
         ],
-        "title": "GraphNodeResponse",
-        "description": "画布节点：度数与社区着色依据。"
+        "title": "GraphNodeResponse"
       },
       "GraphRequest": {
         "properties": {
@@ -1584,8 +1577,7 @@
           }
         },
         "type": "object",
-        "title": "GraphRequest",
-        "description": "图谱构建请求。"
+        "title": "GraphRequest"
       },
       "GraphResponse": {
         "properties": {
@@ -1696,7 +1688,7 @@
           "limit"
         ],
         "title": "GraphSearchResponse",
-        "description": "实体搜索响应：附查询词与生效上限。"
+        "description": "实体搜索响应，附查询词与生效上限。"
       },
       "GraphStatsResponse": {
         "properties": {
@@ -1727,8 +1719,7 @@
           "communities",
           "types"
         ],
-        "title": "GraphStatsResponse",
-        "description": "图谱聚合统计。"
+        "title": "GraphStatsResponse"
       },
       "GraphSubgraphResponse": {
         "properties": {
@@ -1768,7 +1759,7 @@
           "total_edges"
         ],
         "title": "GraphSubgraphResponse",
-        "description": "有界子图查询响应：截断标记与候选总数由服务端裁决。"
+        "description": "有界子图；结果超限时由服务端截断并标记。"
       },
       "HTTPValidationError": {
         "properties": {
@@ -1799,8 +1790,7 @@
           "status",
           "version"
         ],
-        "title": "HealthResponse",
-        "description": "健康检查响应。"
+        "title": "HealthResponse"
       },
       "IngestRequest": {
         "properties": {
@@ -1826,8 +1816,7 @@
         "required": [
           "source"
         ],
-        "title": "IngestRequest",
-        "description": "摄取请求。"
+        "title": "IngestRequest"
       },
       "IngestResponse": {
         "properties": {
@@ -1856,7 +1845,7 @@
           "ignored"
         ],
         "title": "IngestResponse",
-        "description": "来源级摄取统计。"
+        "description": "单个来源的摄取统计。"
       },
       "LibraryJobItemResponse": {
         "properties": {
@@ -1898,8 +1887,7 @@
           "path",
           "status"
         ],
-        "title": "LibraryJobItemResponse",
-        "description": "任务内单文件结果。"
+        "title": "LibraryJobItemResponse"
       },
       "LibraryJobResponse": {
         "properties": {
@@ -2005,7 +1993,7 @@
           "error"
         ],
         "title": "LibraryJobResponse",
-        "description": "摄取/重建/扫描/清理/移除任务的进度快照（HTTP 轮询读取）。"
+        "description": "资料库任务的进度快照。"
       },
       "LibraryPurgeRequest": {
         "properties": {
@@ -2048,7 +2036,7 @@
           "source_id"
         ],
         "title": "LibraryRemoveRequest",
-        "description": "单来源确认移除请求：真实来源 ID + 显式确认；不接受文件路径。"
+        "description": "按来源 ID 确认移除；不接受文件路径。"
       },
       "LibraryResponse": {
         "properties": {
@@ -2064,8 +2052,7 @@
         "required": [
           "sources"
         ],
-        "title": "LibraryResponse",
-        "description": "桌面 vault 来源级清单。"
+        "title": "LibraryResponse"
       },
       "LibraryScanRequest": {
         "properties": {
@@ -2125,7 +2112,7 @@
         },
         "type": "object",
         "title": "LibraryScanSettingsUpdateRequest",
-        "description": "扫描设置更新；未携带的字段保持原值。调度/收尾每轮现读，免重启生效。"
+        "description": "未携带的字段保持原值。"
       },
       "LibrarySourceCreateRequest": {
         "properties": {
@@ -2143,8 +2130,7 @@
         "required": [
           "path"
         ],
-        "title": "LibrarySourceCreateRequest",
-        "description": "注册来源目录：绝对路径。"
+        "title": "LibrarySourceCreateRequest"
       },
       "LibrarySourceInfo": {
         "properties": {
@@ -2185,7 +2171,7 @@
           "last_scan_at"
         ],
         "title": "LibrarySourceInfo",
-        "description": "一条来源目录登记（库域注册表的掩码视图）。"
+        "description": "来源目录登记（掩码视图）。"
       },
       "LibrarySourceRemovedResponse": {
         "properties": {
@@ -2198,8 +2184,7 @@
         "required": [
           "removed"
         ],
-        "title": "LibrarySourceRemovedResponse",
-        "description": "来源目录移除结果。"
+        "title": "LibrarySourceRemovedResponse"
       },
       "LibrarySourceResponse": {
         "properties": {
@@ -2274,7 +2259,7 @@
           "index_status"
         ],
         "title": "LibrarySourceResponse",
-        "description": "资料库清单中的单条来源（全部派生自既有摄取元数据与库域登记，只读）。"
+        "description": "资料库清单中的单条来源，派生自摄取元数据与库域登记。"
       },
       "LibrarySourceUpdateRequest": {
         "properties": {
@@ -2288,7 +2273,7 @@
           "enabled"
         ],
         "title": "LibrarySourceUpdateRequest",
-        "description": "启停来源目录（登记保留，仅扫描是否遍历）。"
+        "description": "启停来源目录；登记保留。"
       },
       "LibrarySourcesResponse": {
         "properties": {
@@ -2305,7 +2290,7 @@
           "sources"
         ],
         "title": "LibrarySourcesResponse",
-        "description": "来源目录登记清单，按路径排序。"
+        "description": "来源目录登记清单。"
       },
       "LlmEnvFallbackView": {
         "properties": {
@@ -2334,7 +2319,7 @@
           "api_key_env"
         ],
         "title": "LlmEnvFallbackView",
-        "description": "LLM 通道厂商环境变量回退的端点描述（不含凭证明文）。\n\n`vendor` 恒为 `dashscope`（当前唯一回退名单）；四元组与请求期解析同源，\nUI 据此说明「回退生效」的落差，避免空表单被误读为完全未配置。"
+        "description": "LLM 厂商环境变量回退的端点描述（不含凭证）。\n\n目前只有 `dashscope`；UI 据此说明回退生效时的实际端点。"
       },
       "NoteDetailResponse": {
         "properties": {
@@ -2381,7 +2366,7 @@
           "content"
         ],
         "title": "NoteDetailResponse",
-        "description": "单篇投影读取：Markdown 全文（剥 frontmatter）与区块锚点序列。"
+        "description": "Markdown 全文（不含 frontmatter）与区块锚点。"
       },
       "NoteSummaryResponse": {
         "properties": {
@@ -2414,8 +2399,7 @@
           "source_hash",
           "extractor"
         ],
-        "title": "NoteSummaryResponse",
-        "description": "浏览清单中的单条笔记投影元数据（只读派生）。"
+        "title": "NoteSummaryResponse"
       },
       "NotesPageResponse": {
         "properties": {
@@ -2447,7 +2431,7 @@
           "page_size"
         ],
         "title": "NotesPageResponse",
-        "description": "浏览清单分页响应：note_path 字典序稳定排序。"
+        "description": "按 note_path 字典序排序的笔记分页。"
       },
       "SearchRequest": {
         "properties": {
@@ -2472,8 +2456,7 @@
         "required": [
           "query"
         ],
-        "title": "SearchRequest",
-        "description": "检索请求。"
+        "title": "SearchRequest"
       },
       "SearchResponse": {
         "properties": {
@@ -2577,8 +2560,7 @@
           "hybrid_score",
           "rerank_score"
         ],
-        "title": "SearchResultResponse",
-        "description": "带来源锚点和阶段分数的检索结果。"
+        "title": "SearchResultResponse"
       },
       "SettingsResponse": {
         "properties": {
@@ -2618,7 +2600,7 @@
           "ask_readiness"
         ],
         "title": "SettingsResponse",
-        "description": "三通道文件层掩码视图 + 问答就绪状态（GET /api/settings 响应）。"
+        "description": "三个通道的掩码视图与问答就绪状态。"
       },
       "SettingsTestRequest": {
         "properties": {
@@ -2694,7 +2676,7 @@
           "channel"
         ],
         "title": "SettingsTestRequest",
-        "description": "POST /api/settings/test 请求：覆盖字段省略/空白 = 用当前有效通道配置。"
+        "description": "覆盖字段省略或空白时，使用当前有效通道配置。"
       },
       "SettingsTestResponse": {
         "properties": {
@@ -2718,7 +2700,7 @@
           "latency_ms"
         ],
         "title": "SettingsTestResponse",
-        "description": "连通性测试成功响应（失败走既有 ``{code, message}`` 错误体）。"
+        "description": "连通性测试成功响应；失败时返回 ``{code, message}``。"
       },
       "SettingsUpdateRequest": {
         "properties": {
@@ -2755,7 +2737,7 @@
         },
         "type": "object",
         "title": "SettingsUpdateRequest",
-        "description": "PUT /api/settings 请求：通道对象省略 = 该通道整体保持不变。"
+        "description": "通道对象省略时，该通道保持不变。"
       },
       "SettingsWriteResponse": {
         "properties": {
@@ -2808,7 +2790,7 @@
           "warnings"
         ],
         "title": "SettingsWriteResponse",
-        "description": "PUT /api/settings 响应：写入后掩码视图 + 中文告警（如需重建索引）。\n\n`invalid_config_file_overwritten=True` 表示本次保存前配置文件不可解析\n（内容损坏），系统以空的文件层为基底合并本次提交并原子替换了该文件——\n这是「坏文件自救」的显式告知，不静默丢内容（原文件既然不可解析，其可读\n配置量本就为零）。正常写入恒为 False。"
+        "description": "保存后的掩码视图与重建告警。\n\n`invalid_config_file_overwritten=True` 表示保存前配置文件无法解析，已用空文件层\n合并请求并覆盖。正常写入恒为 False。"
       },
       "ValidationError": {
         "properties": {
@@ -2864,8 +2846,7 @@
         "required": [
           "entries"
         ],
-        "title": "WikiEntriesResponse",
-        "description": "wiki 条目清单响应。"
+        "title": "WikiEntriesResponse"
       },
       "WikiEntryDetailResponse": {
         "properties": {
@@ -2893,8 +2874,7 @@
           "content",
           "generated_at"
         ],
-        "title": "WikiEntryDetailResponse",
-        "description": "wiki 单条读取响应：Markdown 全文 + 时效元数据。"
+        "title": "WikiEntryDetailResponse"
       },
       "WikiEntrySummaryResponse": {
         "properties": {
@@ -2918,7 +2898,7 @@
           "generated_at"
         ],
         "title": "WikiEntrySummaryResponse",
-        "description": "wiki 条目清单条目：时效元数据取条目文件 mtime。"
+        "description": "条目文件 mtime 即生成时间。"
       },
       "WikiRequest": {
         "properties": {
@@ -2936,8 +2916,7 @@
           }
         },
         "type": "object",
-        "title": "WikiRequest",
-        "description": "wiki 生成请求。"
+        "title": "WikiRequest"
       },
       "WikiResponse": {
         "properties": {

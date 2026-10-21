@@ -1,6 +1,6 @@
 """索引同步编排：扫描 → manifest → 临时构建 → 全量校验 → 原子切换。
 
-一致性策略（design.md《索引同步与一致性》）：
+一致性策略：
 - 临时 SQLite/向量目录内完成全部写入与校验，校验通过后才替换正式版本；
 - 任一步失败都保留旧版本可查询，并清理全部临时产物；
 - SQLite 元数据中的 `vectors_commit` 与向量目录的 `.commit` 标记互为
@@ -274,7 +274,7 @@ def sync_index(
                 embedding_model_revision=embedding_provider.model_revision,
                 embedding_dimensions=embedding_provider.dimensions,
                 tokenizer_version=TOKENIZER_VERSION,
-                # 端点通道标识（ADR-0009）：协议未约定 base_url 的 fake provider 留空
+                # fake provider 没有 base_url 时留空。
                 embedding_channel_host=base_url_host(getattr(embedding_provider, "base_url", "")),
             )
             .as_meta_dict()

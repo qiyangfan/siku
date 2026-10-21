@@ -1,13 +1,7 @@
-"""设置中心（BYOK 三通道）读写与探测的领域逻辑。
+"""设置中心的三通道读写与连通性探测。
 
-契约形状见 `api/models.py`，决议见 change `add-ui-settings-center/design.md`：
-
-- 掩码视图一律呈现 config.toml 文件层，key 只以 ``api_key_set`` 布尔标记表示；
-  被 ``SIKU_*`` 环境变量层覆盖的字段在 ``env_overrides`` 中标注。
-- PUT 字段语义统一：省略 = 保持现值；``null`` / 空白串 = 显式清空；非空串 =
-  设置为去空白后的值。通道对象省略 = 该通道整体不变。
-- 连通性探测按通道发起最小负载调用（不含任何语料内容），错误消息只由错误类
-  与状态码构造，不回显上游错误体；探测不持久化任何状态或凭证。
+掩码视图只呈现 config.toml 文件层，凭证只以是否已设置表示，环境变量覆盖字段会标注。
+PUT 字段语义：省略保持现值，null/空白清空，非空设置。探测不持久化状态，也不回显上游错误体。
 """
 
 from __future__ import annotations
@@ -93,7 +87,7 @@ _SETTING_FIELDS: tuple[str, str, str, str, str] = (
 
 _API_KEY_ENV_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
-# 探测固定负载：向量维度与文本内容无关，短文本即可验证端点可达
+# 探测用固定短语，足以验证端点可达。
 _PROBE_TEXT = "siku connectivity probe"
 _PROBE_TIMEOUT_SECONDS = 10.0
 
@@ -109,7 +103,7 @@ def env_overrides(channel: str) -> list[str]:
 
 
 def default_config_path() -> str:
-    """平台 config.toml 的当前路径（经 model_supply 间接引用，测试可整体改指 tmp）。"""
+    """config.toml 的平台路径；经 model_supply 间接引用，测试可改指临时目录。"""
     return str(model_supply.config_file_path())
 
 
@@ -119,14 +113,9 @@ def masked_view(
     llm_fallback: ResolvedChannel | None = None,
     cli: ModelSupplyConfig | None = None,
 ) -> SettingsResponse:
-    """把文件层配置渲染为掩码视图：key 不回显，env 覆盖字段逐通道标注。
+    """把文件层配置渲染为掩码视图；凭证不回显，环境变量覆盖字段逐通道标注。
 
-    `ask_readiness` 是该响应唯一跨层（CLI + 文件 + env）的字段：就绪判定必须按
-    请求期同一分层口径执行，掩码视图的文件层静止视角对它不适用——因此 `cli` 必须
-    由调用方传入 serve 的 CLI 层，否则 `siku serve --embedding-base-url …` 这种
-    请求期确实可用的部署会被判为未配置（change fix-model-supply-error-surfacing
-    决议 #4）。`cli` 与 `llm_fallback` 同口径（都含 serve 的 CLI 层），两者不得
-    再各说一套。
+    ask_readiness 按请求期的分层配置判定，因此必须传入 serve 的 CLI 参数。
     """
     readiness = ask_readiness(config, cli=cli)
     sections: dict[str, ChannelSettingsView] = {}
@@ -222,11 +211,7 @@ def apply_update(current: ModelSupplyConfig, update: SettingsUpdateRequest) -> M
 
 
 def embedding_rebuild_warnings(config: ModelSupplyConfig, data_dir: Path) -> list[str]:
-    """embedding 模型身份相对索引元数据变更时返回中文重建告警（尽力而为）。
-
-    索引缺失、元数据损坏或读取异常一律静默跳过——告警绝不阻塞设置保存；
-    embedding 通道整体未配置时同样跳过（运行期由既有 503 指引兜底）。
-    """
+    """embedding 模型身份相对索引元数据变更时返回重建告警；通道未配置或读取失败时返回空列表。"""
     try:
         effective = resolve_embedding_channel(config=config)
     except ModelNotAvailableError:
@@ -254,16 +239,13 @@ def embedding_rebuild_warnings(config: ModelSupplyConfig, data_dir: Path) -> lis
 def resolve_probe_target(
     request: SettingsTestRequest,
 ) -> tuple[str, str, str, str | None, str | None, str | None]:
-    """解析探测目标：非空覆盖字段优先，缺省回落到当前分层解析的有效通道。
+    """解析探测目标：表单中的非空值优先，其余回落到当前有效通道。
 
     返回 ``(channel, base_url, model, api_key 明文, api_key_env, protocol)``。
-    覆盖值先于
-    通道解析校验——非法提交无论当前配置如何都返回 422 指引；通道未配置且覆盖
-    不足以补齐 base_url/model 时，重抛解析阶段的既有配置指引错误。
+    非法表单值报 422；必需字段仍缺失时沿用通道解析错误。
     """
     channel = request.channel
-    # 表单当前协议优先（决议 #5：按表单协议探测，保存前即可验证分支组合）；
-    # 空白/省略回落到当前生效通道。非 llm 通道不接受协议覆盖。
+    # 非空协议覆盖仅对 LLM 通道有效；省略或空白时回落到当前配置。
     if request.protocol is not None and request.protocol.strip() and channel != "llm":
         raise SettingsValidationError(
             f"{_CHANNEL_LABELS[channel]} 通道不支持设置接口协议：protocol 仅 LLM 通道可用，请留空。"
@@ -327,10 +309,9 @@ def probe_channel(
     transport: httpx.BaseTransport | None = None,
     protocol: str | None = None,
 ) -> None:
-    """对单通道发起最小探测调用；失败抛既有领域错误，成功无返回值。
+    """对单通道发起最小探测；失败抛领域错误，成功无返回值。
 
-    ``transport`` 仅供测试注入 MockTransport；探测超时独立于通道默认值收紧为
-    10 秒，避免连通性测试长时间挂起。llm 通道按当前协议探测（ADR-0012）。
+    transport 仅供测试注入；超时固定 10 秒，避免探测长时间挂起；LLM 通道按当前协议探测。
     """
     if channel == "llm":
         _probe_llm(
@@ -416,11 +397,7 @@ def _probe_rerank(
 
 
 def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -> ErrorMapping:
-    """把探测失败映射为既有稳定错误码 + 通道/协议感知中文指引（不含上游错误体）。
-
-    探测只有 HTTP（设置页）消费者，文案一律走 HTTP 面口径：分型分支（凭证被拒 /
-    配置文件无效 / 协议越界）MUST 排在通用类之前，否则被通用文案吞掉。
-    """
+    """把探测失败映射为稳定错误码和中文指引，不包含上游响应体。"""
     label = _CHANNEL_LABELS[channel]
     if isinstance(exc, LlmNotConfiguredError):
         return ErrorMapping(
@@ -437,8 +414,7 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
             "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
         )
     if isinstance(exc, ModelConfigFileError):
-        # 与 GET 面同口径：本类现在覆盖「不可解析」与「字段取值非法」两种形态，
-        # 只说「内容已损坏」会把坏取值指到错误的成因上；`detail` 点名到底哪个字段
+        # 本类同时覆盖不可解析与取值非法，提示里点名具体字段。
         hint = f"{exc.detail}。" if exc.detail else ""
         return ErrorMapping(
             503,
@@ -456,8 +432,7 @@ def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -
             "重试；此情况不会由保存覆盖，以免毁掉可能完好的配置。",
         )
     if isinstance(exc, ProtocolConfigError):
-        # 探测与读取面同源：协议非法说成「检查 base_url、model」是把用户支到没坏的字段上，
-        # 且同一故障在两张面给出两个 code 就是第二套事实源
+        # 与读取面共用协议错误映射，避免同一故障出现两个 code。
         return protocol_error_mapping(exc, surface="http")
     if isinstance(exc, ModelNotAvailableError):
         return ErrorMapping(

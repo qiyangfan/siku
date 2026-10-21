@@ -1,8 +1,6 @@
-"""BYOK 端点 provider 单测：httpx MockTransport 全覆盖，CI 永不打真实端点。
+"""BYOK 端点 provider 单测：httpx MockTransport 全覆盖，CI 不访问真实端点。
 
-覆盖剧本：正常（含批量切分与乱序结果对齐）、维度探针（实测/覆盖/缓存）、
-凭证头（有 key / 无 key / env 间接）、错误映射（401/403/429/5xx/断连）、
-以及硅基流动与 LiteLLM 风格响应的契约样例。
+覆盖正常响应（批量切分与乱序对齐）、维度探针、凭证头、错误映射与常见响应格式。
 """
 
 from __future__ import annotations
@@ -470,12 +468,7 @@ class TestApiRerankerProvider:
 
 
 class TestCredentialRejectionTyping:
-    """401/403 与「未配置」分型（ADR-0009「报错必须可行动」，change
-    fix-model-supply-error-surfacing 决议 #1）。
-
-    子类化保证既有 `except ModelNotAvailableError` 捕获零回退，同时给文案层
-    可区分的结构化通道标识——凭证被拒不得再被渲染成「补全 base_url 与 model」。
-    """
+    """401/403 与未配置分型；凭证被拒不得渲染成补全 base_url/model。"""
 
     @pytest.mark.parametrize("status", [401, 403])
     def test_embedding_rejection_carries_channel(self, status: int) -> None:

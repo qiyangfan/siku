@@ -94,11 +94,10 @@ app = typer.Typer(
 DEFAULT_VAULT = Path("vault")
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_UI_DIST = Path("ui") / "dist"
-# 通道化基线目录（ADR-0009）：基线文件按通道命名 {channel}.json；
-# 既有 retrieval-baseline-v0.json 保留为历史记录，不再参与比较
+# 基线按通道命名 {channel}.json；旧版 retrieval-baseline-v0.json 仅作历史记录。
 BASELINES_DIR = Path("benchmarks") / "baselines"
 
-# ---- 模型供给 CLI 选项（三通道同构；缺省时走 环境变量 > config.toml 分层解析）----
+# ---- 模型供给 CLI 选项；缺省时按环境变量 > config.toml 分层解析 ----
 EmbeddingBaseUrlOpt = Annotated[
     str | None,
     typer.Option(
@@ -154,10 +153,9 @@ RerankApiKeyEnvOpt = Annotated[
 
 
 class LlmProtocol(StrEnum):
-    """`--llm-protocol` 的合法取值：命令行边界的枚举，非法值在解析阶段就被拒。
+    """`--llm-protocol` 的合法取值：命令行边界的枚举，与内核 `LLM_PROTOCOLS` 保持一致。
 
-    与内核 `LLM_PROTOCOLS` 同源的名单由用例钉住漂移。放在类型层而不是运行期校验，是为了
-    让 CLI 层根本交不出非法值（change `validate-supply-values-at-boundaries`）。
+    非法值在命令行解析阶段即被拒绝。
     """
 
     OPENAI_CHAT = "openai-chat"
@@ -203,11 +201,7 @@ def _embedding_component(
 def _reranker_component(
     reranker_mode: RerankerMode | None, cli_values: ChannelValues
 ) -> tuple[ResolvedChannel | None, RerankerProvider | None]:
-    """解析并装配 rerank 通道；provider 为 None 即 reranker=none（RRF-only）。
-
-    显式 ``--reranker api`` 但通道缺失时报错；未指定模式时通道缺失不是错误
-    （reranker=none 是一等公民，运行输出会明示当前模式，不静默降级）。
-    """
+    """解析并装配 rerank 通道；mode=api 且通道不可用时报错，未指定模式时按 none 处理。"""
     if reranker_mode is RerankerMode.NONE:
         return None, None
     try:
@@ -227,13 +221,7 @@ def _rerank_mode_text(reranker: RerankerProvider | None) -> str:
 
 
 def _config_file_gap_text() -> str:
-    """通道被「对模型供给无效」的配置文件挡住时的播报口径（不得说「未配置」）。
-
-    serve 遇无效文件（坏 TOML 或字段取值非法）会告警后继续启动，随后 embedding/rerank
-    解析再读同一个坏文件——若这里仍按「未配置」播报，就与上一行的告警自相矛盾，且把用户
-    推向一个其实不缺配置的通道。「读不到」（权限/IO）不走这条路径：那时 serve 在 LLM
-    解析处就已快速失败退出，活不到打印横幅这一步（实测确认）。
-    """
+    """配置文件对模型供给无效时的播报文案；不能误报为通道未配置。"""
     return "配置文件无效（非未配置，可在设置页重新保存覆盖）"
 
 
@@ -242,12 +230,7 @@ def _announce_supply_channels(
     rerank_supply: ChannelValues,
     llm: ResolvedChannel | None,
 ) -> None:
-    """启动期在用户面明示三通道解析结果（BYOK 不静默）。
-
-    embedding 未配置只告警不阻止启动：检索/问答请求时会返回配置指引错误，
-    健康检查与静态 UI 不受影响（BYOK 产品的诚实行为，见 ADR-0009）。
-    `llm=None` 表示启动面已判定 LLM 通道无效（上层协议越界），横幅如实播报。
-    """
+    """启动时在 stderr 明示三通道解析结果；embedding 未配置只告警，不阻止启动。"""
     try:
         embedding_channel = resolve_embedding_channel(embedding_supply)
         embedding_text = f"{embedding_channel.model}@{base_url_host(embedding_channel.base_url)}"
@@ -284,13 +267,13 @@ def _close_quietly(resource: object) -> None:
         close()
 
 
-# CLI 写入口的同库互斥等待：平滑正常交接，真冲突快速如实报忙（spec：同库写入任务互斥）
+# CLI 写入的锁等待上限；正常交接够用，真冲突时快速报忙。
 _CLI_WRITE_LOCK_TIMEOUT_SECS = 2.0
 
 
 @contextmanager
 def _library_write_guard(vault: Path, data_dir: Path | None) -> Iterator[None]:
-    """CLI 写命令的统一前置：跨进程文件锁 + 已确认消减发布恢复。"""
+    """CLI 写命令的统一前置：跨进程写锁与中断移除的恢复。"""
     try:
         with library_write_lock(vault, timeout=_CLI_WRITE_LOCK_TIMEOUT_SECS):
             if data_dir is not None:
@@ -303,10 +286,7 @@ def _library_write_guard(vault: Path, data_dir: Path | None) -> Iterator[None]:
 @app.callback()
 def main() -> None:
     """siku 命令行入口。"""
-    # 默认 WARNING：stderr 是 CLI 的用户面，INFO 级模型/HTTP 日志会构成噪音；
-    # 需要排查时设 SIKU_LOG_LEVEL=DEBUG 查看含技术细节的完整日志。
-    # 非法取值回退 WARNING，绝不让环境变量配置错误炸掉 CLI 启动；
-    # 空串与未设置等价
+    # 默认 WARNING；SIKU_LOG_LEVEL=DEBUG 可查看技术日志；非法值回退 WARNING。
     configured = os.environ.get("SIKU_LOG_LEVEL", "WARNING").upper() or "WARNING"
     level = logging.getLevelNamesMapping().get(configured, logging.WARNING)
     if configured not in logging.getLevelNamesMapping():
@@ -324,32 +304,20 @@ def version() -> None:
 
 
 def _llm_config_error_message(exc: ModelNotAvailableError) -> str:
-    """LLM 通道解析失败的 CLI 用户面中文文案（协议与坏配置文件是两个入口）。
-
-    一律取映射层文案，不在此另写一份：同一异常在 HTTP 面与 CLI 面必须同口径。
-    原先这里的「请修正 … 或 config.toml 的 [llm] protocol」在文件层坏值下还说错了
-    杠杆——那种值现在根本进不到运行期（载入即拒）。
-    """
+    """LLM 通道解析失败的 CLI 文案；配置类错误统一走映射层。"""
     if isinstance(exc, (ProtocolConfigError, ModelConfigFileError, ModelConfigFileUnreadableError)):
-        # 两类配置文件故障都只走映射层文案（内部英文串不进用户面）；
-        # 「不可解析」与「读不到」的指引不同：前者可覆盖自救，后者覆盖即丢配置
+        # 配置类错误统一走映射层，不把内部英文异常暴露给用户。
         return map_domain_error(exc, api_key_env=DEFAULT_API_KEY_ENV).message
     return f"LLM 通道配置无效：{exc}"
 
 
 def _config_file_error_message(exc: ModelConfigFileError) -> str:
-    """无效配置文件的 CLI 用户面文案（删除只影响配置，不影响已摄取语料）。
-
-    用捕获到的异常本身而不是另造一份：`detail` 带着「到底哪个字段非法」，凭空造的
-    异常只会说出「非合法 TOML」这一种成因。
-    """
+    """无效配置文件的 CLI 文案；使用原异常以保留字段级 `detail`。"""
     return map_domain_error(exc, api_key_env=DEFAULT_API_KEY_ENV).message
 
 
 def _fail(message: str, exc: Exception) -> NoReturn:
-    # stderr 即 CLI 的用户面：技术细节降为 DEBUG 日志（SIKU_LOG_LEVEL=DEBUG 可见），
-    # 用户面只呈现归一化的中文文案；异常文本由 exc_info 的 traceback 携带，
-    # 日志行只记错误类名（与 serve 启动面日志同口径）
+    # 技术细节只进 DEBUG 日志，用户面只输出中文文案。
     logger.debug("command failed: error_class=%s", type(exc).__name__, exc_info=True)
     typer.echo(message, err=True)
     raise typer.Exit(code=1) from exc
@@ -499,8 +467,7 @@ def scan(
     observer = _CliScanObserver()
     label = f"开始扫描 {len(enabled_sources)} 个来源目录"
     typer.echo(label + ("（全量哈希校验）" if full else "…"))
-    # 扫描写入与衔接索引都在同一写锁内：锁外构建会清掉另一进程（如 serve
-    # 移除任务）刚形成的可恢复消减暂存对，也是普通双构建互踩窗口的复活
+    # 扫描与索引必须同锁完成，否则会与另一进程的移除收尾或索引构建互相覆盖。
     embedding: EmbeddingProvider | None = None
     report: IndexReport | None = None
     scan_completed = False
@@ -508,8 +475,6 @@ def scan(
         with _library_write_guard(vault, data_dir):
             service.run_scan_cycle(full=full, observer=observer)
             scan_completed = True
-            # 有实际入库/清理变更才衔接索引（与 serve 任务口径一致；决议 #5：
-            # 无变更不重算）；失败项存在时同样不衔接，非零退出交由下方摘要
             if observer.had_changes and not observer.had_failures:
                 _channel, embedding = _embedding_component(
                     _embedding_cli_values(
@@ -518,8 +483,7 @@ def scan(
                     embedding_dimensions,
                 )
                 report = sync_index(vault, data_dir, embedding, rebuild=False)
-                # 图谱自动维护与索引同收尾链（design D4）：开关现读注册表，
-                # 只维护已存在快照；失败/跳过只出中文通知，扫描成功终态不变
+                # 图谱自动维护与索引一并收尾：只维护已存在的快照，失败或跳过只发通知。
                 try:
                     outcome = maybe_refresh_graph(
                         vault=vault,
@@ -537,7 +501,7 @@ def scan(
                     )
                     typer.echo("图谱自动更新失败：旧图谱保持有效，请稍后重试或显式更新图谱。")
     except typer.Exit:
-        # 锁忙等用户面退出（_fail 已成文）不得被通用分支吞掉后二次误报
+        # 用户面退出由 _fail 完成，不能被通用分支吞掉后二次报错。
         raise
     except Exception as exc:
         detail = _retrieval_error_message(exc) if isinstance(exc, RetrievalError) else str(exc)
@@ -549,7 +513,6 @@ def scan(
             _close_quietly(embedding)
     typer.echo(f"扫描完成（{observer.count} 项动作）。")
     if observer.had_failures:
-        # 失败项存在时非零退出：脚本/cron 场景需要可靠感知（评审建议）
         typer.echo("部分条目处理失败，请检查上方输出后重试。")
         raise typer.Exit(code=1)
     if report is not None:
@@ -795,9 +758,9 @@ def evaluate_retrieval(
         dropped: tuple[str, ...] = ()
         if compared:
             stored_baseline = _load_baseline(baseline_path)
-            # 指纹前置校验：基线与当前 fixture 不同源时拒绝比较，防止静默无效回归
+            # 基线与当前 fixture 不同源时拒绝比较。
             _check_fixture_fingerprint(stored_baseline, golden_set)
-            # 通道身份前置校验：显式 --baseline 指到其他通道时硬失败（ADR-0009）
+            # 基线通道身份与当前通道不一致时直接失败（ADR-0009）。
             _check_channel_identity(stored_baseline, report.config)
             comparison = _compare_with_baseline(report.metrics, stored_baseline)
             passed = comparison.passed
@@ -862,7 +825,7 @@ def evaluate_retrieval(
             elif fully_hit:
                 status = "PASS"
             elif case.first_rank is not None:
-                # 有命中但期望未全覆盖（或排名偏后）：不算 PASS，避免与聚合门禁口径打架
+                # 有命中但未全覆盖或排名偏后，记为 PART，避免与聚合门禁口径冲突。
                 status = "PART"
             else:
                 status = "FAIL"
@@ -934,8 +897,7 @@ def graph(
     )
     summarizer: CommunitySummarizer | None = None
     try:
-        # 身份变更预告（design D3）：换模型/prompt 后旧缓存键全部失效，显式构建
-        # 会把整个语料在用户 key 上重抽一遍——走 stderr，保 --json stdout 纯净
+        # 告警写 stderr，保证 --json 的 stdout 是纯 JSON。
         warning = full_reextract_warning(vault, data_dir, extractor)
         if warning is not None:
             typer.echo(warning, err=True)
@@ -948,8 +910,7 @@ def graph(
                 summary_identity=SummaryIdentity(model_id=llm.model),
             )
             if result.empty_corpus:
-                # spec：空语料产出空图谱与空 wiki——零社区不产生任何 LLM 调用，
-                # 因此缺 key 也能完成空总目生成
+                # 空语料时零社区、无 LLM 调用，缺 key 也能生成空总目。
                 summarizer = CommunitySummarizer(
                     provider=HttpxLlmProvider(
                         base_url=llm.base_url,
@@ -1163,26 +1124,17 @@ def serve(
         try:
             llm = resolve_llm_channel(llm_cli)
         except ModelConfigFileError as exc:
-            # 坏配置文件不得堵死启动面：桌面 sidecar 就是 `siku serve --with-ui`，
-            # 启动即退出会让「设置页重新保存覆盖」这条唯一自救路径无从可达
-            # （change fix-model-supply-error-surfacing 决议 #3）。明示告警（非静默）
-            # 后以空文件层继续启动；请求期各面仍现读配置，按各自指引报错或接受覆盖保存。
+            # 无效配置文件不阻止服务启动，以便用户通过设置页覆盖保存；请求期仍会重新解析配置。
             typer.echo(_config_file_error_message(exc), err=True)
             logger.warning(
                 "model supply config file is not valid for model supply; serve startup ignores"
                 " the file layer: error_class=%s",
                 type(exc).__name__,
             )
-            # 兜底再解析一次必须落在外层 try 之内：except 块里抛出的异常不会被同一
-            # try 的后续 except 分支接住，env/cli 层的越界协议（如 SIKU_LLM_PROTOCOL）
-            # 在这里会直接穿成一段裸 traceback（实测崩溃），而不是归一化的中文指引
+            # 重试放在外层 try 内，使上层协议错误走统一映射。
             llm = resolve_llm_channel(llm_cli, config=ModelSupplyConfig())
     except ProtocolConfigError as exc:
-        # 上层协议越界与坏文件同一规则：供给配置错误不堵启动面（change
-        # fix-supply-protocol-dead-end）。区别在于文件层可被设置页覆盖自救，而
-        # env/程序层优先级更高、页面修不了——但 LLM 一个通道的配置错误不该废掉
-        # 整个服务（检索/摄取不依赖 LLM）；llm 置 None 继续启动，请求期各面按
-        # 既有 503 invalid_settings 归一失败，横幅如实播报通道无效。
+        # 非法协议只禁用 LLM 通道；服务仍可提供不依赖模型的检索和摄取功能。
         typer.echo(
             "LLM 通道的接口协议取值非法（来自优先级高于配置文件的环境变量或程序传入层，"
             "如 SIKU_LLM_PROTOCOL）：该通道在本次服务中不可用，问答/图谱等请求将报错；"
@@ -1206,7 +1158,7 @@ def serve(
     application = create_app(
         vault=resolved_vault,
         data_dir=resolved_data_dir,
-        # llm=None（协议越界降级）时仍尊重显式 --api-key-env：错误文案点名用户传的变量
+        # 即使 LLM 降级，也保留显式 --api-key-env 供错误文案点名。
         api_key_env=llm_cli.api_key_env
         or (llm.api_key_env if llm is not None else None)
         or DEFAULT_API_KEY_ENV,

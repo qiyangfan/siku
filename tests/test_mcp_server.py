@@ -1,8 +1,6 @@
-"""siku MCP 服务器测试：协议层（子进程 stdio）+ 工具层（进程内直调）+ 写入竞争。
+"""MCP 服务器测试：协议层（子进程 stdio）、工具层（进程内直调）与写入竞争。
 
-协议层走真实子进程与 SDK 客户端（`Client` 经 `StdioServerParameters` 拉起
-`siku mcp`）；工具层进程内直调工具实现函数，经 `_search_service`/`_answer_provider`
-两个装配缝注入假上游（宪法·测试范式：CI 永不打真实 API）。
+协议层使用真实子进程与 SDK 客户端；工具层直调实现函数，并替换两个假上游。
 """
 
 from __future__ import annotations
@@ -90,7 +88,7 @@ def _patch_supply(
     search_service: object,
     answer_provider: object,
 ) -> None:
-    """打平两个装配缝：检索服务与问答 provider 都换假上游。"""
+    """替换检索服务与问答 provider 两个假上游。"""
     monkeypatch.setattr(mcp_server, "_search_service", lambda data_dir: search_service)
     monkeypatch.setattr(mcp_server, "_answer_provider", lambda: answer_provider)
 
@@ -120,12 +118,7 @@ def repo_root() -> Path:
 
 
 def _scrubbed_env(home: str | None = None) -> dict[str, str]:
-    """子进程环境隔离：剥离本机 siku/凭证变量，防真实端点与假红。
-
-    HOME 一并指向给定目录：config_file_path() 落在 $HOME 下（macOS 为
-    ~/Library/Application Support/siku/config.toml），不隔离会读到开发机真实
-    通道配置，使「未配置」类断言依赖机器状态。
-    """
+    """子进程环境隔离：剥离本机 siku/凭证变量，HOME 指向给定目录。"""
     env = {
         k: v
         for k, v in os.environ.items()
@@ -195,7 +188,7 @@ class TestSearchTool:
     def test_search_without_embedding_channel_returns_guidance(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """embedding 通道未配置：返回配置指引（固定 HTTP 面话术，指向设置页），不泄漏内部细节。"""
+        """embedding 未配置时返回配置指引，不泄漏内部细节。"""
         monkeypatch.setattr(
             "siku.model_supply.config_file_path", lambda: tmp_path / "nonexistent" / "config.toml"
         )
@@ -217,9 +210,9 @@ class TestListDocumentsTool:
         payload = mcp_server.tool_list_documents(vault=vault, data_dir=data_dir)
         by_id = {item["source_id"]: item for item in payload["sources"]}
         assert by_id["aa000001"]["source_id"] == "aa000001"
-        # 未建检索索引：摄取状态是 pending（清单状态与索引解耦，不谎称已索引）
+        # 未建索引时摄取状态为 pending。
         assert by_id["aa000001"]["ingest_status"] == "pending"
-        # 清单 hash 是附件原件的真实 SHA-256（不是投影 frontmatter 的标注值）
+        # 清单哈希取附件原件的真实 SHA-256。
         assert len(by_id["aa000001"]["source_hash"]) == 64
 
     def test_empty_vault_returns_empty_list(self, tmp_path: Path) -> None:
@@ -389,7 +382,7 @@ class TestIngestTool:
         assert second["created"] == 0
 
     def test_unsupported_format_is_counted_as_ignored(self, tmp_path: Path) -> None:
-        """不支持的格式沿内核白名单语义计入 ignored，不误报成功也不另造第二套报错。"""
+        """不支持的格式计入 ignored。"""
         source = tmp_path / "binary.bin"
         source.write_bytes(b"\x00\x01")
         payload = mcp_server.tool_ingest(
@@ -551,8 +544,7 @@ class TestProtocolSubprocess:
         # communicate(input=b"") 写空输入并关闭 stdin = EOF
         _stdout, stderr = proc.communicate(input=b"", timeout=15)
         assert proc.returncode == 0
-        # 日志通道在 stderr（含启动日志行）；stdout 若混入日志行，SDK 客户端
-        # 的握手测试早已失败——这里再显式钉住一次
+        # 日志只走 stderr；stdout 混入日志会破坏协议握手。
         assert "siku mcp server starting" in stderr.decode("utf-8", errors="replace")
 
 

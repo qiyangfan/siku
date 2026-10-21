@@ -1,9 +1,7 @@
 """嵌入式向量存储（ADR-0003 定稿：LanceDB）。
 
-`lancedb` 是核心依赖（ADR-0003 三件套；ADR-0009 起不再属于任何 extra），
-本模块保留函数体内延迟导入以加快 CLI 冷启动。向量表按目录整体作为"一个
-版本"由索引同步流程构建于临时目录并在校验通过后原子切换，这里只提供单版本
-目录内的读写。
+向量表按目录整体作为一个版本，由索引同步在临时目录构建后原子切换；本模块只提供
+单版本目录内的读写。lancedb 在函数体内延迟导入以加快 CLI 冷启动。
 """
 
 from __future__ import annotations
@@ -140,11 +138,10 @@ class LanceVectorStore:
         return self._dimensions
 
     def _lance_call(self, operation: Callable[[], _T]) -> _T:
-        """包装 lance 表操作：存储引擎异常统一转领域错误。
+        """包装 lance 表操作，异常统一转领域错误。
 
-        读路径撞上版本切换窗口是瞬态（旧版本目录被换出），转 IndexBusyError
-        提示重试；其余按损坏处理，避免 lance 的裸 RuntimeError 穿透 CLI 的
-        RetrievalError 边界。
+        版本切换窗口内的失败是瞬态，转 IndexBusyError 提示重试；其余按损坏处理，
+        避免 lance 的裸异常穿透 RetrievalError 边界。
         """
         try:
             return operation()
