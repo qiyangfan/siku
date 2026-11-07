@@ -5,10 +5,48 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # 增量门控:桌面产物相关作业(sandbox 三平台矩阵 / Rust 全链)只在对应路径
+  # 变化时才跑——文档、纯 Python 测试或 actions 版本 bump 不值得烧 macOS(×10)
+  # /Windows(×2) 计费分钟。判定失败一律放行(fail-open),宁可多跑不漏跑。
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sidecar: ${{ steps.filter.outputs.sidecar }}
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: filter
+        run: |
+          set -euo pipefail
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            BASE="origin/${GITHUB_BASE_REF}"
+          else
+            BASE="HEAD~1"
+          fi
+          if ! git rev-parse -q --verify "${BASE}^{commit}" >/dev/null 2>&1; then
+            echo "变更基线不可得,视为全量变更"
+            echo "sidecar=true" >> "$GITHUB_OUTPUT"
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          FILES=$(git diff --name-only "${BASE}...HEAD")
+          echo "$FILES"
+          match() { echo "$FILES" | grep -Eq "$1" && echo true || echo false; }
+          echo "sidecar=$(match '(^src/|^scripts/|^pyproject\.toml$|^uv\.lock$)')" >> "$GITHUB_OUTPUT"
+          echo "rust=$(match '(^ui/src-tauri/)')" >> "$GITHUB_OUTPUT"
+
   test:
     name: 测试（Python ${{ matrix.python-version }}）
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       # 测试最低支持版本 3.12 和更新版本 3.14。
@@ -39,6 +77,7 @@ jobs:
   ui:
     name: 前端（Node 24）
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -58,10 +97,14 @@ jobs:
         if: ${{ hashFiles('ui/package.json') != '' }}
         run: npm run lint --if-present && npm test --if-present && npm run build --if-present
 
-  # 桌面壳 Rust 检查：fmt、clippy 和测试
+  # 桌面壳 Rust 检查：fmt、clippy 和测试。
+  # 仅当 ui/src-tauri 路径变化时执行（changes 门控）。
   desktop-shell:
     name: 桌面壳（Rust fmt/clippy/test）
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -100,9 +143,14 @@ jobs:
 
   # 桌面 sidecar 产物检查（ADR-0013）：三平台真实构建 + 资源/架构/无 torch 门禁。
   # 本作业只验证产物形态，不发布工件。
+  # 仅当 sidecar 相关路径（Python 源码/打包脚本/依赖清单）变化时执行（changes 门控）；
+  # 注意 ci.yml 自身变更不在触发集内——actions 版本 bump 不影响产物形态。
   sidecar-artifacts:
     name: 桌面 sidecar 产物检查（${{ matrix.os }}）
+    needs: changes
+    if: needs.changes.outputs.sidecar == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:

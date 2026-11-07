@@ -1,7 +1,9 @@
 version: 2
 updates:
-  # GitHub Actions 版本更新
+  # GitHub Actions 版本更新。
+  # monthly:每次 bump PR 都会触发 CI;weekly 意味着近乎每周为版本号变更
+  # 烧一轮流水线,降频到月度以压缩 Actions 计费分钟。
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"

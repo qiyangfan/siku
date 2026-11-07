@@ -16,6 +16,11 @@ on:
 permissions:
   contents: write
 
+# 并发 tag 推送按序发布,不取消进行中的发布(发布不可半途取消)。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   HOMEBREW_TAP_REPO: qiyangfan/homebrew-tap
 
@@ -23,6 +28,7 @@ jobs:
   version-check:
     name: 版本一致性校验（tag = tauri.conf.json）
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.read.outputs.version }}
     steps:
@@ -41,6 +47,7 @@ jobs:
   build:
     name: 构建（${{ matrix.target }}）
     needs: version-check
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -161,8 +168,9 @@ jobs:
 
   release:
     name: 发布 Release（失败不发布）
-    needs: build
+    needs: [version-check, build]
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -194,6 +202,7 @@ jobs:
     name: 更新 Homebrew Cask
     needs: [version-check, release]
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     env:
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
