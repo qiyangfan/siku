@@ -9,9 +9,8 @@
   mcp-server 增量入档，现八工具 = 七只读 + ingest）与 `2026-11-09-add-ci-e2e-smoke`
   （CI 版 E2E 冒烟门禁，skip_specs）。活跃 changes 归零，排序队列清空。
 - **唯一在途待办**：CI 首跑两面验证（改动 `src/` 触发 e2e job、纯文档跳过；首周
-  flake 纪律与降级预案见归档 review.md）——**2026-11-09 起被账号级 Actions 锁定
-  阻塞**（配额/付费/存储待 owner 在 Settings → Billing 核查解除；对照实验已排除
-  工作流文件问题，见 d216fab 提交说明），解除后按同一口径补验首跑两面。
+  flake 纪律见归档 review.md）——**2026-11-09 起被账号级 Actions 锁定阻塞**（配额/
+  付费/存储待 owner 查 Billing；对照实验已排除工作流文件问题，见 d216fab），解除后补验。
 
 ## 验证状态（归档前全量复验，2026-11-09 本机）
 
