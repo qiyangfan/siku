@@ -19,7 +19,6 @@ jobs:
     outputs:
       sidecar: ${{ steps.filter.outputs.sidecar }}
       rust: ${{ steps.filter.outputs.rust }}
-      e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,21 +33,15 @@ jobs:
           fi
           if ! git rev-parse -q --verify "${BASE}^{commit}" >/dev/null 2>&1; then
             echo "变更基线不可得,视为全量变更"
-            {
-              echo "sidecar=true"
-              echo "rust=true"
-              echo "e2e=true"
-            } >> "$GITHUB_OUTPUT"
+            echo "sidecar=true" >> "$GITHUB_OUTPUT"
+            echo "rust=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           FILES=$(git diff --name-only "${BASE}...HEAD")
           echo "$FILES"
           match() { echo "$FILES" | grep -Eq "$1" && echo true || echo false; }
-          {
-            echo "sidecar=$(match '(^src/|^scripts/|^pyproject\.toml$|^uv\.lock$)')"
-            echo "rust=$(match '(^ui/src-tauri/)')"
-            echo "e2e=$(match '(^src/|^tests/e2e/|^pyproject\.toml$|^uv\.lock$)')"
-          } >> "$GITHUB_OUTPUT"
+          echo "sidecar=$(match '(^src/|^scripts/|^pyproject\.toml$|^uv\.lock$)')" >> "$GITHUB_OUTPUT"
+          echo "rust=$(match '(^ui/src-tauri/)')" >> "$GITHUB_OUTPUT"
 
   test:
     name: 测试（Python ${{ matrix.python-version }}）
