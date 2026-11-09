@@ -86,7 +86,11 @@ select = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q"
+# e2e（真实 serve 进程接线冒烟）默认排除，由 CI 独立 job 经 `pytest -m e2e` 运行。
+addopts = "-q -m 'not e2e'"
+markers = [
+    "e2e: 真实 serve 进程五段接线回归冒烟（独立 CI job 运行；fake 三通道端点，无网络无密钥）",
+]
 
 [tool.mypy]
 python_version = "3.12"
