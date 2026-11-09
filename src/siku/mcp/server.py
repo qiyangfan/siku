@@ -43,6 +43,7 @@ from siku.model_supply import (
     resolve_rerank_channel,
 )
 from siku.qa.service import AnswerService
+from siku.retrieve.entity_join import DEFAULT_LIMIT, entity_join_search
 from siku.retrieve.errors import (
     ModelNotAvailableError,
     NoteParseError,
@@ -286,6 +287,36 @@ def tool_graph_neighbors(
     return asdict(subgraph)
 
 
+def tool_entity_evidence(
+    query: str, *, vault: Path, data_dir: Path, limit: int = DEFAULT_LIMIT
+) -> dict[str, Any]:
+    """实体 join 证据检索（ADR-0015）：种子实体确定性解析，一跳共现扩展取桥接证据。
+
+    零模型调用的只读通道；图谱未构建 / 索引缺失按既有归一化口径失败，
+    无种子命中是分型空结果而非失败。
+    """
+    try:
+        result = entity_join_search(data_dir, query, limit=limit)
+    except (GraphArtifactsMissingError, GraphStoreCorruptError, RetrievalError) as exc:
+        # RetrievalError 覆盖索引缺失/损坏与 invalid_query（InvalidQueryError 子类），
+        # 与 search 工具同一映射口径；图谱类错误单独前置。
+        raise _read_mapped(exc) from exc
+    return {
+        "query": query.strip(),
+        "limit": limit,
+        "results": [
+            {**asdict(hit.result), "provenance": [asdict(item) for item in hit.provenance]}
+            for hit in result.hits
+        ],
+        "seed_entities": [asdict(seed) for seed in result.seed_entities],
+        "bridge_entity_count": result.bridge_entity_count,
+        "skipped_missing_chunks": result.skipped_missing_chunks,
+        "truncated": result.truncated,
+        "total_matched": result.total_matched,
+        "empty_reason": result.empty_reason,
+    }
+
+
 def tool_ingest(source: str, *, vault: Path, data_dir: Path) -> dict[str, Any]:
     """摄取文件或目录进资料库：按 source_hash 幂等，跨进程写入互斥。"""
     path = Path(source).expanduser()
@@ -337,12 +368,13 @@ def _call(tool_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
 
 
 def build_server(*, vault: Path, data_dir: Path) -> MCPServer:
-    """装配 MCP 服务器：七个工具（六只读 + 一幂等写），stdio 传输。"""
+    """装配 MCP 服务器：八个工具（七只读 + 一幂等写），stdio 传输。"""
     mcp = MCPServer(
         "siku",
         instructions=(
             "siku（四库）本地知识库。典型链路：list_documents 看有什么 → search 定位片段"
-            " → read_document 读全文 → ask 提问；ingest 幂等收录新文档。"
+            " → read_document 读全文 → ask 提问；多跳问题用 graph_search 确认实体名后以"
+            " entity_evidence 取实体共现的桥接证据；ingest 幂等收录新文档。"
             "所有结果带 source_id/note_path/anchor，可回跳投影原文。"
         ),
     )
@@ -414,6 +446,21 @@ def build_server(*, vault: Path, data_dir: Path) -> MCPServer:
             lambda: tool_graph_neighbors(
                 entity_id, vault=vault, data_dir=data_dir, limit=limit, depth=depth
             ),
+        )
+
+    @mcp.tool()
+    def entity_evidence(
+        query: Annotated[str, Field(min_length=1, description="包含实体名称的自然语言查询")],
+        limit: Annotated[int, Field(ge=1, le=100, description="返回证据数上限")] = DEFAULT_LIMIT,
+    ) -> dict[str, Any]:
+        """按实体共现检索桥接证据（适合多跳/关联问题）；建议先用 graph_search 确认实体名。
+
+        零模型调用的确定性通道：查询中的实体名解析为种子，一跳共现扩展返回带溯源
+        （种子/桥接实体）的证据片段；无实体命中返回分型空结果而非失败。
+        """
+        return _call(
+            "entity_evidence",
+            lambda: tool_entity_evidence(query, vault=vault, data_dir=data_dir, limit=limit),
         )
 
     @mcp.tool()

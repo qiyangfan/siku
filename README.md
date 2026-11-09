@@ -119,10 +119,12 @@ siku 内置 stdio MCP 服务器（ADR-0014）：`siku mcp` 以 Model Context Pro
 stdio 传输暴露知识库工具，供 AI 客户端（ZCode、Claude Code、Claude Desktop、Cursor 等）
 直接调用。不监听网络端口、不依赖 `siku serve`；与桌面应用/CLI 并发安全（同库写入互斥）。
 
-暴露七个工具：`search`（混合检索带锚点）、`ask`（单轮有来源问答）、`list_documents`
+暴露八个工具：`search`（混合检索带锚点）、`ask`（单轮有来源问答）、`list_documents`
 （资料库清单）、`read_document`（读投影全文，超长明示截断）、`graph_search` /
-`graph_neighbors`（知识图谱查询）、`ingest`（幂等摄取文件或目录）。移除、重建、设置等
-管理操作不经 MCP 暴露，请使用 WebUI 或 CLI。
+`graph_neighbors`（知识图谱查询）、`entity_evidence`（实体 join 证据检索，ADR-0015：
+查询中的实体名解析为种子，一跳共现扩展返回带溯源的桥接证据，零模型调用，适合多跳/
+关联问题）、`ingest`（幂等摄取文件或目录）。移除、重建、设置等管理操作不经 MCP 暴露，
+请使用 WebUI 或 CLI。
 
 客户端配置（`--vault`/`--data-dir` **必须传绝对路径**：客户端以任意工作目录拉起服务器
 进程；模型通道经环境变量与 `config.toml` 解析，见上一节）：

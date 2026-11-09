@@ -77,6 +77,8 @@ vault/
 
 bge-m3 向量化 → BM25 混合召回 → bge-reranker 重排 → **golden set 回归评测**（几十个"问题+应命中文档"标注对，改检索参数必跑）。无回归集的检索调优是玄学。
 
+增强通道：实体 join 检索（ADR-0015）——查询时实体共现 join 取桥接证据，纯确定性零模型调用，只读图谱 parquet 与检索索引两份派生物；消费面先行 MCP 只读工具，主链路四段与 golden set 门禁不变，多跳评测集另立。
+
 ## 7. 模型层
 
 - embedding：本地（bge-m3 / Ollama）

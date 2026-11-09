@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from tests.test_api_reading import seed_small_graph, write_note
+from tests.test_entity_join import build_join_library, seed_join_graph
 
 from siku.graph.errors import (
     LlmAuthError,
@@ -363,6 +364,55 @@ class TestGraphTools:
 # ---------------------------------------------------------------------------
 
 
+class TestEntityEvidenceTool:
+    def test_entity_evidence_returns_provenanced_evidence(self, tmp_path: Path) -> None:
+        vault, data_dir, key_map = build_join_library(tmp_path)
+        seed_join_graph(data_dir, key_map)
+
+        payload = mcp_server.tool_entity_evidence(
+            "张伟和李静有什么关联", vault=vault, data_dir=data_dir
+        )
+
+        assert payload["empty_reason"] is None
+        assert {seed["name"] for seed in payload["seed_entities"]} == {"张伟", "李静"}
+        provenance_kinds = {item["provenance"][0]["kind"] for item in payload["results"]}
+        assert "bridge" in provenance_kinds
+        assert payload["bridge_entity_count"] >= 1
+        assert payload["skipped_missing_chunks"] == 0
+
+    def test_seed_miss_is_typed_empty_result_not_failure(self, tmp_path: Path) -> None:
+        vault, data_dir, key_map = build_join_library(tmp_path)
+        seed_join_graph(data_dir, key_map)
+
+        payload = mcp_server.tool_entity_evidence("毫不相干的问题", vault=vault, data_dir=data_dir)
+
+        assert payload["results"] == []
+        assert payload["empty_reason"] == "seed_miss"
+
+    def test_blank_query_maps_to_invalid_query(self, tmp_path: Path) -> None:
+        """空白查询（能过 schema min_length）按 invalid_query 归一，不被掩盖成 internal_error。"""
+        vault, data_dir, key_map = build_join_library(tmp_path)
+        seed_join_graph(data_dir, key_map)
+        with pytest.raises(McpToolError) as excinfo:
+            mcp_server.tool_entity_evidence("   ", vault=vault, data_dir=data_dir)
+        assert excinfo.value.code == "invalid_query"
+
+    def test_missing_graph_maps_to_guidance(self, tmp_path: Path) -> None:
+        with pytest.raises(McpToolError) as excinfo:
+            mcp_server.tool_entity_evidence(
+                "张伟", vault=tmp_path / "vault", data_dir=tmp_path / "data"
+            )
+        assert excinfo.value.code == "graph_missing"
+
+    def test_missing_index_maps_to_guidance(self, tmp_path: Path) -> None:
+        vault = tmp_path / "vault"
+        write_note(vault, "a-note", title="A", source_id="aa000001", sections=[("内容", "正文")])
+        seed_small_graph(tmp_path / "data")
+        with pytest.raises(McpToolError) as excinfo:
+            mcp_server.tool_entity_evidence("Alpha Kernel", vault=vault, data_dir=tmp_path / "data")
+        assert excinfo.value.code == "index_unavailable"
+
+
 class TestIngestTool:
     @staticmethod
     def _write_source(tmp_path: Path) -> Path:
@@ -478,14 +528,53 @@ class TestProtocolSubprocess:
     async def test_handshake_tools_list_and_read_roundtrip(
         self, tmp_path: Path, repo_root: Path
     ) -> None:
-        """握手 + tools/list 七工具 + 只读工具往返；stdout 无协议外输出。"""
+        """握手 + tools/list 八工具 + 只读工具往返；stdout 无协议外输出。"""
         from mcp import Client
 
+        from fakes import FakeEmbeddingProvider
+        from siku.graph.models import Entity, SourceAnchor
+        from siku.graph.store import save_graph
+        from siku.retrieve.indexer import database_path, sync_index
+        from siku.retrieve.store import SqliteIndex
+
         vault = tmp_path / "vault"
-        write_note(vault, "a-note", title="A", source_id="aa000001", sections=[("内容", "正文")])
+        write_note(
+            vault,
+            "a-note",
+            title="A",
+            source_id="aa000001",
+            sections=[("内容", "Alpha Kernel 说明。")],
+        )
         attachments = vault / "attachments"
         attachments.mkdir(parents=True, exist_ok=True)
         (attachments / "a-note--aa000001.md").write_text("A 原件", encoding="utf-8")
+
+        sync_index(vault, tmp_path / "data", FakeEmbeddingProvider())
+        index = SqliteIndex.open(database_path(tmp_path / "data"))
+        try:
+            chunk_id = index.chunks_of_sources(["aa000001"])[0].chunk_id
+        finally:
+            index.close()
+        save_graph(
+            tmp_path / "data",
+            [
+                Entity(
+                    entity_id="e-alpha",
+                    name="Alpha Kernel",
+                    type="系统",
+                    anchors=(
+                        SourceAnchor(
+                            chunk_id=chunk_id,
+                            source_hash="a" * 64,
+                            note_path="notes/a-note.md",
+                            anchor="内容",
+                        ),
+                    ),
+                ),
+            ],
+            [],
+            [],
+        )
 
         client = Client(_stdio_params(vault, tmp_path / "data", repo_root))
         async with client:
@@ -497,12 +586,18 @@ class TestProtocolSubprocess:
                 "read_document",
                 "graph_search",
                 "graph_neighbors",
+                "entity_evidence",
                 "ingest",
             }
             result = await client.call_tool("list_documents", {})
             assert result.is_error is not True
             payload = json.loads(result.content[0].text)
             assert payload["sources"][0]["source_id"] == "aa000001"
+            evidence = await client.call_tool("entity_evidence", {"query": "Alpha Kernel 是什么"})
+            assert evidence.is_error is not True
+            evidence_payload = json.loads(evidence.content[0].text)
+            assert evidence_payload["empty_reason"] is None
+            assert evidence_payload["results"][0]["anchor"] == "内容"
 
     @pytest.mark.anyio
     async def test_unconfigured_search_returns_error_result_with_code(
