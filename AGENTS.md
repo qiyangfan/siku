@@ -21,7 +21,7 @@ siku（四库）——本地优先的个人知识库：丢入全部文档（PDF/
 proposal 必须含 Non-goals 并引用受影响 ADR；任务粒度 ≤ 2 小时。
 排序与遗忘防线见 [docs/ROADMAP.md](docs/ROADMAP.md)：**开 change 前先对齐排序，
 归档 change 后回写勾稽**；远期项进 Backlog 而非预写 openspec 骨架。
-交接状态见 [docs/HANDOFF.md](docs/HANDOFF.md)：每次交接**整体重写**（禁止追加），
+交接状态见 `docs/HANDOFF.md`（仅本地维护，**不入库**；内容含真实环境细节，公开仓库不携带此文件）：每次交接**整体重写**（禁止追加），
 硬上限 ~60 行，只写接手者即时需要的状态，常驻知识一律指向四层文档。
 
 ## 架构红线（违反即打回）

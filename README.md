@@ -4,8 +4,8 @@
 
 siku 取意《四库全书》——历史上最大规模的"汇总天下文献 → 自动编目（总目提要）→ 结构化检索"工程。本项目是它的个人本地版：**本地优先**，语料与索引永不离开你的磁盘；模型一律 BYOK 端点供给（ADR-0009）——图谱抽取、问答走你的 LLM 端点，向量检索/重排走你的 embedding/rerank 端点（本地 Ollama 或云端 API）。
 
-🚧 当前处于脚手架阶段。架构定稿（北极星）见 [docs/architecture.md](docs/architecture.md)，
-不可协商红线见 [openspec/project.md](openspec/project.md)（宪法）。
+🚧 当前处于 **alpha**:核心链路(摄取 → 检索 → 图谱 → wiki → 问答)与桌面上手闭环已完成,由 CI 五段接线门禁护航(`tests/e2e/`,真实 serve 进程);桌面发布物准备中(unsigned 包已可构建,Release 解禁待定)。架构定稿(北极星)见 [docs/architecture.md](docs/architecture.md),
+不可协商红线见 [openspec/project.md](openspec/project.md)(宪法)。
 
 ## 文档地图
 
@@ -14,7 +14,7 @@ siku 取意《四库全书》——历史上最大规模的"汇总天下文献 �
 | 接下来干什么、哪些先不做 | `docs/ROADMAP.md`（阶段闸门 + 触发器台账 + Backlog） |
 | 某个选型为什么这么定 | `docs/adr/`（ADR-0001~0009） |
 | 哪些规则碰不得 | `openspec/project.md`（宪法红线 + 工程口径） |
-| 当前进度与接手状态 | `docs/HANDOFF.md` + `docs/ROADMAP.md` |
+| 当前进度与接手状态 | `docs/ROADMAP.md`(勾稽表;`docs/HANDOFF.md` 为本地维护文件,不入库) |
 | 系统应如何行为 | `openspec/specs/`（随 change 归档生长） |
 | 桌面应用安装与故障排查 | `docs/desktop.md` |
 | 当前进度与选型总表 | `docs/architecture.md` |
