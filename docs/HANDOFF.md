@@ -3,58 +3,56 @@
 > 即时状态见本文；常驻规则见 `AGENTS.md`，架构/排序见 `docs/architecture.md`、
 > `docs/adr/`、`docs/ROADMAP.md`。实现与评审明细在各 change 工件，不在此重复。
 
-- **更新时间**：2026-10-18；分支 `main`。
-- 本轮归档 `2026-10-18-upgrade-dependencies-2026-10`（skip_specs）：全栈依赖升级至
-  2026-10-18 最新稳定版——Python lock 刷新 + filelock 4（跨进程锁验证过）；前端
-  eslint 10 / vite 8（Rolldown）/ TS 6.0.2 / sigma 4（GraphCanvas 适配 + 亮暗视觉回归）/
-  react 19.3.1 / marked 18.1.1（ReDoS 修复）；Rust tauri 2.12.4 + ureq 3 + edition 2024；
-  setup-uv v10.3.0 + pre-commit-hooks v6。评审证据与决策记录见该归档 review.md。
-- 排序队列已清空，下一项待 owner 对齐排序；ROADMAP 触发器台账本轮新增四条
-  （TS 7、Node 26、lancedb FTS 重评、typer 上界）。
+- **更新时间**：2026-11-09；分支 `main`，本轮两项归档已提交并推送远端。
+- 本轮收口归档两项：`2026-11-09-add-entity-join-retrieval`（实体 join 检索通道 +
+  MCP 第八个只读工具 `entity_evidence`，ADR-0015；entity-join 主规格入档 +
+  mcp-server 增量入档，现八工具 = 七只读 + ingest）与 `2026-11-09-add-ci-e2e-smoke`
+  （CI 版 E2E 冒烟门禁，skip_specs）。活跃 changes 归零，排序队列清空。
+- **唯一在途待办（推送后）**：CI 首跑两面验证——改动 `src/` 应触发 e2e job、纯文档
+  改动应被门控跳过；首周逐次检查 e2e job，flake 纪律与降级预案见归档 review.md。
 
-## 验证状态
+## 验证状态（归档前全量复验，2026-11-09 本机）
 
-- pytest **862**；ruff 双清；`openspec validate --specs --strict` **9/9**；`--changes` 无活跃。
-- ui vitest **133**、`npm run build` 绿；lint **0 error / 9 warn**（warn 全部是
-  `react-hooks/set-state-in-effect`，刻意降级，见下）。
-- Rust：fmt/clippy -D warnings/test **11** 绿；sidecar 产物门禁本机 arm64 通过
-  （641 MiB，pandoc 3.11 SHA-256 校验随包）；Windows/Linux 平台留 CI。
-- 本机 pytest 口径：`env -u DASHSCOPE_API_KEY uv run python -m pytest -o addopts=""`
-  （该 key 致假红）。UI 门禁必须在 `ui/` 内跑（根目录 npx 命中假包）。
+- pytest **887 passed + 2 deselected**（e2e 默认排除）；`pytest -m e2e` **2 passed**；
+  ruff check + format 双清（340 文件）；`openspec validate --specs --strict` **10/10**
+  （新增 entity-join）；活跃 changes 零。
+- **既有 flaky（HEAD 既有，已归因未修，勿顺手改）**：
+  `test_two_process_mutex_via_subprocess`——时序余量 ~1s vs `import siku.cli` 实测
+  3.8–6.9s，本机时红时绿（本轮复验恰绿）；修法另开小件：setup 显式建 `vault/notes/`
+  或加长 holder 持锁，使断言不依赖启动时序。
 
 ## 必须保留的判断
 
-- **依赖升级遗留口径**：TS 钉 `~6.0.2`（TS 7 被 typescript-eslint `<6.1.0` 阻断，触发器
-  已记 ROADMAP）；tauri MSRV 1.90；typer 留 0.26.8（docling-core 上界 `<0.27`）；
-  `react-hooks/set-state-in-effect` 9 处为取数模式债务，独立重构清零后恢复 error。
-- **协议越界新契约**：`ask_readiness.invalid` 与请求期同源；读取面文件层可读恒 200；
-  serve 统一容忍供给配置错误启动；请求面 503 `invalid_settings` 零漂移。不要改回。
-- 场景名「坏文件叠加上层协议越界时归一化失败」按硬规则保留旧名，不要顺手改名。
+- **E2E 门禁纪律**：确定性是入闸前提；禁止以放宽断言换绿（断言松动 = 门禁失效）。
+  fake 端点按三消费方 system prompt 特征分流（图谱抽取/百科编辑/本地问答器），prompt
+  改动会让 e2e 500 变红——是特性（跨段契约漂移报警），不是误报。
+- **entity_join 边界（ADR-0015）**：只读图谱快照 + 检索索引两份派生物，零模型调用
+  零独立状态；`rerank_score` 契约 = 最终排序第一关键字（种子分层偏移恒序）。升级路径
+  （LLM 抽取/重排、`/api/ask` opt-in）由触发器台账信号驱动，勿顺手做。
+- **依赖升级遗留口径**：TS 钉 `~6.0.2`（TS 7 被 typescript-eslint `<6.1.0` 阻断）；
+  tauri MSRV 1.90；typer 留 0.26.8（docling-core 上界）；`react-hooks/set-state-in-effect`
+  9 处待独立重构清零后恢复 error。
 - MCP：不监听端口、无鉴权面；`--vault`/`--data-dir` 须绝对路径；SDK 上界 `>=2,<3` 保留。
 - 基线：改检索链路必须过 `dashscope-text-embedding-v3` 通道门禁；本地 Ollama 通道仍缺。
-- **图谱自动刷新（`graph_auto_refresh`，缺省关）**：自动路径只维护既有快照——不创建
-  图谱、不重建失效快照、不生成 wiki；身份闸门记 (extractor_id, model_id, prompt_version)，
-  换模型跳过并要求显式更新（防静默全量重抽烧 key）。
-- 既有判断：非法协议取值挡在输入边界；`config_file_unreadable` 禁止覆盖、serve 对该型
-  快速失败；CLI `siku wiki` 无 `--vault` 互斥边界；主题机制只用 Mantine 内建三态。
+- **图谱自动刷新（`graph_auto_refresh`，缺省关）**：身份闸门 (extractor_id, model_id,
+  prompt_version)，换模型跳过并要求显式更新（防静默全量重抽）。
 
 ## 既有待办与外部边界
 
 - **多平台打包（owner 2026-10-10 明示除外）**：Windows/Linux 实机安装冒烟维持豁免；
   Phase 6 签名/自动更新维持 2026-10-02 终态裁决无限期缓滞（双条件齐备才重启）。
 - 本地 Ollama 通道基线：待在线环境按 benchmarks/README.md 补录（触发器台账已记）。
-- 2026-10-17 登记（HEAD 既有、范围外，未顺手修改）：`tests/test_api_sync.py:252-260`
-  轮询 `snapshot` 可能未绑定；`src/siku/graph/providers.py:229,249` 两处 `Unknown | None`；
-  其余既有 pyright 错误（全树 52 处，多为测试文件）。mypy 有既有解析错误且非门禁
-  （2.4 与 2.3.1 输出一致，零新增）。
-- pi-lens 检查器模块索引可能滞后于新建模块，以 pyright/测试/运行时导入为准。
-- GUI 进程读不到 shell env；sidecar 注入不是当前目标。
-- openspec：主规格 Requirement 正文 ≤500 字符是 CLI 新增强检查。
+- 2026-10-17 登记（HEAD 既有、范围外）：`tests/test_api_sync.py:252-260` 轮询
+  `snapshot` 可能未绑定；`src/siku/graph/providers.py:229,249` 两处 `Unknown | None`；
+  其余既有 pyright 错误（全树 52 处，多为测试文件）。mypy 既有解析错误且非门禁。
+- openspec 主规格 Requirement 正文 ≤500 字符是 CLI 新增强检查。
 
 ## 本机执行口径
 
-- `ui/` 真正锁文件是 package-lock.json；用已有 `node_modules/.bin`，不跑会触发
-  install/孤儿锁文件的 pnpm 11 命令；`ui/node_modules` 缺失就按锁文件 `npm ci`。
+- pytest 口径：`env -u DASHSCOPE_API_KEY uv run python -m pytest`（直呼 `uv run pytest`
+  spawn 失败；该 key 致假红）；跑 e2e 追加 `-m e2e`（addopts 已默认排除）。
+- UI 门禁必须在 `ui/` 内跑（根目录 npx 命中假包）；锁文件是 package-lock.json，用已有
+  `node_modules/.bin`，不跑 pnpm 11；`ui/node_modules` 缺失按锁文件 `npm ci`。
 - 仓库迁移后 hook 路径失效用 `.venv/bin/python -m pre_commit install` 重生，禁用
   `--no-verify`。
 - pandoc 构建缓存在 `~/.cache/siku-build/pandoc/<triple>/`；重建 sidecar 直接

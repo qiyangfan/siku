@@ -30,6 +30,22 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 
 ## 当前排序队列
 
+2026-11-09 两项已实施验收归档：
+
+1. ~~add-entity-join-retrieval~~ ✅（2026-11-09，归档
+   `2026-11-09-add-entity-join-retrieval`）：实体 join 检索增强通道——SAG
+   （arXiv:2606.15971）式查询时动态超边：查询串确定性种子解析 → H=1 共现 join 扩展
+   → 带溯源的桥接证据 chunk；纯确定性零模型调用，只读 entities.parquet 实体锚点
+   （`SourceAnchor.chunk_id`）与检索索引两份既有派生物，零 schema 变更；消费面 = MCP
+   第八个只读工具 `entity_evidence`；entity-join 主规格入档 + mcp-server 增量入档；
+   ADR-0015 已接受；中文多跳评测（16 对标注）：桥接场景 join Recall@10 **8/8** vs
+   纯混合召回 **1/8**，共现/歧义场景持平 8/8；升级路径见触发器台账 ADR-0015 两行。
+2. ~~add-ci-e2e-smoke~~ ✅（2026-11-09，归档 `2026-11-09-add-ci-e2e-smoke`，
+   skip_specs）：CI 版 E2E 冒烟门禁——`tests/e2e`（fake 三通道端点 + 真实 serve
+   五段编排 + 端点自检）、pytest `e2e` marker 默认排除、ci.yml 独立 job + changes
+   门控（fail-open）；断线演练自证红/绿；CI 首跑两面验证随推送后首周观察纪律执行
+   （纪律与降级预案见归档 review.md）。
+
 2026-10-02 三项提案已实施并通过验收归档：
 
 1. ~~complete-desktop-format-ingest~~ ✅（2026-10-02，归档
@@ -119,6 +135,8 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | Node 26 进入 LTS（2026-10-28 已过） | 例行维护顺手把 CI/setup-node 从 24 切 26，不单独开窗 | 归档 `2026-10-18-upgrade-dependencies-2026-10` |
 | lancedb #4516（并列分顺序不稳定）与 #4364（自定义分词器）关闭，且 golden set A/B 对比不降 | 另开 LanceDB 原生 FTS 迁移件（证据与对比矩阵见该归档 design.md） | 归档 `2026-10-18-upgrade-dependencies-2026-10` |
 | docling-core 放开 `typer<0.27` 上界 | typer 随下一轮依赖升级带入 0.27（当前 0.26.8 可用，无急迫性） | 归档 `2026-10-18-upgrade-dependencies-2026-10` |
+| 多跳评测已证 join 通道显著补盲（桥接 8/8 vs 混合 1/8） | 评估 `/api/ask` opt-in 集成与 WebUI 呈现（届时过 golden set 门禁，另开 change；是否立案先对齐排序） | 归档 `2026-11-09-add-entity-join-retrieval` / ADR-0015 |
+| 种子召回或排序成为多跳瓶颈 | 引入 LLM query 实体抽取 / LLM 证据链重排（SAG 消融旁证见 ADR-0015） | 归档 `2026-11-09-add-entity-join-retrieval` / ADR-0015 |
 
 ## Backlog（明确不进当前阶段，防 scope creep）
 
