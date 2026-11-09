@@ -19,6 +19,7 @@ jobs:
     outputs:
       sidecar: ${{ steps.filter.outputs.sidecar }}
       rust: ${{ steps.filter.outputs.rust }}
+      e2e: ${{ steps.filter.outputs.e2e }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -33,15 +34,21 @@ jobs:
           fi
           if ! git rev-parse -q --verify "${BASE}^{commit}" >/dev/null 2>&1; then
             echo "变更基线不可得,视为全量变更"
-            echo "sidecar=true" >> "$GITHUB_OUTPUT"
-            echo "rust=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "sidecar=true"
+              echo "rust=true"
+              echo "e2e=true"
+            } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           FILES=$(git diff --name-only "${BASE}...HEAD")
           echo "$FILES"
           match() { echo "$FILES" | grep -Eq "$1" && echo true || echo false; }
-          echo "sidecar=$(match '(^src/|^scripts/|^pyproject\.toml$|^uv\.lock$)')" >> "$GITHUB_OUTPUT"
-          echo "rust=$(match '(^ui/src-tauri/)')" >> "$GITHUB_OUTPUT"
+          {
+            echo "sidecar=$(match '(^src/|^scripts/|^pyproject\.toml$|^uv\.lock$)')"
+            echo "rust=$(match '(^ui/src-tauri/)')"
+            echo "e2e=$(match '(^src/|^tests/e2e/|^pyproject\.toml$|^uv\.lock$)')"
+          } >> "$GITHUB_OUTPUT"
 
   test:
     name: 测试（Python ${{ matrix.python-version }}）
@@ -72,6 +79,31 @@ jobs:
 
       - name: 测试
         run: uv run pytest
+
+  # CI 版 E2E 冒烟:真实 serve 进程五段接线回归(设计见
+  # openspec/changes/add-ci-e2e-smoke/design.md)。fake 三通道端点确定性罐头,
+  # 无网络无密钥;接线回归与语言版本哨兵(ADR-0008)是两件事,单版本 3.12 即可。
+  # 默认 addopts 已排除 e2e,本 job 经 `-m e2e` 显式进入。
+  e2e:
+    name: E2E 接线冒烟（serve 五段）
+    needs: changes
+    if: needs.changes.outputs.e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v10.3.0 # 该仓库不维护 v10 滚动大版本标签，须钉精确版本
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 同步依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: E2E 冒烟（真实 serve 进程 + fake 三通道端点）
+        run: uv run pytest -m e2e
 
   # 前端作业仅在 ui/package.json 存在时执行；hashFiles 只能用于 step 级 if。
   ui:
