@@ -1,0 +1,27 @@
+# 仓库密钥策略：CI（.github/workflows/security.yml）与 pre-commit 共用本文件。
+# 豁免只允许路径级或窄值级，且逐条注明原因；禁止按规则名全局放行。
+title = "siku secrets policy"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "仅豁免下列路径与已登记的非密钥标识符，其余一律阻断"
+
+# 路径级豁免（正则匹配文件路径），只到目录/文件粒度。
+paths = [
+  # 测试夹具目录：PDF/文本夹具会携带假凭证字样
+  '''(^|/)tests?/fixtures/''',
+  # 文档与配图：示例代码与界面截图里的假值
+  '''(^|/)docs/.*\.(md|png|jpg)$''',
+  # Tauri 打包产物目录：二进制误报；只允许该路径，不扩散
+  '''(^|/)ui/src-tauri/binaries/''',
+]
+
+# 值级豁免：高熵但确认非密钥的固定标识符。
+stopwords = [
+  # BM25 分词方案版本号（src/siku/retrieve/tokenizer.py、基准 JSON、相关测试引用）
+  "cjk-uni-bigram",
+  # e2e 夹具的占位环境变量值（tests/e2e/conftest.py），不是凭证
+  "SIKU_E2E_PLACEHOLDER_KEY",
+]
