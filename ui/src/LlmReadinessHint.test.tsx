@@ -1,11 +1,11 @@
 import { cleanup, screen } from "@testing-library/react";
-import { render } from "./test-utils";
+import { render, requestUrl } from "./test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LlmReadinessHint } from "./LlmReadinessHint";
 
 function mockSettings(askReadiness: unknown) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-    const url = typeof input === "string" ? input : String(input);
+    const url = requestUrl(input);
     if (url.includes("/api/settings")) {
       return Promise.resolve({
         ok: true,
@@ -16,7 +16,10 @@ function mockSettings(askReadiness: unknown) {
           }),
       } as Response);
     }
-    return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({}),
+    } as Response);
   });
 }
 

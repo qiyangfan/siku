@@ -2,43 +2,45 @@
 
 from siku.graph.report import (
     SCALE_WARN_EDGES,
+    GraphCallStats,
+    GraphCounts,
     GraphHealthReport,
+    GraphIdentity,
     scale_warnings,
 )
 
 
-def make_report(**overrides: object) -> GraphHealthReport:
-    values: dict[str, object] = {
-        "extractor_id": "llm-graph",
-        "model_id": "deepseek-chat",
-        "prompt_version": "v1",
-        "chunk_count": 3,
-        "node_count": 10,
-        "edge_count": 20,
-        "community_count": 2,
-        "ambiguous_entity_count": 1,
-        "cache_hits": 0,
-        "llm_calls": 3,
-        "warnings": (),
-    }
-    values.update(overrides)
-    return GraphHealthReport(**values)  # type: ignore[arg-type]
+def make_report(edge_count: int = 20, warnings: tuple[str, ...] = ()) -> GraphHealthReport:
+    return GraphHealthReport(
+        identity=GraphIdentity(
+            extractor_id="llm-graph", model_id="deepseek-chat", prompt_version="v1"
+        ),
+        counts=GraphCounts(
+            chunks=3,
+            nodes=10,
+            edges=edge_count,
+            communities=2,
+            ambiguous_entities=1,
+        ),
+        calls=GraphCallStats(cache_hits=0, llm_calls=3),
+        warnings=warnings,
+    )
 
 
 class TestReportFields:
     def test_report_exposes_all_gate_metrics(self) -> None:
         report = make_report()
         # spec：节点数、边数、社区数、同名实体数、缓存命中与 LLM 调用次数 + 模型元数据
-        assert report.node_count == 10
-        assert report.edge_count == 20
-        assert report.community_count == 2
-        assert report.ambiguous_entity_count == 1
-        assert report.cache_hits == 0
-        assert report.llm_calls == 3
-        assert report.model_id == "deepseek-chat"
-        assert report.extractor_id == "llm-graph"
-        assert report.prompt_version == "v1"
-        assert report.chunk_count == 3
+        assert report.counts.nodes == 10
+        assert report.counts.edges == 20
+        assert report.counts.communities == 2
+        assert report.counts.ambiguous_entities == 1
+        assert report.calls.cache_hits == 0
+        assert report.calls.llm_calls == 3
+        assert report.identity.model_id == "deepseek-chat"
+        assert report.identity.extractor_id == "llm-graph"
+        assert report.identity.prompt_version == "v1"
+        assert report.counts.chunks == 3
 
 
 class TestScaleWarnings:

@@ -325,8 +325,9 @@ class SyncRegistry:
             return
         with closing(self._connect()) as connection, connection:
             placeholders = ",".join("?" for _ in doc_source_ids)
+            # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
             connection.execute(
-                f"DELETE FROM sync_tombstones WHERE doc_source_id IN ({placeholders})",
+                f"DELETE FROM sync_tombstones WHERE doc_source_id IN ({placeholders})",  # noqa: S608
                 doc_source_ids,
             )
 

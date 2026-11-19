@@ -194,10 +194,7 @@ class SearchService:
         results = [
             SearchResult(
                 chunk_id=candidate.chunk_id,
-                source_name=chunks[candidate.chunk_id].source_name,
-                note_path=chunks[candidate.chunk_id].note_path,
-                source_hash=chunks[candidate.chunk_id].source_hash,
-                anchor=chunks[candidate.chunk_id].anchor,
+                citation=chunks[candidate.chunk_id].citation,
                 text=chunks[candidate.chunk_id].text,
                 bm25_score=candidate.bm25_score,
                 vector_score=candidate.vector_score,

@@ -47,11 +47,9 @@ class PlannedRename:
 
 
 @dataclass
-class SourcePlan:
-    """单个来源目录的一轮扫描计划。"""
+class _PlanActions:
+    """一轮扫描计划中的待执行动作集合。"""
 
-    source_id: str
-    source_path: str
     ingests: list[PlannedIngest] = field(default_factory=list)
     renames: list[PlannedRename] = field(default_factory=list)
     # 复链：unlinked 登记的文件原样恢复 → 解除 missing 标记
@@ -61,11 +59,21 @@ class SourcePlan:
     # stat 变化但哈希未变：仅刷新登记的 stat 缓存，免得下轮重复哈希
     stat_refresh: list[tuple[str, int, int, str]] = field(default_factory=list)
     ignored: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SourcePlan:
+    """单个来源目录的一轮扫描计划。"""
+
+    source_id: str
+    source_path: str
+    actions: _PlanActions = field(default_factory=_PlanActions)
     unreachable: str | None = None
 
     @property
     def has_work(self) -> bool:
-        return bool(self.ingests or self.renames or self.relinks or self.vanished)
+        actions = self.actions
+        return bool(actions.ingests or actions.renames or actions.relinks or actions.vanished)
 
 
 def sha256_of(path: Path) -> str:
@@ -128,54 +136,26 @@ def plan_source(
     seen_paths: set[str] = set()
     # 新出现或内容变化的文件：绝对路径 → (哈希, size, mtime_ns)
     fresh: dict[str, tuple[str, int, int]] = {}
+    # 恢复但内容已变的 unlinked 文件按超替入库，missing 标记执行期转为 superseded。
     for path in files:
-        path_str = str(path)
-        seen_paths.add(path_str)
-        if path.suffix.lower() not in whitelist:
-            plan.ignored.append(path.name)
-            continue
-        try:
-            stat = path.stat()
-        except OSError:
-            continue  # 扫描窗口内消失，下轮按消失语义处理
-        entry = entries.get(path_str)
-        try:
-            outcome, digest = _detect_content_state(path, entry, stat, full=full, hasher=hasher)
-        except OSError:
-            # 哈希读盘竞态（文件在 stat 与读取之间消失）：本轮跳过不标记，
-            # 该文件下轮不再出现在枚举中，按消失语义收敛
-            continue
-        is_unlinked = entry is not None and entry.state == "unlinked"
-        if is_unlinked and outcome != "changed":
-            # 消失过的文件原样恢复（哈希未变）：解除缺失标记
-            plan.relinks.append(path_str)
-            continue
-        if outcome == "unchanged":
-            continue
-        if outcome == "refresh":
-            plan.stat_refresh.append((path_str, stat.st_size, stat.st_mtime_ns, digest))
-            continue
-        # 恢复但内容已变的 unlinked 文件按超替入库，missing 标记执行期转为 superseded。
-        fresh[path_str] = (digest, stat.st_size, stat.st_mtime_ns)
+        _classify_file(
+            path,
+            entries=entries,
+            plan=plan,
+            whitelist=whitelist,
+            full=full,
+            hasher=hasher,
+            seen_paths=seen_paths,
+            fresh=fresh,
+        )
 
-    # 消失的 linked 文件先与真新文件按同哈希配对为改名，否则记缺失；内容变更不参与改名。
-    new_only = {path_str: stats for path_str, stats in fresh.items() if path_str not in entries}
-    renamed: set[str] = set()
-    for path_str, entry in entries.items():
-        if path_str in seen_paths or entry.state == "unlinked":
-            continue
-        match = _take_rename_match(new_only, entry.content_hash)
-        if match is not None:
-            renamed.add(match)
-            plan.renames.append(PlannedRename(old_path=path_str, new_path=Path(match)))
-        else:
-            plan.vanished.append(path_str)
+    renamed = _match_renames_and_vanished(entries, seen_paths, plan, fresh)
     # 被配对为改名目标的路径不再作为新文件入库
     fresh = {path_str: stats for path_str, stats in fresh.items() if path_str not in renamed}
 
     # unlinked 登记的文件仍缺席：维持缺失语义，无需动作
     for path_str, (digest, size, mtime_ns) in fresh.items():
-        plan.ingests.append(
+        plan.actions.ingests.append(
             PlannedIngest(
                 upstream_path=Path(path_str),
                 content_hash=digest,
@@ -185,6 +165,70 @@ def plan_source(
             )
         )
     return plan
+
+
+def _classify_file(
+    path: Path,
+    *,
+    entries: dict[str, SyncEntry],
+    plan: SourcePlan,
+    whitelist: set[str],
+    full: bool,
+    hasher: Callable[[Path], str],
+    seen_paths: set[str],
+    fresh: dict[str, tuple[str, int, int]],
+) -> None:
+    """把单个枚举到的文件归入计划（复链 / 统计刷新 / 待入库 / 忽略）。"""
+    path_str = str(path)
+    seen_paths.add(path_str)
+    if path.suffix.lower() not in whitelist:
+        plan.actions.ignored.append(path.name)
+        return
+    try:
+        stat = path.stat()
+    except OSError:
+        return  # 扫描窗口内消失，下轮按消失语义处理
+    entry = entries.get(path_str)
+    try:
+        outcome, digest = _detect_content_state(path, entry, stat, full=full, hasher=hasher)
+    except OSError:
+        # 哈希读盘竞态（文件在 stat 与读取之间消失）：本轮跳过不标记，
+        # 该文件下轮不再出现在枚举中，按消失语义收敛
+        return
+    if entry is not None and entry.state == "unlinked" and outcome != "changed":
+        # 消失过的文件原样恢复（哈希未变）：解除缺失标记
+        plan.actions.relinks.append(path_str)
+        return
+    if outcome == "unchanged":
+        return
+    if outcome == "refresh":
+        plan.actions.stat_refresh.append((path_str, stat.st_size, stat.st_mtime_ns, digest))
+        return
+    fresh[path_str] = (digest, stat.st_size, stat.st_mtime_ns)
+
+
+def _match_renames_and_vanished(
+    entries: dict[str, SyncEntry],
+    seen_paths: set[str],
+    plan: SourcePlan,
+    fresh: dict[str, tuple[str, int, int]],
+) -> set[str]:
+    """消失的 linked 文件先与真新文件按同哈希配对为改名，否则记缺失；内容变更不参与改名。
+
+    返回被配对为改名目标的路径集合（``fresh`` 会就地移除这些路径）。
+    """
+    new_only = {path_str: stats for path_str, stats in fresh.items() if path_str not in entries}
+    renamed: set[str] = set()
+    for path_str, entry in entries.items():
+        if path_str in seen_paths or entry.state == "unlinked":
+            continue
+        match = _take_rename_match(new_only, entry.content_hash)
+        if match is not None:
+            renamed.add(match)
+            plan.actions.renames.append(PlannedRename(old_path=path_str, new_path=Path(match)))
+        else:
+            plan.actions.vanished.append(path_str)
+    return renamed
 
 
 def _detect_content_state(

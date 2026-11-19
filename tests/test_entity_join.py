@@ -6,9 +6,9 @@ from dataclasses import asdict
 from pathlib import Path
 
 import pytest
+from tests.fakes import FakeEmbeddingProvider
 from tests.test_api_reading import write_note
 
-from fakes import FakeEmbeddingProvider
 from siku.graph.errors import GraphArtifactsMissingError
 from siku.graph.models import Entity, SourceAnchor
 from siku.graph.store import save_graph
@@ -70,7 +70,7 @@ def _chunks_by_anchor(data_dir: Path) -> dict[tuple[str, str], str]:
     try:
         source_ids = list(index.source_manifest())
         return {
-            (chunk.source_id, chunk.anchor): chunk.chunk_id
+            (chunk.source_id, chunk.citation.anchor): chunk.chunk_id
             for chunk in index.chunks_of_sources(source_ids)
         }
     finally:
@@ -174,7 +174,9 @@ class TestResolveSeedEntities:
 
 
 class TestPlanJoin:
-    def _graph(self, key_map: dict[tuple[str, str], str]) -> tuple[dict, list[Entity]]:
+    def _graph(
+        self, key_map: dict[tuple[str, str], str]
+    ) -> tuple[tuple[tuple[str, str], ...], list[Entity]]:
         seeds = (
             ("e-zhang", "张伟"),
             ("e-li", "李静"),
@@ -195,7 +197,7 @@ class TestPlanJoin:
         _, _, key_map = join_library
         seeds, entities = self._graph(key_map)
         seed_entities = tuple(SeedEntity(eid, name) for eid, name in seeds)
-        plan = plan_join(seed_entities, entities)
+        plan = plan_join(seed_entities, tuple(entities))
         # 分数层级不变量：任何按 rerank_score 降序的消费端不逆转种子在前顺序
         if plan.bridges:
             assert min(e.score for e in plan.seeds) > max(e.score for e in plan.bridges)
@@ -252,8 +254,8 @@ class TestEntityJoinSearch:
         hit_ids = [hit.result.chunk_id for hit in result.hits]
         assert key_map[("d0000001", "履历")] in hit_ids
         hit = result.hits[0]
-        assert hit.result.source_name == "doc-1.md"
-        assert hit.result.note_path == "notes/doc-1.md"
+        assert hit.result.citation.source_name == "doc-1.md"
+        assert hit.result.citation.note_path == "notes/doc-1.md"
         assert hit.provenance[0].kind == KIND_SEED
         assert result.empty_reason is None
 

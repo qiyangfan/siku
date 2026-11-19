@@ -178,6 +178,7 @@ def test_word_extractor_requires_docx_suffix_only() -> None:
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc not on PATH")
 def test_word_extractor_converts_real_docx(tmp_path: Path) -> None:
     source = make_docx(tmp_path / "真实.docx", "# 标题\n\n正文段落")
+    assert source is not None
 
     document = WordExtractor().extract(source)
 

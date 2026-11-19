@@ -448,8 +448,7 @@ class TestGraphReadEndpoints:
         relations: list[Relation] = []
         core = 100
         leaves_per_core = 95
-        for i in range(core):
-            entities.append(entity(f"c{i:04d}", f"核心{i}", "系统"))
+        entities.extend(entity(f"c{i:04d}", f"核心{i}", "系统") for i in range(core))
         for i in range(core):
             for j in range(leaves_per_core):
                 leaf_id = f"l{i:04d}-{j:03d}"

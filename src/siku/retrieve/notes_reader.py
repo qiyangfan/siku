@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from siku.retrieve.errors import NoteParseError, NotesDirMissingError
-from siku.retrieve.models import ChunkRecord, DocumentRecord, derive_chunk_id
+from siku.retrieve.models import ChunkRecord, Citation, DocumentRecord, derive_chunk_id
 
 _REQUIRED_FIELDS = ("source_id", "source_hash", "source_name", "extractor")
 _SOURCE_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -24,31 +24,27 @@ _SECTION_RE = re.compile(r"^##\s+(.+?)\s*$")
 _COMMENT_RE = re.compile(r"^<!--\s*source_hash:")
 
 
-def _parse_frontmatter(note_path: Path, text: str) -> dict[str, str]:
-    match = _FRONTMATTER_RE.match(text)
-    if match is None:
-        raise NoteParseError(f"Missing frontmatter block in projection: {note_path.name}")
-    meta: dict[str, str] = {}
-    for line in match.group(1).splitlines():
-        if not line.strip():
-            continue
-        field = _FIELD_RE.match(line)
-        if field is None:
-            raise NoteParseError(f"Malformed frontmatter line in {note_path.name}: {line!r}")
-        key, raw_value = field.group(1), field.group(2)
-        if key in meta:
-            raise NoteParseError(f"Duplicate frontmatter key {key!r} in {note_path.name}")
-        try:
-            value = json.loads(raw_value)
-        except json.JSONDecodeError as exc:
-            raise NoteParseError(
-                f"Frontmatter value of {key!r} in {note_path.name} is not a JSON string"
-            ) from exc
-        if not isinstance(value, str):
-            raise NoteParseError(
-                f"Frontmatter value of {key!r} in {note_path.name} must be a string"
-            )
-        meta[key] = value
+def _parse_frontmatter_line(note_path: Path, line: str) -> tuple[str, str] | None:
+    """解析单行 `key: <json 字符串>`；空白行返回 None。"""
+    if not line.strip():
+        return None
+    field = _FIELD_RE.match(line)
+    if field is None:
+        raise NoteParseError(f"Malformed frontmatter line in {note_path.name}: {line!r}")
+    key, raw_value = field.group(1), field.group(2)
+    try:
+        value = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise NoteParseError(
+            f"Frontmatter value of {key!r} in {note_path.name} is not a JSON string"
+        ) from exc
+    if not isinstance(value, str):
+        raise NoteParseError(f"Frontmatter value of {key!r} in {note_path.name} must be a string")
+    return key, value
+
+
+def _validate_frontmatter(note_path: Path, meta: dict[str, str]) -> None:
+    """校验必填字段存在且取值符合标识符格式。"""
     missing = [key for key in _REQUIRED_FIELDS if not meta.get(key)]
     if missing:
         raise NoteParseError(f"Missing required frontmatter fields {missing} in {note_path.name}")
@@ -56,6 +52,22 @@ def _parse_frontmatter(note_path: Path, text: str) -> dict[str, str]:
         raise NoteParseError(f"Invalid source_hash in {note_path.name}: expected 64 hex chars")
     if not _SOURCE_ID_RE.match(meta["source_id"]):
         raise NoteParseError(f"Invalid source_id in {note_path.name}: expected 8-64 hex chars")
+
+
+def _parse_frontmatter(note_path: Path, text: str) -> dict[str, str]:
+    match = _FRONTMATTER_RE.match(text)
+    if match is None:
+        raise NoteParseError(f"Missing frontmatter block in projection: {note_path.name}")
+    meta: dict[str, str] = {}
+    for line in match.group(1).splitlines():
+        parsed = _parse_frontmatter_line(note_path, line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        if key in meta:
+            raise NoteParseError(f"Duplicate frontmatter key {key!r} in {note_path.name}")
+        meta[key] = value
+    _validate_frontmatter(note_path, meta)
     return meta
 
 
@@ -136,10 +148,12 @@ def read_note(note_path: Path, vault_root: Path) -> tuple[DocumentRecord, tuple[
                 ChunkRecord(
                     chunk_id=derive_chunk_id(document.source_id, "content", 0, content),
                     source_id=document.source_id,
-                    source_hash=document.source_hash,
-                    source_name=document.source_name,
-                    note_path=document.note_path,
-                    anchor="content",
+                    citation=Citation(
+                        source_name=document.source_name,
+                        note_path=document.note_path,
+                        source_hash=document.source_hash,
+                        anchor="content",
+                    ),
                     ordinal=0,
                     text=content,
                 ),
@@ -158,10 +172,12 @@ def read_note(note_path: Path, vault_root: Path) -> tuple[DocumentRecord, tuple[
             ChunkRecord(
                 chunk_id=derive_chunk_id(document.source_id, anchor, ordinal, content),
                 source_id=document.source_id,
-                source_hash=document.source_hash,
-                source_name=document.source_name,
-                note_path=document.note_path,
-                anchor=anchor,
+                citation=Citation(
+                    source_name=document.source_name,
+                    note_path=document.note_path,
+                    source_hash=document.source_hash,
+                    anchor=anchor,
+                ),
                 ordinal=ordinal,
                 text=content,
             )

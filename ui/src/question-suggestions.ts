@@ -36,9 +36,7 @@ function shorten(value: string, maxLength: number): string {
 }
 
 function firstMarkdownTitle(content: string): string | null {
-  const heading = content
-    .split(/\r?\n/)
-    .find((line) => /^#\s+\S/.test(line));
+  const heading = content.split(/\r?\n/).find((line) => /^#\s+\S/.test(line));
   return heading?.replace(/^#\s+/, "").trim() || null;
 }
 
@@ -53,13 +51,19 @@ function displaySectionTitle(value: string): string | null {
   return title;
 }
 
-function displayTitle(note: NoteSummary, detail: NoteDetail | undefined): string | null {
-  const sectionTitle = displaySectionTitle(firstMarkdownTitle(detail?.content ?? "") ?? "");
-  const sourceTitle = note.source_name
-    .replace(/\.(md|markdown|pdf|docx?|pptx?|xlsx?|epub|html?)$/i, "")
-    .split(/[\\/]/)
-    .at(-1)
-    ?.trim() ?? "";
+function displayTitle(
+  note: NoteSummary,
+  detail: NoteDetail | undefined,
+): string | null {
+  const sectionTitle = displaySectionTitle(
+    firstMarkdownTitle(detail?.content ?? "") ?? "",
+  );
+  const sourceTitle =
+    note.source_name
+      .replace(/\.(md|markdown|pdf|docx?|pptx?|xlsx?|epub|html?)$/i, "")
+      .split(/[\\/]/)
+      .at(-1)
+      ?.trim() ?? "";
   const basename = sectionTitle ?? displaySectionTitle(sourceTitle);
   if (!basename) {
     return null;
@@ -71,11 +75,16 @@ function displayTitle(note: NoteSummary, detail: NoteDetail | undefined): string
 }
 
 function isSkillNote(note: NoteSummary): boolean {
-  return /(^|[/\\])skill(?:\.md|\.markdown)?$/i.test(note.source_name.trim()) ||
-    /\bskills?\b/i.test(note.source_name);
+  return (
+    /(^|[/\\])skill(?:\.md|\.markdown)?$/i.test(note.source_name.trim()) ||
+    /\bskills?\b/i.test(note.source_name)
+  );
 }
 
-function noteSuggestion(note: NoteSummary, detail: NoteDetail | undefined): QuestionSuggestion | null {
+function noteSuggestion(
+  note: NoteSummary,
+  detail: NoteDetail | undefined,
+): QuestionSuggestion | null {
   const title = displayTitle(note, detail);
   if (!title) {
     return null;
@@ -84,7 +93,9 @@ function noteSuggestion(note: NoteSummary, detail: NoteDetail | undefined): Ques
     .map(displaySectionTitle)
     .find((anchor): anchor is string => anchor !== null);
   const fullLocation = section ? `中「${section}」` : "";
-  const shortLocation = section ? `中「${shorten(section, MAX_HEADING_LENGTH)}」` : "";
+  const shortLocation = section
+    ? `中「${shorten(section, MAX_HEADING_LENGTH)}」`
+    : "";
   if (isSkillNote(note)) {
     return {
       question: `已导入技能「${title}」${fullLocation}规定了什么？`,
@@ -99,7 +110,9 @@ function noteSuggestion(note: NoteSummary, detail: NoteDetail | undefined): Ques
 
 function wikiMemberNames(content: string): string[] {
   const lines = content.split(/\r?\n/);
-  const sectionStart = lines.findIndex((line) => /^##\s+成员实体\s*$/.test(line.trim()));
+  const sectionStart = lines.findIndex((line) =>
+    /^##\s+成员实体\s*$/.test(line.trim()),
+  );
   if (sectionStart < 0) {
     return [];
   }
@@ -121,7 +134,9 @@ function wikiMemberNames(content: string): string[] {
   return names;
 }
 
-function wikiSuggestion(entry: WikiEntryDetail | undefined): QuestionSuggestion | null {
+function wikiSuggestion(
+  entry: WikiEntryDetail | undefined,
+): QuestionSuggestion | null {
   if (!entry) {
     return null;
   }
@@ -146,7 +161,9 @@ export function buildQuestionSuggestions(
   noteDetails: NoteDetail[],
   wikiEntry: WikiEntryDetail | undefined,
 ): QuestionSuggestion[] {
-  const detailBySource = new Map(noteDetails.map((detail) => [detail.source_id, detail]));
+  const detailBySource = new Map(
+    noteDetails.map((detail) => [detail.source_id, detail]),
+  );
   const seen = new Set<string>();
   const candidates: QuestionSuggestion[] = [];
   const addUnique = (suggestion: QuestionSuggestion | null) => {

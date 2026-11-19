@@ -48,8 +48,8 @@ def test_new_file_planned_as_ingest(tmp_path: Path) -> None:
     plan = plan_source(source=source, entries={}, whitelist=WHITELIST)
 
     assert plan.unreachable is None
-    assert len(plan.ingests) == 1
-    ingest = plan.ingests[0]
+    assert len(plan.actions.ingests) == 1
+    ingest = plan.actions.ingests[0]
     assert ingest.upstream_path == feed / "a.md"
     assert ingest.content_hash == sha256_of(feed / "a.md")
     assert (ingest.size, ingest.mtime_ns) == (size, mtime)
@@ -70,7 +70,7 @@ def test_unchanged_file_quick_selected_without_hash(tmp_path: Path) -> None:
 
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST, hasher=boom)
 
-    assert plan.ingests == [] and plan.stat_refresh == []
+    assert plan.actions.ingests == [] and plan.actions.stat_refresh == []
     assert not plan.has_work
 
 
@@ -86,10 +86,13 @@ def test_content_change_planned_as_ingest_with_old_entry(tmp_path: Path) -> None
     stat = path.stat()
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
-    assert len(plan.ingests) == 1
-    assert plan.ingests[0].content_hash == sha256_of(path)
-    assert plan.ingests[0].old_entry is entries[upstream]
-    assert (plan.ingests[0].size, plan.ingests[0].mtime_ns) == (stat.st_size, stat.st_mtime_ns)
+    assert len(plan.actions.ingests) == 1
+    assert plan.actions.ingests[0].content_hash == sha256_of(path)
+    assert plan.actions.ingests[0].old_entry is entries[upstream]
+    assert (plan.actions.ingests[0].size, plan.actions.ingests[0].mtime_ns) == (
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
 
 
 def test_same_content_different_mtime_refreshes_stat_only(tmp_path: Path) -> None:
@@ -104,9 +107,9 @@ def test_same_content_different_mtime_refreshes_stat_only(tmp_path: Path) -> Non
     os.utime(path, ns=(bumped, bumped))
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
-    assert plan.ingests == []
-    assert len(plan.stat_refresh) == 1
-    refreshed = plan.stat_refresh[0]
+    assert plan.actions.ingests == []
+    assert len(plan.actions.stat_refresh) == 1
+    refreshed = plan.actions.stat_refresh[0]
     assert refreshed[0] == upstream and refreshed[1] == size and refreshed[2] == bumped
 
 
@@ -124,8 +127,8 @@ def test_full_scan_rehashes_even_when_stat_unchanged(tmp_path: Path) -> None:
     quick = plan_source(source=source, entries=entries, whitelist=WHITELIST)
     full = plan_source(source=source, entries=entries, whitelist=WHITELIST, full=True)
 
-    assert quick.ingests == []  # 快选确实漏检（证明前提成立）
-    assert len(full.ingests) == 1 and full.ingests[0].old_entry is not None
+    assert quick.actions.ingests == []  # 快选确实漏检（证明前提成立）
+    assert len(full.actions.ingests) == 1 and full.actions.ingests[0].old_entry is not None
 
 
 def test_rename_matched_by_content_hash(tmp_path: Path) -> None:
@@ -141,10 +144,10 @@ def test_rename_matched_by_content_hash(tmp_path: Path) -> None:
     old_path.unlink()
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
-    assert plan.ingests == [] and plan.vanished == []
-    assert len(plan.renames) == 1
-    assert plan.renames[0].old_path == str(old_path)
-    assert plan.renames[0].new_path == new_path
+    assert plan.actions.ingests == [] and plan.actions.vanished == []
+    assert len(plan.actions.renames) == 1
+    assert plan.actions.renames[0].old_path == str(old_path)
+    assert plan.actions.renames[0].new_path == new_path
 
 
 def test_rename_does_not_swallow_changed_registered_file(tmp_path: Path) -> None:
@@ -168,11 +171,11 @@ def test_rename_does_not_swallow_changed_registered_file(tmp_path: Path) -> None
     vanished_path.unlink()
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
-    assert plan.renames == []
-    assert plan.vanished == [str(vanished_path)]
-    assert len(plan.ingests) == 1
-    assert plan.ingests[0].upstream_path == changed_path
-    assert plan.ingests[0].old_entry is entries[str(changed_path)]
+    assert plan.actions.renames == []
+    assert plan.actions.vanished == [str(vanished_path)]
+    assert len(plan.actions.ingests) == 1
+    assert plan.actions.ingests[0].upstream_path == changed_path
+    assert plan.actions.ingests[0].old_entry is entries[str(changed_path)]
 
 
 def test_vanished_file_planned_missing(tmp_path: Path) -> None:
@@ -189,8 +192,8 @@ def test_vanished_file_planned_missing(tmp_path: Path) -> None:
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
     assert plan.unreachable is None
-    assert plan.renames == []
-    assert plan.vanished == [upstream]
+    assert plan.actions.renames == []
+    assert plan.actions.vanished == [upstream]
 
 
 def test_relinked_file_restores_missing_entry(tmp_path: Path) -> None:
@@ -205,8 +208,8 @@ def test_relinked_file_restores_missing_entry(tmp_path: Path) -> None:
 
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
-    assert plan.ingests == []
-    assert plan.relinks == [upstream]
+    assert plan.actions.ingests == []
+    assert plan.actions.relinks == [upstream]
 
 
 def test_unlinked_file_changed_again_plans_supersede(tmp_path: Path) -> None:
@@ -222,8 +225,8 @@ def test_unlinked_file_changed_again_plans_supersede(tmp_path: Path) -> None:
     write(path, b"# A v2")
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
-    assert len(plan.ingests) == 1
-    assert plan.ingests[0].old_entry is entries[upstream]
+    assert len(plan.actions.ingests) == 1
+    assert plan.actions.ingests[0].old_entry is entries[upstream]
 
 
 def test_non_whitelisted_files_reported_ignored(tmp_path: Path) -> None:
@@ -235,8 +238,8 @@ def test_non_whitelisted_files_reported_ignored(tmp_path: Path) -> None:
 
     plan = plan_source(source=source, entries={}, whitelist=WHITELIST)
 
-    assert plan.ignored == ["junk.xyz"]
-    assert [ingest.upstream_path.name for ingest in plan.ingests] == ["a.md"]
+    assert plan.actions.ignored == ["junk.xyz"]
+    assert [ingest.upstream_path.name for ingest in plan.actions.ingests] == ["a.md"]
 
 
 def test_empty_feed_with_entries_is_unreachable_guard(tmp_path: Path) -> None:
@@ -252,7 +255,7 @@ def test_empty_feed_with_entries_is_unreachable_guard(tmp_path: Path) -> None:
     plan = plan_source(source=source, entries=entries, whitelist=WHITELIST)
 
     assert plan.unreachable is not None
-    assert plan.vanished == []  # 不可达护栏：不做任何标记
+    assert plan.actions.vanished == []  # 不可达护栏：不做任何标记
 
 
 def test_symlinks_and_dot_entries_skipped(tmp_path: Path) -> None:
@@ -266,7 +269,7 @@ def test_symlinks_and_dot_entries_skipped(tmp_path: Path) -> None:
 
     plan = plan_source(source=source, entries={}, whitelist=WHITELIST)
 
-    assert [ingest.upstream_path.name for ingest in plan.ingests] == ["a.md"]
+    assert [ingest.upstream_path.name for ingest in plan.actions.ingests] == ["a.md"]
 
 
 def test_registry_path_is_resolved_on_registration(tmp_path: Path) -> None:

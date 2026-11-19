@@ -157,6 +157,143 @@ def _read_previous_version(final_db: Path) -> int:
         connection.close()
 
 
+def _validate_unique_source_ids(documents: Sequence[DocumentRecord]) -> None:
+    seen_ids: dict[str, str] = {}
+    for document in documents:
+        if document.source_id in seen_ids:
+            raise NoteParseError(
+                f"Duplicate source_id {document.source_id!r} found in both "
+                f"{seen_ids[document.source_id]!r} and {document.note_path!r}"
+            )
+        seen_ids[document.source_id] = document.note_path
+
+
+def _reuse_unchanged_sources(
+    tmp_index: SqliteIndex,
+    tmp_vector_store: LanceVectorStore,
+    old_index: SqliteIndex,
+    final_vectors: Path,
+    unchanged: Sequence[DocumentRecord],
+) -> int:
+    """把未变来源的 chunk/FTS/向量整体搬运到临时索引，返回复用块数。"""
+    unchanged_ids = [document.source_id for document in unchanged]
+    tmp_index.copy_sources_from(old_index, unchanged_ids)
+    old_vectors = LanceVectorStore.open(final_vectors)
+    try:
+        reused_chunks = old_index.chunks_of_sources(unchanged_ids)
+        reused_rows = old_vectors.rows_for_chunks({chunk.chunk_id for chunk in reused_chunks})
+        if len(reused_rows) != len(reused_chunks):
+            raise IndexCorruptError(
+                "Vector store is missing rows for unchanged chunks "
+                f"({len(reused_rows)} of {len(reused_chunks)} present); "
+                "run 'siku index --rebuild' to regenerate the index."
+            )
+        tmp_vector_store.add_rows(reused_rows)
+        return len(reused_chunks)
+    finally:
+        old_vectors.close()
+
+
+def _upsert_fresh_sources(
+    tmp_index: SqliteIndex,
+    vault: Path,
+    documents: Sequence[DocumentRecord],
+) -> list[ChunkRecord]:
+    """读取新建/变更文档并写入临时索引，返回待向量化的 chunk 列表。"""
+    fresh_chunks: list[ChunkRecord] = []
+    for document in documents:
+        document_obj, chunks = read_note(vault / document.note_path, vault)
+        if document_obj.source_hash != document.source_hash:
+            raise NoteParseError(f"Projection {document.note_path} changed while indexing")
+        tmp_index.upsert_document(document_obj)
+        fresh_chunks.extend(chunks)
+    return fresh_chunks
+
+
+def _embed_fresh_chunks(
+    embedding_provider: EmbeddingProvider,
+    fresh_chunks: list[ChunkRecord],
+    tmp_index: SqliteIndex,
+    tmp_vector_store: LanceVectorStore,
+) -> None:
+    if not fresh_chunks:
+        return
+    vectors = embedding_provider.embed([chunk.text for chunk in fresh_chunks])
+    validate_embedding_output(
+        embedding_provider.model_id,
+        [chunk.text for chunk in fresh_chunks],
+        vectors,
+        embedding_provider.dimensions,
+    )
+    # 攒批后单次追加：逐 chunk 追加会让 lance 每块走一次提交事务
+    vector_rows = [
+        VectorRow(
+            chunk_id=chunk.chunk_id,
+            source_id=chunk.source_id,
+            source_hash=chunk.citation.source_hash,
+            model_id=embedding_provider.model_id,
+            model_revision=embedding_provider.model_revision,
+            dimensions=embedding_provider.dimensions,
+            vector=vector,
+        )
+        for chunk, vector in zip(fresh_chunks, vectors, strict=True)
+    ]
+    tmp_vector_store.add_rows(vector_rows)
+    for chunk in fresh_chunks:
+        tmp_index.insert_chunk(chunk, tokenize(chunk.text))
+
+
+def _next_index_version(old_index: SqliteIndex | None, final_db: Path) -> int:
+    index_version = 1 + _read_previous_version(final_db)
+    if old_index is None:
+        return index_version
+    stored_version = old_index.get_meta("index_version")
+    if not stored_version:
+        return index_version
+    try:
+        return 1 + int(stored_version)
+    except ValueError as exc:
+        raise IndexCorruptError(
+            f"Stored index_version {stored_version!r} is not an integer; "
+            "run 'siku index --rebuild' to regenerate the index."
+        ) from exc
+
+
+def _write_index_metadata(
+    tmp_index: SqliteIndex,
+    embedding_provider: EmbeddingProvider,
+    index_version: int,
+    commit_id: str,
+) -> None:
+    tmp_index.set_meta("index_version", str(index_version))
+    tmp_index.set_meta("vectors_commit", commit_id)
+    metadata = IndexModelMetadata(
+        embedding_model_id=embedding_provider.model_id,
+        embedding_model_revision=embedding_provider.model_revision,
+        embedding_dimensions=embedding_provider.dimensions,
+        tokenizer_version=TOKENIZER_VERSION,
+        # fake provider 没有 base_url 时留空。
+        embedding_channel_host=base_url_host(getattr(embedding_provider, "base_url", "")),
+    )
+    for key, value in metadata.as_meta_dict().items():
+        tmp_index.set_meta(key, value)
+    tmp_index.set_meta("schema_version", str(SCHEMA_VERSION))
+
+
+def _atomic_swap(final_db: Path, final_vectors: Path, tmp_db: Path, tmp_vectors: Path) -> None:
+    # ---- 原子切换：先换向量目录，再换 SQLite；凭证标记保证崩溃可检出 ----
+    # 旧库残留的 -wal/-shm 必须无条件清掉：换入新库后回放旧 WAL 帧会把
+    # 新库元数据污染成旧值（rebuild 恢复场景尤其可能遇到残留）
+    for suffix in _SQLITE_SIDECARS:
+        sidecar = Path(str(final_db) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+    if final_vectors.is_dir():
+        shutil.rmtree(final_vectors)
+    os.replace(tmp_vectors, final_vectors)
+    os.replace(tmp_db, final_db)
+
+
 def sync_index(
     vault: Path,
     data_dir: Path,
@@ -167,14 +304,7 @@ def sync_index(
     """按当前 `vault/notes/` 清单同步检索索引，返回来源级统计。"""
     ensure_fts5_available()
     documents = scan_note_frontmatters(vault)
-    seen_ids: dict[str, str] = {}
-    for document in documents:
-        if document.source_id in seen_ids:
-            raise NoteParseError(
-                f"Duplicate source_id {document.source_id!r} found in both "
-                f"{seen_ids[document.source_id]!r} and {document.note_path!r}"
-            )
-        seen_ids[document.source_id] = document.note_path
+    _validate_unique_source_ids(documents)
 
     data_dir.mkdir(parents=True, exist_ok=True)
     final_db = database_path(data_dir)
@@ -186,7 +316,6 @@ def sync_index(
 
     tmp_index: SqliteIndex | None = None
     tmp_vector_store: LanceVectorStore | None = None
-    old_vectors: LanceVectorStore | None = None
     try:
         # 一致性校验纳入同一 try/finally：校验失败也必须释放 old_index 连接
         if old_index is not None:
@@ -202,86 +331,19 @@ def sync_index(
 
         unchanged_chunk_count = 0
         if old_index is not None and unchanged:
-            unchanged_ids = [document.source_id for document in unchanged]
-            tmp_index.copy_sources_from(old_index, unchanged_ids)
-            old_vectors = LanceVectorStore.open(final_vectors)
-            reused_chunks = old_index.chunks_of_sources(unchanged_ids)
-            unchanged_chunk_count = len(reused_chunks)
-            reused_rows = old_vectors.rows_for_chunks({chunk.chunk_id for chunk in reused_chunks})
-            if len(reused_rows) != unchanged_chunk_count:
-                raise IndexCorruptError(
-                    "Vector store is missing rows for unchanged chunks "
-                    f"({len(reused_rows)} of {unchanged_chunk_count} present); "
-                    "run 'siku index --rebuild' to regenerate the index."
-                )
-            tmp_vector_store.add_rows(reused_rows)
-            old_vectors.close()
-            old_vectors = None
-
-        fresh_chunks: list[ChunkRecord] = []
-        for document in (*created, *updated):
-            document_obj, chunks = read_note(vault / document.note_path, vault)
-            if document_obj.source_hash != document.source_hash:
-                raise NoteParseError(f"Projection {document.note_path} changed while indexing")
-            tmp_index.upsert_document(document_obj)
-            fresh_chunks.extend(chunks)
-
-        if fresh_chunks:
-            vectors = embedding_provider.embed([chunk.text for chunk in fresh_chunks])
-            validate_embedding_output(
-                embedding_provider.model_id,
-                [chunk.text for chunk in fresh_chunks],
-                vectors,
-                embedding_provider.dimensions,
+            unchanged_chunk_count = _reuse_unchanged_sources(
+                tmp_index, tmp_vector_store, old_index, final_vectors, unchanged
             )
-            # 攒批后单次追加：逐 chunk 追加会让 lance 每块走一次提交事务
-            vector_rows = [
-                VectorRow(
-                    chunk_id=chunk.chunk_id,
-                    source_id=chunk.source_id,
-                    source_hash=chunk.source_hash,
-                    model_id=embedding_provider.model_id,
-                    model_revision=embedding_provider.model_revision,
-                    dimensions=embedding_provider.dimensions,
-                    vector=vector,
-                )
-                for chunk, vector in zip(fresh_chunks, vectors, strict=True)
-            ]
-            tmp_vector_store.add_rows(vector_rows)
-            for chunk in fresh_chunks:
-                tmp_index.insert_chunk(chunk, tokenize(chunk.text))
+
+        fresh_chunks = _upsert_fresh_sources(tmp_index, vault, (*created, *updated))
+        _embed_fresh_chunks(embedding_provider, fresh_chunks, tmp_index, tmp_vector_store)
 
         expected_chunks = unchanged_chunk_count + len(fresh_chunks)
         _validate_temp_build(tmp_index, tmp_vector_store, expected_chunks)
 
-        index_version = 1 + _read_previous_version(final_db)
-        if old_index is not None:
-            stored_version = old_index.get_meta("index_version")
-            if stored_version:
-                try:
-                    index_version = 1 + int(stored_version)
-                except ValueError as exc:
-                    raise IndexCorruptError(
-                        f"Stored index_version {stored_version!r} is not an integer; "
-                        "run 'siku index --rebuild' to regenerate the index."
-                    ) from exc
+        index_version = _next_index_version(old_index, final_db)
         commit_id = uuid.uuid4().hex
-        tmp_index.set_meta("index_version", str(index_version))
-        tmp_index.set_meta("vectors_commit", commit_id)
-        for key, value in (
-            IndexModelMetadata(
-                embedding_model_id=embedding_provider.model_id,
-                embedding_model_revision=embedding_provider.model_revision,
-                embedding_dimensions=embedding_provider.dimensions,
-                tokenizer_version=TOKENIZER_VERSION,
-                # fake provider 没有 base_url 时留空。
-                embedding_channel_host=base_url_host(getattr(embedding_provider, "base_url", "")),
-            )
-            .as_meta_dict()
-            .items()
-        ):
-            tmp_index.set_meta(key, value)
-        tmp_index.set_meta("schema_version", str(SCHEMA_VERSION))
+        _write_index_metadata(tmp_index, embedding_provider, index_version, commit_id)
         tmp_index.checkpoint_and_close()
         tmp_index = None
         write_commit_marker(tmp_vectors, commit_id)
@@ -292,25 +354,13 @@ def sync_index(
             tmp_index.close()
         if tmp_vector_store is not None:
             tmp_vector_store.close()
-        if old_vectors is not None:
-            old_vectors.close()
         _remove_temp_artifacts(data_dir)
         raise
     finally:
         if old_index is not None:
             old_index.close()
 
-    # ---- 原子切换：先换向量目录，再换 SQLite；凭证标记保证崩溃可检出 ----
-    # 旧库残留的 -wal/-shm 必须无条件清掉：换入新库后回放旧 WAL 帧会把
-    # 新库元数据污染成旧值（rebuild 恢复场景尤其可能遇到残留）
-    for suffix in _SQLITE_SIDECARS:
-        sidecar = Path(str(final_db) + suffix)
-        if sidecar.exists():
-            sidecar.unlink()
-    if final_vectors.is_dir():
-        shutil.rmtree(final_vectors)
-    os.replace(tmp_vectors, final_vectors)
-    os.replace(tmp_db, final_db)
+    _atomic_swap(final_db, final_vectors, tmp_db, tmp_vectors)
 
     logger.info(
         "index sync completed: created=%d updated=%d skipped=%d removed=%d "

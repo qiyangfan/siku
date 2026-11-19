@@ -12,6 +12,7 @@ from pathlib import Path
 from siku.graph.cache import ExtractionCache
 from siku.graph.community import SummaryIdentity, internal_relation_triples, summary_cache_key
 from siku.graph.errors import GraphArtifactsStaleError
+from siku.graph.models import Community, Entity, Relation
 from siku.graph.store import cache_file_path, load_graph
 from siku.wiki.render import entry_file_name, render_entry, render_index, write_wiki
 from siku.wiki.summarizer import Summarizer
@@ -29,6 +30,69 @@ class WikiResult:
     empty_graph: bool
 
 
+@dataclass
+class _WikiStats:
+    cache_hits: int = 0
+    llm_calls: int = 0
+
+
+def _community_entry(
+    community: Community,
+    entity_by_id: dict[str, Entity],
+    relations: tuple[Relation, ...],
+    summarizer: Summarizer,
+    cache: ExtractionCache,
+    stats: _WikiStats,
+) -> tuple[str, str, int, int]:
+    """生成单个社区条目：校验摘要身份、缓存优先摘要、渲染条目。"""
+    member_ids = set(community.member_entity_ids)
+    members = [
+        entity_by_id[entity_id]
+        for entity_id in community.member_entity_ids
+        if entity_id in entity_by_id
+    ]
+    internal_relations = [
+        relation
+        for relation in relations
+        if relation.source_entity_id in member_ids and relation.target_entity_id in member_ids
+    ]
+    # 用同一函数现算缓存键；摘要器身份与图谱构建时不一致就报过期，禁止复用旧缓存。
+    triples = internal_relation_triples(relations, member_ids)
+    identity = SummaryIdentity(
+        summarizer_id=summarizer.summarizer_id,
+        model_id=summarizer.model_id,
+        prompt_version=summarizer.prompt_version,
+    )
+    expected_key = summary_cache_key(members, triples, identity)
+    if expected_key != community.summary_cache_key:
+        raise GraphArtifactsStaleError(
+            f"Community {community.community_id} summary key was built with "
+            "a different summarizer identity; run 'siku graph' to rebuild "
+            "the graph artifacts"
+        )
+    summary = cache.get_summary(community.summary_cache_key)
+    if summary is not None:
+        stats.cache_hits += 1
+    else:
+        logger.info(
+            "summarizing community via LLM: community_id=%d model=%s",
+            community.community_id,
+            summarizer.model_id,
+        )
+        summary = summarizer.summarize(tuple(members), tuple(internal_relations))
+        stats.llm_calls += 1
+        # 只缓存成功摘要：失败剧本绝不留下空摘要
+        cache.put_summary(community.summary_cache_key, summary)
+    file_name = entry_file_name(community.community_id)
+    rendered = render_entry(
+        community_id=community.community_id,
+        summary=summary,
+        members=members,
+        relations=internal_relations,
+    )
+    return file_name, rendered, len(members), len(internal_relations)
+
+
 def generate_wiki(data_dir: Path, summarizer: Summarizer) -> WikiResult:
     """依据图谱产物与社区摘要缓存生成 wiki 总目；图谱缺失抛领域错误。"""
     entities, relations, communities = load_graph(data_dir)
@@ -36,80 +100,30 @@ def generate_wiki(data_dir: Path, summarizer: Summarizer) -> WikiResult:
     cache = ExtractionCache(cache_file_path(data_dir))
     index_rows: list[tuple[str, str, int, int]] = []
     entry_files: dict[str, str] = {}
-    cache_hits = 0
-    llm_calls = 0
+    stats = _WikiStats()
     try:
         for community in communities:
-            member_ids = set(community.member_entity_ids)
-            members = [
-                entity_by_id[entity_id]
-                for entity_id in community.member_entity_ids
-                if entity_id in entity_by_id
-            ]
-            internal_relations = [
-                relation
-                for relation in relations
-                if relation.source_entity_id in member_ids
-                and relation.target_entity_id in member_ids
-            ]
-            # 用同一函数现算缓存键；摘要器身份与图谱构建时不一致就报过期，禁止复用旧缓存。
-            triples = internal_relation_triples(relations, member_ids)
-            identity = SummaryIdentity(
-                summarizer_id=summarizer.summarizer_id,
-                model_id=summarizer.model_id,
-                prompt_version=summarizer.prompt_version,
+            file_name, rendered, member_count, relation_count = _community_entry(
+                community, entity_by_id, relations, summarizer, cache, stats
             )
-            expected_key = summary_cache_key(members, triples, identity)
-            if expected_key != community.summary_cache_key:
-                raise GraphArtifactsStaleError(
-                    f"Community {community.community_id} summary key was built with "
-                    "a different summarizer identity; run 'siku graph' to rebuild "
-                    "the graph artifacts"
-                )
-            cache_key = community.summary_cache_key
-            summary = cache.get_summary(cache_key)
-            if summary is not None:
-                cache_hits += 1
-            else:
-                logger.info(
-                    "summarizing community via LLM: community_id=%d model=%s",
-                    community.community_id,
-                    summarizer.model_id,
-                )
-                summary = summarizer.summarize(tuple(members), tuple(internal_relations))
-                llm_calls += 1
-                # 只缓存成功摘要：失败剧本绝不留下空摘要
-                cache.put_summary(cache_key, summary)
-            file_name = entry_file_name(community.community_id)
-            entry_files[file_name] = render_entry(
-                community_id=community.community_id,
-                summary=summary,
-                members=members,
-                relations=internal_relations,
-            )
+            entry_files[file_name] = rendered
             # index 链接文本用短标题，条目全文经 entry_files 落到条目文件
             index_rows.append(
-                (
-                    f"社区 {community.community_id:04d}",
-                    file_name,
-                    len(members),
-                    len(internal_relations),
-                )
+                (f"社区 {community.community_id:04d}", file_name, member_count, relation_count)
             )
     finally:
         cache.close()
 
-    index_content = render_index(index_rows)
-    write_wiki(data_dir, entry_files, index_content)
+    write_wiki(data_dir, entry_files, render_index(index_rows))
     logger.info(
         "wiki generated: entries=%d cache_hits=%d llm_calls=%d",
         len(entry_files),
-        cache_hits,
-        llm_calls,
+        stats.cache_hits,
+        stats.llm_calls,
     )
     return WikiResult(
         entry_count=len(entry_files),
-        cache_hits=cache_hits,
-        llm_calls=llm_calls,
+        cache_hits=stats.cache_hits,
+        llm_calls=stats.llm_calls,
         empty_graph=not communities,
     )

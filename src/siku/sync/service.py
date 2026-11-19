@@ -221,36 +221,53 @@ class SyncService:
                 total += 1
                 continue
             total += (
-                len(plan.renames)
-                + len(plan.relinks)
-                + len(plan.vanished)
-                + len(plan.ingests)
-                + len(plan.ignored)
-                + len(plan.stat_refresh)
+                len(plan.actions.renames)
+                + len(plan.actions.relinks)
+                + len(plan.actions.vanished)
+                + len(plan.actions.ingests)
+                + len(plan.actions.ignored)
+                + len(plan.actions.stat_refresh)
             )
         return total
 
     def _run_plan(self, plan: SourcePlan, observer: ScanObserver) -> bool:
         """执行单源计划；返回 False 表示被取消，调用方应立即停止。"""
         if plan.unreachable is not None:
-            logger.warning(
-                "sync source unreachable, deferred: path=%s reason=%s",
-                plan.source_path,
-                plan.unreachable,
-            )
-            observer.op_finished(
-                ScanOpResult(
-                    name=Path(plan.source_path).name,
-                    path=plan.source_path,
-                    status="skipped",
-                    detail="来源目录暂不可达，本轮已顺延；内容未做任何标记。",
-                )
-            )
+            self._report_unreachable(plan, observer)
             return not observer.is_cancelled()
 
         entries = self._registry.list_entries(plan.source_id)
+        self._apply_renames(plan, observer)
+        self._apply_relinks(plan, entries, observer)
+        self._apply_vanished(plan, entries, observer)
+        self._apply_stat_refresh(plan, entries, observer)
+        self._report_ignored(plan, observer)
 
-        for rename in plan.renames:
+        for ingest in plan.actions.ingests:
+            if observer.is_cancelled():
+                return False
+            self._run_ingest_op(plan.source_id, plan.source_path, ingest, observer)
+        return not observer.is_cancelled()
+
+    def _report_unreachable(self, plan: SourcePlan, observer: ScanObserver) -> None:
+        """整源顺延：只回报跳过，内容不做任何标记。"""
+        logger.warning(
+            "sync source unreachable, deferred: path=%s reason=%s",
+            plan.source_path,
+            plan.unreachable,
+        )
+        observer.op_finished(
+            ScanOpResult(
+                name=Path(plan.source_path).name,
+                path=plan.source_path,
+                status="skipped",
+                detail="来源目录暂不可达，本轮已顺延；内容未做任何标记。",
+            )
+        )
+
+    def _apply_renames(self, plan: SourcePlan, observer: ScanObserver) -> None:
+        """改名：仅更新登记的上游路径，不重复入库。"""
+        for rename in plan.actions.renames:
             self._registry.rename_entry(plan.source_id, rename.old_path, str(rename.new_path))
             observer.op_finished(
                 ScanOpResult(
@@ -261,7 +278,11 @@ class SyncService:
                 )
             )
 
-        for upstream_path in plan.relinks:
+    def _apply_relinks(
+        self, plan: SourcePlan, entries: dict[str, SyncEntry], observer: ScanObserver
+    ) -> None:
+        """复链：解除 missing 标记并清除对应 tombstone。"""
+        for upstream_path in plan.actions.relinks:
             entry = entries.get(upstream_path)
             if entry is None:
                 continue
@@ -276,7 +297,11 @@ class SyncService:
                 )
             )
 
-        for upstream_path in plan.vanished:
+    def _apply_vanished(
+        self, plan: SourcePlan, entries: dict[str, SyncEntry], observer: ScanObserver
+    ) -> None:
+        """缺失：登记转 unlinked 并写 missing tombstone，磁盘内容保留至显式清理。"""
+        for upstream_path in plan.actions.vanished:
             entry = entries.get(upstream_path)
             if entry is None:
                 continue
@@ -295,7 +320,11 @@ class SyncService:
                 )
             )
 
-        for upstream_path, size, mtime_ns, digest in plan.stat_refresh:
+    def _apply_stat_refresh(
+        self, plan: SourcePlan, entries: dict[str, SyncEntry], observer: ScanObserver
+    ) -> None:
+        """内容未变仅 stat 变化：刷新登记缓存，免得下轮重复哈希。"""
+        for upstream_path, size, mtime_ns, digest in plan.actions.stat_refresh:
             entry = entries.get(upstream_path)
             if entry is None:
                 continue
@@ -319,7 +348,8 @@ class SyncService:
                 )
             )
 
-        for name in plan.ignored:
+    def _report_ignored(self, plan: SourcePlan, observer: ScanObserver) -> None:
+        for name in plan.actions.ignored:
             observer.op_finished(
                 ScanOpResult(
                     name=name,
@@ -328,12 +358,6 @@ class SyncService:
                     detail="不支持的文件类型，已忽略。",
                 )
             )
-
-        for ingest in plan.ingests:
-            if observer.is_cancelled():
-                return False
-            self._run_ingest_op(plan.source_id, plan.source_path, ingest, observer)
-        return not observer.is_cancelled()
 
     def _run_ingest_op(
         self, dir_id: str, source_root: str, ingest: PlannedIngest, observer: ScanObserver
@@ -376,8 +400,8 @@ class SyncService:
                 discard_staged(staged.path)
 
         # 前置分支均已返回，这里必有暂存副本与摄取报告。
-        assert staged is not None
-        assert report is not None
+        if staged is None or report is None:
+            raise RuntimeError("staged copy or ingest report is missing")
 
         new_source_id = self._new_source_id(report)
         if new_source_id is None:

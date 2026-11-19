@@ -201,6 +201,109 @@ def _copy_atomically(source: Path, target: Path) -> None:
     os.replace(temporary, target)
 
 
+@dataclass(frozen=True)
+class _VaultLayout:
+    """单次摄取用到的 vault 子目录，创建后复用。"""
+
+    attachments: Path
+    notes: Path
+
+
+def _prepare_vault(vault_path: Path) -> _VaultLayout:
+    """确保 vault 的附件与笔记子目录存在。"""
+    try:
+        layout = _VaultLayout(vault_path / "attachments", vault_path / "notes")
+        layout.attachments.mkdir(parents=True, exist_ok=True)
+        layout.notes.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise IngestError(f"Failed to prepare vault: {exc}") from exc
+    return layout
+
+
+def _is_attachment_current(attachment_path: Path, content_hash: str) -> bool:
+    """附件已在位且内容与源文件一致（读失败按不一致处理，走重写）。"""
+    if not attachment_path.exists():
+        return False
+    try:
+        return _sha256(attachment_path) == content_hash
+    except OSError:
+        return False
+
+
+def _is_unchanged(note_path: Path, attachment_path: Path, content_hash: str) -> bool:
+    """笔记登记的哈希与附件内容都与源文件一致时，本次摄取可整体跳过。"""
+    try:
+        existing_hash = _frontmatter_hash(note_path)
+    except OSError as exc:
+        raise IngestError(f"Failed to read {note_path.name}: {exc}") from exc
+    if existing_hash != content_hash:
+        return False
+    return _is_attachment_current(attachment_path, content_hash)
+
+
+def _extract(path: Path, extractor: Extractor) -> ExtractedDocument:
+    """调用抽取器并把适配器层错误翻译为摄取层错误。"""
+    try:
+        return extractor.extract(path)
+    except ExtractorError as exc:
+        raise _translate_extraction_error(exc) from exc
+    except Exception as exc:
+        raise IngestError(f"Failed to extract {path.name}: {exc}") from exc
+
+
+def _write_artifacts(
+    *,
+    path: Path,
+    note_path: Path,
+    attachment_path: Path,
+    content_hash: str,
+    source_id: str,
+    document: ExtractedDocument,
+    extractor: Extractor,
+) -> None:
+    """附件与笔记成对落盘；附件内容未变时保留原文件不重写。"""
+    try:
+        if not _is_attachment_current(attachment_path, content_hash):
+            _copy_atomically(path, attachment_path)
+        _write_atomically(
+            note_path, _render_note(document, path, content_hash, source_id, extractor)
+        )
+    except OSError as exc:
+        raise IngestError(f"Failed to write vault artifacts for {path.name}: {exc}") from exc
+
+
+def _ingest_file(
+    path: Path,
+    extractor: Extractor,
+    layout: _VaultLayout,
+) -> IngestItem:
+    """摄取单个已确认有抽取器的文件。"""
+    try:
+        content_hash = _sha256(path)
+    except OSError as exc:
+        raise IngestError(f"Failed to read {path.name}: {exc}") from exc
+    source_id = _source_id(path)
+    stem = _artifact_stem(path)
+    note_path = layout.notes / f"{stem}.md"
+    attachment_path = layout.attachments / f"{stem}{path.suffix.lower()}"
+    if note_path.is_symlink() or attachment_path.is_symlink():
+        raise IngestError(f"Refusing to ingest through a vault symlink for {path.name}.")
+    if _is_unchanged(note_path, attachment_path, content_hash):
+        return IngestItem(path, "skipped", note_path, attachment_path)
+    document = _extract(path, extractor)
+    previous = note_path.exists()
+    _write_artifacts(
+        path=path,
+        note_path=note_path,
+        attachment_path=attachment_path,
+        content_hash=content_hash,
+        source_id=source_id,
+        document=document,
+        extractor=extractor,
+    )
+    return IngestItem(path, "updated" if previous else "created", note_path, attachment_path)
+
+
 def ingest_path(
     source: Path,
     vault: Path,
@@ -210,14 +313,8 @@ def ingest_path(
     registry = dict(extractors if extractors is not None else extractor_registry())
     source_path = source.expanduser()
     vault_path = vault.expanduser()
-    try:
-        files, ignored = _source_files(source_path, vault_path, registry)
-        attachments = vault_path / "attachments"
-        notes = vault_path / "notes"
-        attachments.mkdir(parents=True, exist_ok=True)
-        notes.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise IngestError(f"Failed to prepare vault: {exc}") from exc
+    files, ignored = _source_files(source_path, vault_path, registry)
+    layout = _prepare_vault(vault_path)
     items: list[IngestItem] = []
     for path in files:
         extractor = registry.get(path.suffix.lower())
@@ -231,46 +328,5 @@ def ingest_path(
                 )
             ignored = (*ignored, path)
             continue
-        try:
-            content_hash = _sha256(path)
-        except OSError as exc:
-            raise IngestError(f"Failed to read {path.name}: {exc}") from exc
-        source_id = _source_id(path)
-        stem = _artifact_stem(path)
-        note_path = notes / f"{stem}.md"
-        attachment_path = attachments / f"{stem}{path.suffix.lower()}"
-        if note_path.is_symlink() or attachment_path.is_symlink():
-            raise IngestError(f"Refusing to ingest through a vault symlink for {path.name}.")
-        try:
-            existing_hash = _frontmatter_hash(note_path)
-        except OSError as exc:
-            raise IngestError(f"Failed to read {note_path.name}: {exc}") from exc
-        if existing_hash == content_hash and attachment_path.exists():
-            try:
-                attachment_is_current = _sha256(attachment_path) == content_hash
-            except OSError:
-                attachment_is_current = False
-        else:
-            attachment_is_current = False
-        if existing_hash == content_hash and attachment_is_current:
-            items.append(IngestItem(path, "skipped", note_path, attachment_path))
-            continue
-        try:
-            document = extractor.extract(path)
-        except ExtractorError as exc:
-            raise _translate_extraction_error(exc) from exc
-        except Exception as exc:
-            raise IngestError(f"Failed to extract {path.name}: {exc}") from exc
-        previous = note_path.exists()
-        try:
-            if not attachment_path.exists() or _sha256(attachment_path) != content_hash:
-                _copy_atomically(path, attachment_path)
-            _write_atomically(
-                note_path, _render_note(document, path, content_hash, source_id, extractor)
-            )
-        except OSError as exc:
-            raise IngestError(f"Failed to write vault artifacts for {path.name}: {exc}") from exc
-        items.append(
-            IngestItem(path, "updated" if previous else "created", note_path, attachment_path)
-        )
+        items.append(_ingest_file(path, extractor, layout))
     return IngestReport(tuple(items), tuple(sorted(ignored)))

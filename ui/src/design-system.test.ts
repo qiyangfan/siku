@@ -49,7 +49,13 @@ const spacingProperties = new Set([
   "row-gap",
   "column-gap",
 ]);
-const borderProperties = new Set(["border", "border-top", "border-right", "border-bottom", "border-left"]);
+const borderProperties = new Set([
+  "border",
+  "border-top",
+  "border-right",
+  "border-bottom",
+  "border-left",
+]);
 
 function ungovernedBorderWidths(css: string): string[] {
   return [...css.matchAll(/^\s*([\w-]+)\s*:\s*([^;]+);/gm)]
@@ -58,7 +64,10 @@ function ungovernedBorderWidths(css: string): string[] {
         return false;
       }
       const normalizedValue = value.trim();
-      return !/var\(--border-width(?:-strong)?\)/.test(normalizedValue) && !/^(?:0|none)$/.test(normalizedValue);
+      return (
+        !/var\(--border-width(?:-strong)?\)/.test(normalizedValue) &&
+        !/^(?:0|none)$/.test(normalizedValue)
+      );
     })
     .map(([, property, value]) => `${property}: ${value.trim()}`);
 }
@@ -70,7 +79,10 @@ function ungovernedCornerRadii(css: string): string[] {
         return false;
       }
       const normalizedValue = value.trim();
-      return !/var\(--radius-[\w-]+\)/.test(normalizedValue) && !/^(?:0|none)$/.test(normalizedValue);
+      return (
+        !/var\(--radius-[\w-]+\)/.test(normalizedValue) &&
+        !/^(?:0|none)$/.test(normalizedValue)
+      );
     })
     .map(([, property, value]) => `${property}: ${value.trim()}`);
 }
@@ -106,20 +118,32 @@ describe("全局设计 token", () => {
           }
           const normalizedValue = value.trim();
           if (spacingProperties.has(property)) {
-            const usesSpacingToken = /var\(--(?:space-|control-height|button-padding-inline|tab-padding-inline)/.test(
+            const usesSpacingToken =
+              /var\(--(?:space-|control-height|button-padding-inline|tab-padding-inline)/.test(
+                normalizedValue,
+              );
+            const resetValue = /^(?:0|auto)(?:\s+(?:0|auto))*$/.test(
               normalizedValue,
             );
-            const resetValue = /^(?:0|auto)(?:\s+(?:0|auto))*$/.test(normalizedValue);
             return !usesSpacingToken && !resetValue;
           }
           if (property === "font-size") {
-            return !normalizedValue.startsWith("var(--font-") && !["inherit", "initial"].includes(normalizedValue);
+            return (
+              !normalizedValue.startsWith("var(--font-") &&
+              !["inherit", "initial"].includes(normalizedValue)
+            );
           }
           if (property === "line-height") {
-            return !normalizedValue.startsWith("var(--line-") && !["inherit", "normal"].includes(normalizedValue);
+            return (
+              !normalizedValue.startsWith("var(--line-") &&
+              !["inherit", "normal"].includes(normalizedValue)
+            );
           }
           if (property === "font-weight") {
-            return !normalizedValue.startsWith("var(--weight-") && !["inherit", "normal"].includes(normalizedValue);
+            return (
+              !normalizedValue.startsWith("var(--weight-") &&
+              !["inherit", "normal"].includes(normalizedValue)
+            );
           }
           return false;
         })
@@ -143,15 +167,24 @@ describe("全局设计 token", () => {
 /** WCAG 相对亮度（sRGB 通道线性化后按人眼敏感度加权）。 */
 function relativeLuminance(hex: string): number {
   const channels = [0, 2, 4].map((start) => {
-    const channel = Number.parseInt(hex.replace("#", "").slice(start, start + 2), 16) / 255;
-    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    const channel =
+      Number.parseInt(hex.replace("#", "").slice(start, start + 2), 16) / 255;
+    return channel <= 0.03928
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4;
   });
   return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
 }
 
 function contrastRatio(foreground: string, background: string): number {
-  const lighter = Math.max(relativeLuminance(foreground), relativeLuminance(background));
-  const darker = Math.min(relativeLuminance(foreground), relativeLuminance(background));
+  const lighter = Math.max(
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  );
+  const darker = Math.min(
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  );
   return (lighter + 0.05) / (darker + 0.05);
 }
 
@@ -160,13 +193,18 @@ describe("主题两态取值分流", () => {
 
   it("方案相关 token（色彩/投影）不留在两态共用 variables", () => {
     const schemeToken = /--(?:color-|shadow-)/;
-    expect(Object.keys(resolved.variables).filter((name) => schemeToken.test(name))).toEqual([]);
+    expect(
+      Object.keys(resolved.variables).filter((name) => schemeToken.test(name)),
+    ).toEqual([]);
   });
 
   it("主题块只承载方案相关 token，度量与排印刻度不得进入任一态", () => {
     for (const schemeVariables of [resolved.light, resolved.dark]) {
       const foreign = Object.keys(schemeVariables).filter(
-        (name) => !name.startsWith("--color-") && !name.startsWith("--shadow-") && !name.startsWith("--mantine-"),
+        (name) =>
+          !name.startsWith("--color-") &&
+          !name.startsWith("--shadow-") &&
+          !name.startsWith("--mantine-"),
       );
       expect(foreign).toEqual([]);
     }
@@ -175,7 +213,10 @@ describe("主题两态取值分流", () => {
 
 describe("暗色取值对比度守卫", () => {
   // 守卫按 token 名逐条断言，值本身经 Mantine CSSVariables 索引访问
-  const dark = cssVariablesResolver(theme as MantineTheme).dark as Record<string, string>;
+  const dark = cssVariablesResolver(theme as MantineTheme).dark as Record<
+    string,
+    string
+  >;
   const { red } = theme.colors as Record<"red", MantineColorsTuple>;
   const darkCanvas = dark["--color-canvas"];
   const darkSurface = dark["--color-surface"];
@@ -190,8 +231,12 @@ describe("暗色取值对比度守卫", () => {
       "--color-warning",
       "--color-danger",
     ]) {
-      expect(contrastRatio(dark[token], darkCanvas)).toBeGreaterThanOrEqual(4.5);
-      expect(contrastRatio(dark[token], darkSurface)).toBeGreaterThanOrEqual(4.5);
+      expect(contrastRatio(dark[token], darkCanvas)).toBeGreaterThanOrEqual(
+        4.5,
+      );
+      expect(contrastRatio(dark[token], darkSurface)).toBeGreaterThanOrEqual(
+        4.5,
+      );
     }
   });
 
@@ -199,17 +244,29 @@ describe("暗色取值对比度守卫", () => {
     // 红色浅底上的文字使用第 3 阶；第 4 阶对比度只有 3.84:1。
     expect(dark["--color-danger"]).toBe(red[3]);
     expect(dark["--color-danger-wash"]).toBe(red[9]);
-    expect(contrastRatio(dark["--color-danger"], dark["--color-danger-wash"])).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(red[4], dark["--color-danger-wash"])).toBeLessThan(4.5);
+    expect(
+      contrastRatio(dark["--color-danger"], dark["--color-danger-wash"]),
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(red[4], dark["--color-danger-wash"])).toBeLessThan(
+      4.5,
+    );
 
-    expect(contrastRatio(dark["--color-warning"], dark["--color-warning-wash"])).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(dark["--color-accent"], dark["--color-accent-wash"])).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(dark["--color-accent-strong"], dark["--color-accent-wash"])).toBeGreaterThanOrEqual(4.5);
+    expect(
+      contrastRatio(dark["--color-warning"], dark["--color-warning-wash"]),
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(
+      contrastRatio(dark["--color-accent"], dark["--color-accent-wash"]),
+    ).toBeGreaterThanOrEqual(4.5);
+    expect(
+      contrastRatio(dark["--color-accent-strong"], dark["--color-accent-wash"]),
+    ).toBeGreaterThanOrEqual(4.5);
   });
 
   it("暗色边线保持 hairline 分隔语义（低于文字阈值，刻意为之）", () => {
     expect(contrastRatio(dark["--color-border"], darkCanvas)).toBeLessThan(4.5);
-    expect(contrastRatio(dark["--color-border-strong"], darkCanvas)).toBeLessThan(4.5);
+    expect(
+      contrastRatio(dark["--color-border-strong"], darkCanvas),
+    ).toBeLessThan(4.5);
   });
 });
 
@@ -217,7 +274,10 @@ describe("语义色与 Mantine 色板同源", () => {
   // createTheme 返回类型是 PartialObjectDeep（便于做 override），运行时是完整主题
   const resolved = cssVariablesResolver(theme as MantineTheme);
   // createTheme 注入的 colors 经索引签名访问被推为可空，测试目标恰是这三个 ramp 必须存在
-  const { green, yellow, red } = theme.colors as Record<"green" | "yellow" | "red", MantineColorsTuple>;
+  const { green, yellow, red } = theme.colors as Record<
+    "green" | "yellow" | "red",
+    MantineColorsTuple
+  >;
   const { siku } = theme.colors as Record<"siku", MantineColorsTuple>;
 
   it("亮色语义 token 全部取自被覆盖的 Mantine 色阶，不允许另写裸值", () => {

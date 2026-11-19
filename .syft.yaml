@@ -1,0 +1,10 @@
+# SBOM 扫描排除物：语料/本地数据、构建产物与 VCS 元数据。
+# 保留 .venv 与 ui/node_modules：许可证元数据只存在于已安装的包信息中。
+exclude:
+  - "./.git/**"
+  - "./data/**"
+  - "./vault/**"
+  - "./dist-check/**"
+  - "./ui/dist/**"
+  - "./ui/coverage/**"
+  - "./ui/src-tauri/target/**"

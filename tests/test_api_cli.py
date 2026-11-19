@@ -10,13 +10,13 @@ from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
+from tests.graph_fakes import FakeGraphExtractor
 from typer.testing import CliRunner
 
-from graph_fakes import FakeGraphExtractor
 from siku.api.app import create_app
 from siku.cli import _install_stdin_watchdog, _run_with_stdin_watchdog, app
 from siku.graph.community import SummaryIdentity
-from siku.graph.report import GraphHealthReport
+from siku.graph.report import GraphCallStats, GraphCounts, GraphHealthReport, GraphIdentity
 from siku.graph.service import GraphBuildResult
 from siku.model_supply import ChannelValues
 from siku.wiki.service import WikiResult
@@ -39,16 +39,11 @@ def _isolate_host_supply(monkeypatch: pytest.MonkeyPatch) -> None:
 def graph_result() -> GraphBuildResult:
     return GraphBuildResult(
         report=GraphHealthReport(
-            extractor_id="fake-extractor",
-            model_id="custom-model",
-            prompt_version="v1",
-            chunk_count=1,
-            node_count=1,
-            edge_count=0,
-            community_count=1,
-            ambiguous_entity_count=0,
-            cache_hits=0,
-            llm_calls=1,
+            identity=GraphIdentity(
+                extractor_id="fake-extractor", model_id="custom-model", prompt_version="v1"
+            ),
+            counts=GraphCounts(chunks=1, nodes=1, edges=0, communities=1, ambiguous_entities=0),
+            calls=GraphCallStats(cache_hits=0, llm_calls=1),
             warnings=(),
         ),
         empty_corpus=False,
@@ -59,9 +54,9 @@ def test_serve_defaults_to_loopback_and_warns_on_explicit_public_bind(
     monkeypatch: object,
 ) -> None:
     calls: list[tuple[object, str, int]] = []
-    monkeypatch.setattr("siku.cli.create_app", lambda **_kwargs: object())  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", lambda **_kwargs: object())  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda application, *, host, port: calls.append((application, host, port)),
     )
 
@@ -86,9 +81,9 @@ def test_serve_tolerates_env_layer_protocol_violation_and_disables_llm(
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )
 
@@ -97,6 +92,7 @@ def test_serve_tolerates_env_layer_protocol_violation_and_disables_llm(
     assert "SIKU_LLM_PROTOCOL" in result.output
     assert "invalid" in result.output
     # CLI 层原样透传（env 值由请求期解析现读现拒），api_key_env 回落缺省
+    assert isinstance(captured["llm_supply"], ChannelValues)
     assert captured["llm_supply"].protocol is None
     assert captured["api_key_env"] == "SIKU_LLM_API_KEY"
 
@@ -110,9 +106,9 @@ def test_serve_passes_shared_llm_configuration_to_api(
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )
 
@@ -166,19 +162,19 @@ def test_cli_llm_options_reach_provider_and_summary_identity(
         },
     )()
 
-    monkeypatch.setattr("siku.cli.HttpxLlmProvider", FakeProvider)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.graph.HttpxLlmProvider", FakeProvider)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.LlmGraphExtractor", lambda **_kwargs: extractor
+        "siku.cli.commands.graph.LlmGraphExtractor", lambda **_kwargs: extractor
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.CommunitySummarizer", lambda **_kwargs: summarizer
+        "siku.cli.commands.graph.CommunitySummarizer", lambda **_kwargs: summarizer
     )
 
     def build(*_args: object, **kwargs: object) -> GraphBuildResult:
         build_calls.append(kwargs)
         return graph_result()
 
-    monkeypatch.setattr("siku.cli.build_graph", build)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.graph.build_graph", build)  # type: ignore[attr-defined]
     graph = runner.invoke(
         app,
         [
@@ -205,15 +201,27 @@ def test_cli_llm_options_reach_provider_and_summary_identity(
 def test_graph_api_and_cli_json_fields_are_identical(monkeypatch: object, tmp_path: Path) -> None:
     result = graph_result()
     extractor = FakeGraphExtractor(model_id="custom-model")
-    monkeypatch.setattr("siku.cli.HttpxLlmProvider", lambda **_kwargs: object())  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.graph.HttpxLlmProvider", lambda **_kwargs: object())  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.LlmGraphExtractor", lambda **_kwargs: extractor
+        "siku.cli.commands.graph.LlmGraphExtractor", lambda **_kwargs: extractor
     )
-    monkeypatch.setattr("siku.cli.build_graph", lambda *_args, **_kwargs: result)  # type: ignore[attr-defined]
-    cli_result = runner.invoke(app, ["graph", "--json"])
+    monkeypatch.setattr("siku.cli.commands.graph.build_graph", lambda *_args, **_kwargs: result)  # type: ignore[attr-defined]
+    cli_result = runner.invoke(
+        app,
+        [
+            "graph",
+            "--vault",
+            str(tmp_path / "vault"),
+            "--data-dir",
+            str(tmp_path / "data"),
+            "--json",
+        ],
+    )
     assert cli_result.exit_code == 0
 
     api = create_app(
+        vault=tmp_path / "vault",
+        data_dir=tmp_path / "data",
         graph_extractor_factory=lambda: FakeGraphExtractor(model_id="custom-model"),
         graph_builder=lambda *_args, **_kwargs: result,
     )
@@ -245,12 +253,12 @@ def test_wiki_cli_accepts_llm_options(monkeypatch: object, tmp_path: Path) -> No
             "close": lambda self: None,
         },
     )()
-    monkeypatch.setattr("siku.cli.HttpxLlmProvider", FakeProvider)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.graph.HttpxLlmProvider", FakeProvider)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.CommunitySummarizer", lambda **_kwargs: summarizer
+        "siku.cli.commands.graph.CommunitySummarizer", lambda **_kwargs: summarizer
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.generate_wiki", lambda *_args: WikiResult(0, 0, 0, True)
+        "siku.cli.commands.graph.generate_wiki", lambda *_args: WikiResult(0, 0, 0, True)
     )
     result = runner.invoke(
         app,
@@ -304,9 +312,9 @@ def test_serve_keeps_legacy_vault_data_and_ui_defaults(
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
@@ -327,9 +335,9 @@ def test_serve_without_ui_keeps_no_mount_default(monkeypatch: object) -> None:
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )
 
@@ -357,9 +365,9 @@ def test_serve_accepts_explicit_absolute_paths_for_desktop_sidecar(
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
@@ -386,7 +394,7 @@ def test_serve_accepts_explicit_absolute_paths_for_desktop_sidecar(
 
 def test_serve_rejects_ui_dir_without_with_ui(monkeypatch: object, tmp_path: Path) -> None:
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )
 
@@ -398,7 +406,7 @@ def test_serve_rejects_ui_dir_without_with_ui(monkeypatch: object, tmp_path: Pat
 
 def test_serve_fails_when_custom_ui_dir_missing(monkeypatch: object, tmp_path: Path) -> None:
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )
 
@@ -444,9 +452,9 @@ def test_serve_watch_stdin_wiring_marks_uvicorn_server_on_eof(
                 time.sleep(0.01)
             captured["should_exit_after_run"] = self.should_exit
 
-    monkeypatch.setattr("siku.cli.uvicorn.Server", FakeServer)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.uvicorn.Server", FakeServer)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.Config",
+        "siku.cli.commands.serve.uvicorn.Config",
         lambda application, *, host, port: (application, host, port),
     )
 
@@ -476,9 +484,9 @@ def test_serve_starts_and_warns_when_config_file_is_unparseable(
         created.append(kwargs)
         return object()
 
-    monkeypatch.setattr("siku.cli.create_app", fake_create_app)  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)  # type: ignore[attr-defined]
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "siku.cli.uvicorn.run", lambda *_args, **_kwargs: None
+        "siku.cli.commands.serve.uvicorn.run", lambda *_args, **_kwargs: None
     )
 
     result = runner.invoke(app, ["serve", "--port", "8123"])

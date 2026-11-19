@@ -1,5 +1,11 @@
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { render } from "./test-utils";
+import {
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { render, requestBody, requestUrl } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LibraryView } from "./LibraryView";
@@ -8,18 +14,23 @@ type Handler = (url: string, method: string, init?: RequestInit) => unknown;
 
 function mockRouter(handlers: Handler[]) {
   const queue = [...handlers];
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
-    const method = init?.method ?? "GET";
-    const handler = queue.shift();
-    if (handler === undefined) {
-      throw new Error(`unexpected fetch: ${method} ${url}`);
-    }
-    return Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(handler(url, method, init)),
-    } as Response);
-  });
+  return vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : String(input instanceof URL ? input : input.url);
+      const method = init?.method ?? "GET";
+      const handler = queue.shift();
+      if (handler === undefined) {
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(handler(url, method, init)),
+      } as Response);
+    });
 }
 
 afterEach(() => {
@@ -50,17 +61,23 @@ const twoSources = {
 
 describe("资料库视图", () => {
   it("空资料库展示导入引导与支持格式说明，不渲染空白列表", async () => {
-    mockRouter([(url, method) => {
-      expect(url).toBe("/api/library");
-      expect(method).toBe("GET");
-      return emptyListing;
-    }]);
+    mockRouter([
+      (url, method) => {
+        expect(url).toBe("/api/library");
+        expect(method).toBe("GET");
+        return emptyListing;
+      },
+    ]);
     render(<LibraryView />);
 
     expect(await screen.findByText("资料库还是空的")).toBeInTheDocument();
-    expect(screen.getByText(/支持格式：/)).toHaveTextContent("PDF（需含文字层）");
+    expect(screen.getByText(/支持格式：/)).toHaveTextContent(
+      "PDF（需含文字层）",
+    );
     expect(screen.getByText(/扫描件 PDF 请先/)).toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "资料库来源清单" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("list", { name: "资料库来源清单" }),
+    ).not.toBeInTheDocument();
   });
 
   it("来源清单展示名称与摄取、索引状态徽标", async () => {
@@ -95,7 +112,12 @@ describe("资料库视图", () => {
       done: 1,
       current: null,
       items: [
-        { name: "论文.pdf", path: "attachments/document--a1b2.pdf", status: "created", detail: null },
+        {
+          name: "论文.pdf",
+          path: "attachments/document--a1b2.pdf",
+          status: "created",
+          detail: null,
+        },
       ],
     };
     const refreshed = { sources: [twoSources.sources[0]] };
@@ -114,11 +136,18 @@ describe("资料库视图", () => {
 
     await screen.findByText("资料库还是空的");
     const input = screen.getByLabelText("选择要导入的文件");
-    await user.upload(input, [new File(["pdf-bytes"], "论文.pdf", { type: "application/pdf" })]);
+    await user.upload(input, [
+      new File(["pdf-bytes"], "论文.pdf", { type: "application/pdf" }),
+    ]);
 
-    expect(await screen.findByText("导入完成：1 个文件成功。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("导入完成：1 个文件成功。"),
+    ).toBeInTheDocument();
     await waitFor(
-      () => expect(screen.getByRole("list", { name: "资料库来源清单" })).toHaveTextContent("论文.pdf"),
+      () =>
+        expect(
+          screen.getByRole("list", { name: "资料库来源清单" }),
+        ).toHaveTextContent("论文.pdf"),
       { timeout: 3000 },
     );
   });
@@ -134,9 +163,13 @@ describe("资料库视图", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent(/全量重建/);
     await user.click(withinDialog(dialog, "取消"));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
     expect(
-      fetchSpy.mock.calls.filter(([url]) => String(url).includes("/api/library/rebuild")),
+      fetchSpy.mock.calls.filter(([url]) =>
+        requestUrl(url).includes("/api/library/rebuild"),
+      ),
     ).toHaveLength(0);
   });
 
@@ -160,7 +193,7 @@ describe("资料库视图", () => {
       (url, method, init) => {
         expect(url).toBe("/api/library/rebuild");
         expect(method).toBe("POST");
-        expect(String(init?.body)).toContain('"confirm":true');
+        expect(requestBody(init)).toContain('"confirm":true');
         return rebuildJob;
       },
       () => doneJob,
@@ -170,7 +203,9 @@ describe("资料库视图", () => {
 
     await screen.findByRole("list", { name: "资料库来源清单" });
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
-    await user.click(withinDialog(await screen.findByRole("dialog"), "确认重建"));
+    await user.click(
+      withinDialog(await screen.findByRole("dialog"), "确认重建"),
+    );
 
     expect(await screen.findByText("索引全量重建完成。")).toBeInTheDocument();
   });
@@ -189,33 +224,42 @@ describe("资料库视图", () => {
       items: [],
       error: "已建索引的模型配置与当前不一致：请执行全量重建。",
     };
-    mockRouter([
-      () => emptyListing,
-      () => failedJob,
-      () => emptyListing,
-    ]);
+    mockRouter([() => emptyListing, () => failedJob, () => emptyListing]);
     render(<LibraryView />);
 
     await screen.findByText("资料库还是空的");
     await user.click(screen.getByRole("button", { name: "全量重建索引" }));
-    await user.click(withinDialog(await screen.findByRole("dialog"), "确认重建"));
+    await user.click(
+      withinDialog(await screen.findByRole("dialog"), "确认重建"),
+    );
 
     expect(
-      await screen.findByText("已建索引的模型配置与当前不一致：请执行全量重建。"),
+      await screen.findByText(
+        "已建索引的模型配置与当前不一致：请执行全量重建。",
+      ),
     ).toBeInTheDocument();
   });
 
   it("触发冲突（409）时展示稳定错误提示", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
+      const url =
+        typeof input === "string"
+          ? input
+          : String(input instanceof URL ? input : input.url);
       if (url === "/api/library") {
-        return Promise.resolve({ ok: true, json: () => Promise.resolve(emptyListing) } as Response);
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(emptyListing),
+        } as Response);
       }
       return Promise.resolve({
         ok: false,
         json: () =>
-          Promise.resolve({ code: "library_job_busy", message: "已有一个摄取或重建任务正在执行。" }),
+          Promise.resolve({
+            code: "library_job_busy",
+            message: "已有一个摄取或重建任务正在执行。",
+          }),
       } as Response);
     });
     render(<LibraryView />);
@@ -224,12 +268,17 @@ describe("资料库视图", () => {
     const input = screen.getByLabelText("选择要导入的文件");
     await user.upload(input, [new File(["x"], "a.md")]);
 
-    expect(await screen.findByText("已有一个摄取或重建任务正在执行。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("已有一个摄取或重建任务正在执行。"),
+    ).toBeInTheDocument();
   });
 });
 
 function initBodyHasFile(init?: RequestInit): boolean {
-  return init?.body instanceof FormData && Array.from(init.body.getAll("files")).length > 0;
+  return (
+    init?.body instanceof FormData &&
+    Array.from(init.body.getAll("files")).length > 0
+  );
 }
 
 function withinDialog(dialog: HTMLElement, name: string): HTMLElement {
@@ -245,18 +294,23 @@ function withinDialog(dialog: HTMLElement, name: string): HTMLElement {
 type RouteHandler = (method: string, init?: RequestInit) => unknown;
 
 function mockRoutes(routes: Record<string, RouteHandler>) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    const url = typeof input === "string" ? input : String(input instanceof URL ? input : input.url);
-    const method = init?.method ?? "GET";
-    const handler = routes[url];
-    if (handler === undefined) {
-      throw new Error(`unexpected fetch: ${method} ${url}`);
-    }
-    return Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(handler(method, init)),
-    } as Response);
-  });
+  return vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation(async (input, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : String(input instanceof URL ? input : input.url);
+      const method = init?.method ?? "GET";
+      const handler = routes[url];
+      if (handler === undefined) {
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(handler(method, init)),
+      } as Response);
+    });
 }
 
 const emptySyncSources = { sources: [] };
@@ -300,23 +354,33 @@ describe("来源目录同步", () => {
     const fetchSpy = mockRoutes({
       "/api/library": () => emptyListing,
       "/api/library/sources": () => emptySyncSources,
-      "/api/library/scan-settings": () => ({ interval_secs: 300, graph_auto_refresh: false }),
+      "/api/library/scan-settings": () => ({
+        interval_secs: 300,
+        graph_auto_refresh: false,
+      }),
     });
     render(<LibraryView />);
 
     await screen.findByText("资料库还是空的");
-    expect(fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/library/sources")).toHaveLength(0);
-    await user.click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
-
     expect(
-      await screen.findByText(/尚未登记来源目录/),
-    ).toBeInTheDocument();
-    await user.type(screen.getByLabelText("来源目录路径"), "/Users/you/Documents/notes");
+      fetchSpy.mock.calls.filter(
+        ([url]) => requestUrl(url) === "/api/library/sources",
+      ),
+    ).toHaveLength(0);
+    await user.click(
+      screen.getByRole("button", { name: "来源目录与自动扫描" }),
+    );
+
+    expect(await screen.findByText(/尚未登记来源目录/)).toBeInTheDocument();
+    await user.type(
+      screen.getByLabelText("来源目录路径"),
+      "/Users/you/Documents/notes",
+    );
     fetchSpy.mockImplementation(async (input, init) => {
-      const url = typeof input === "string" ? input : String(input);
+      const url = requestUrl(input);
       const method = init?.method ?? "GET";
       if (url === "/api/library/sources" && method === "POST") {
-        expect(String(init?.body)).toContain("/Users/you/Documents/notes");
+        expect(requestBody(init)).toContain("/Users/you/Documents/notes");
         return Promise.resolve({
           ok: true,
           json: () => Promise.resolve(oneSyncSource.sources[0]),
@@ -335,7 +399,9 @@ describe("来源目录同步", () => {
     });
     await user.click(screen.getByRole("button", { name: "添加来源" }));
 
-    expect(await screen.findByText("/Users/you/Documents/notes")).toBeInTheDocument();
+    expect(
+      await screen.findByText("/Users/you/Documents/notes"),
+    ).toBeInTheDocument();
     expect(screen.getByText("已启用")).toBeInTheDocument();
     expect(screen.getByText("从未扫描")).toBeInTheDocument();
   });
@@ -352,7 +418,12 @@ describe("来源目录同步", () => {
       failed: 0,
       current: null,
       items: [
-        { name: "新文档.pdf", path: "attachments/新文档--a1b2c3d4e5f6.pdf", status: "created", detail: null },
+        {
+          name: "新文档.pdf",
+          path: "attachments/新文档--a1b2c3d4e5f6.pdf",
+          status: "created",
+          detail: null,
+        },
       ],
       error: null,
       notice: "图谱已增量更新：新增抽取 1 块，缓存命中 2 块。",
@@ -360,21 +431,28 @@ describe("来源目录同步", () => {
     mockRoutes({
       "/api/library": () => emptyListing,
       "/api/library/sources": () => oneSyncSource,
-      "/api/library/scan-settings": () => ({ interval_secs: 300, graph_auto_refresh: false }),
+      "/api/library/scan-settings": () => ({
+        interval_secs: 300,
+        graph_auto_refresh: false,
+      }),
       "/api/library/scan": (method, init) => {
         expect(method).toBe("POST");
-        expect(String(init?.body)).toContain('"full":false');
+        expect(requestBody(init)).toContain('"full":false');
         return scanJob("succeeded");
       },
     });
     render(<LibraryView />);
 
     await screen.findByText("资料库还是空的");
-    await user.click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
+    await user.click(
+      screen.getByRole("button", { name: "来源目录与自动扫描" }),
+    );
     await screen.findByText("/Users/you/Documents/notes");
     await user.click(screen.getByRole("button", { name: "立即扫描" }));
 
-    expect(await screen.findByText("扫描完成：处理 1 项动作。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("扫描完成：处理 1 项动作。"),
+    ).toBeInTheDocument();
     expect(
       await screen.findByText("图谱已增量更新：新增抽取 1 块，缓存命中 2 块。"),
     ).toBeInTheDocument();
@@ -402,8 +480,18 @@ describe("来源目录同步", () => {
       failed: 0,
       current: null,
       items: [
-        { name: "旧版报告.pdf", path: "superseded/报告--a1b2c3d4e5f6.pdf", status: "removed", detail: "已物理清理。" },
-        { name: "缺失笔记.md", path: "attachments/缺失笔记--b2c3d4e5f6a1.md", status: "removed", detail: "已物理清理。" },
+        {
+          name: "旧版报告.pdf",
+          path: "superseded/报告--a1b2c3d4e5f6.pdf",
+          status: "removed",
+          detail: "已物理清理。",
+        },
+        {
+          name: "缺失笔记.md",
+          path: "attachments/缺失笔记--b2c3d4e5f6a1.md",
+          status: "removed",
+          detail: "已物理清理。",
+        },
       ],
       error: null,
     };
@@ -411,7 +499,7 @@ describe("来源目录同步", () => {
       "/api/library": () => listingWithMarked,
       "/api/library/purge": (method, init) => {
         expect(method).toBe("POST");
-        expect(String(init?.body)).toContain('"confirm":true');
+        expect(requestBody(init)).toContain('"confirm":true');
         return purgeJob;
       },
     });
@@ -424,28 +512,40 @@ describe("来源目录同步", () => {
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveTextContent("确认清理 2 项失效文档？");
     await user.click(withinDialog(dialog, "取消"));
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
     expect(
-      fetchSpy.mock.calls.filter(([url]) => String(url) === "/api/library/purge"),
+      fetchSpy.mock.calls.filter(
+        ([url]) => requestUrl(url) === "/api/library/purge",
+      ),
     ).toHaveLength(0);
 
     await user.click(screen.getByRole("button", { name: "清理失效文档（2）" }));
-    await user.click(withinDialog(await screen.findByRole("dialog"), "确认清理"));
-    expect(await screen.findByText("清理完成：已物理移除 2 项失效文档。")).toBeInTheDocument();
+    await user.click(
+      withinDialog(await screen.findByRole("dialog"), "确认清理"),
+    );
+    expect(
+      await screen.findByText("清理完成：已物理移除 2 项失效文档。"),
+    ).toBeInTheDocument();
   });
 
   it("清理失效文档按钮带危险配色，可清零时禁用并有释义 tooltip", async () => {
     mockRoutes({ "/api/library": () => listingWithMarked });
     render(<LibraryView />);
 
-    const button = await screen.findByRole("button", { name: "清理失效文档（2）" });
+    const button = await screen.findByRole("button", {
+      name: "清理失效文档（2）",
+    });
     expect(button).toHaveClass("button-danger");
     expect(button).toHaveAccessibleDescription(/来源缺失/);
 
     mockRoutes({ "/api/library": () => emptyListing });
     cleanup();
     render(<LibraryView />);
-    const idleButton = await screen.findByRole("button", { name: "清理失效文档" });
+    const idleButton = await screen.findByRole("button", {
+      name: "清理失效文档",
+    });
     expect(idleButton).toBeDisabled();
   });
 
@@ -474,8 +574,12 @@ describe("来源目录同步", () => {
     render(<LibraryView />);
 
     await screen.findByText("资料库还是空的");
-    const dropzone = screen.getByRole("button", { name: /导入文件：点击选择或拖入文档/ });
-    const file = new File(["pdf-bytes"], "拖入.pdf", { type: "application/pdf" });
+    const dropzone = screen.getByRole("button", {
+      name: /导入文件：点击选择或拖入文档/,
+    });
+    const file = new File(["pdf-bytes"], "拖入.pdf", {
+      type: "application/pdf",
+    });
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
 
     expect(await screen.findByText(/正在摄取/)).toBeInTheDocument();
@@ -485,7 +589,9 @@ describe("来源目录同步", () => {
     mockRouter([() => emptyListing]);
     render(<LibraryView />);
 
-    const dropzone = await screen.findByRole("button", { name: /导入文件：点击选择或拖入文档/ });
+    const dropzone = await screen.findByRole("button", {
+      name: /导入文件：点击选择或拖入文档/,
+    });
     expect(dropzone).not.toHaveClass("library-dropzone-active");
     fireEvent.dragOver(dropzone);
     expect(dropzone).toHaveClass("library-dropzone-active");
@@ -560,10 +666,14 @@ describe("单项移除", () => {
 
     await user.click(within(dialog).getByRole("button", { name: "取消" }));
     // 取消后回到清单：行内操作仍在，模态随过渡关闭
-    expect(screen.getByRole("button", { name: "从资料库移除" })).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-    const calls = fetchSpy.mock.calls.filter(
-      ([input]) => String(input).includes("/api/library/remove"),
+    expect(
+      screen.getByRole("button", { name: "从资料库移除" }),
+    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    const calls = fetchSpy.mock.calls.filter(([input]) =>
+      requestUrl(input).includes("/api/library/remove"),
     );
     expect(calls).toHaveLength(0);
   });
@@ -602,7 +712,7 @@ describe("单项移除", () => {
       (url, method, init) => {
         expect(url).toBe("/api/library/remove");
         expect(method).toBe("POST");
-        expect(JSON.parse(String(init?.body))).toEqual({
+        expect(JSON.parse(requestBody(init))).toEqual({
           source_id: "c1d2e3f4a5b6",
           confirmed: true,
         });
@@ -622,7 +732,9 @@ describe("单项移除", () => {
     expect(
       await screen.findByText(/已从资料库移除：受管副本与检索内容已清除/),
     ).toBeInTheDocument();
-    expect(await screen.findByText(/图谱与 Wiki 需重新构建/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/图谱与 Wiki 需重新构建/),
+    ).toBeInTheDocument();
     await waitFor(() => expect(invalidated).toHaveBeenCalled());
     await waitFor(() =>
       expect(
@@ -651,7 +763,9 @@ describe("单项移除", () => {
 
     const list = await screen.findByRole("list", { name: "资料库来源清单" });
     expect(within(list).getByText("移除未完成")).toBeInTheDocument();
-    expect(within(list).getByRole("button", { name: "重试移除" })).toBeInTheDocument();
+    expect(
+      within(list).getByRole("button", { name: "重试移除" }),
+    ).toBeInTheDocument();
   });
 
   it("移除失败时保留重试状态，不把条目消失当成成功", async () => {
@@ -710,7 +824,9 @@ describe("单项移除", () => {
       await screen.findByText(/索引消减未完成，移除标记已保留/),
     ).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "重试移除" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "重试移除" }),
+      ).toBeInTheDocument(),
     );
   });
 });
@@ -719,7 +835,10 @@ describe("图谱自动刷新开关", () => {
   const settingsRoutes = (graphAutoRefresh: boolean) => ({
     "/api/library": () => emptyListing,
     "/api/library/sources": () => oneSyncSource,
-    "/api/library/scan-settings": () => ({ interval_secs: 300, graph_auto_refresh: graphAutoRefresh }),
+    "/api/library/scan-settings": () => ({
+      interval_secs: 300,
+      graph_auto_refresh: graphAutoRefresh,
+    }),
   });
 
   it("展示开关与中文说明（缺省关闭）", async () => {
@@ -727,7 +846,9 @@ describe("图谱自动刷新开关", () => {
     render(<LibraryView />);
 
     await screen.findByText("资料库还是空的");
-    await userEvent.setup().click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
 
     const toggle = await screen.findByLabelText("摄取/扫描后自动增量更新图谱");
     expect(toggle).not.toBeChecked();
@@ -742,9 +863,12 @@ describe("图谱自动刷新开关", () => {
       ...settingsRoutes(false),
       "/api/library/scan-settings": (method, init) => {
         if (method === "PUT") {
-          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          const body = JSON.parse(requestBody(init)) as Record<string, unknown>;
           puts.push(body);
-          return { interval_secs: 300, graph_auto_refresh: Boolean(body.graph_auto_refresh) };
+          return {
+            interval_secs: 300,
+            graph_auto_refresh: Boolean(body.graph_auto_refresh),
+          };
         }
         return { interval_secs: 300, graph_auto_refresh: false };
       },
@@ -753,12 +877,16 @@ describe("图谱自动刷新开关", () => {
 
     await screen.findByText("资料库还是空的");
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "来源目录与自动扫描" }));
+    await user.click(
+      screen.getByRole("button", { name: "来源目录与自动扫描" }),
+    );
 
     const toggle = await screen.findByLabelText("摄取/扫描后自动增量更新图谱");
     await user.click(toggle);
 
     expect(puts).toEqual([{ graph_auto_refresh: true }]);
-    expect(await screen.findByLabelText("摄取/扫描后自动增量更新图谱")).toBeChecked();
+    expect(
+      await screen.findByLabelText("摄取/扫描后自动增量更新图谱"),
+    ).toBeChecked();
   });
 });

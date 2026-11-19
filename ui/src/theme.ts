@@ -144,7 +144,10 @@ export const GRAPH_UNASSIGNED_COLOR = "#7b8798";
 /**
  * 画布绘制无法读取 CSS 变量，这里集中提供边线与标签色（亮暗两套）。
  */
-export function graphCanvasThemeColors(colorScheme: "light" | "dark"): { edge: string; label: string } {
+export function graphCanvasThemeColors(colorScheme: "light" | "dark"): {
+  edge: string;
+  label: string;
+} {
   return colorScheme === "dark"
     ? { edge: rgba(DARK_INK, 0.18), label: DARK_INK }
     : { edge: rgba(INK, 0.18), label: INK };
@@ -173,20 +176,46 @@ export const theme = createTheme({
     red: DANGER_RAMP,
   },
   defaultRadius: "sm",
-  fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  fontFamily:
+    'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   fontFamilyMonospace: "ui-monospace, SFMono-Regular, Menlo, monospace",
   fontSizes: FONT_SIZE_SCALE,
   spacing: SPACING_SCALE,
   radius: RADIUS_SCALE,
   headings: {
-    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    fontFamily:
+      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
     sizes: {
-      h1: { fontSize: FONT_DISPLAY, lineHeight: LINE_HEIGHT.display, fontWeight: FONT_WEIGHT.display },
-      h2: { fontSize: FONT_SIZE_SCALE.xl, lineHeight: LINE_HEIGHT.heading, fontWeight: FONT_WEIGHT.bold },
-      h3: { fontSize: FONT_SIZE_SCALE.lg, lineHeight: LINE_HEIGHT.heading, fontWeight: FONT_WEIGHT.bold },
-      h4: { fontSize: FONT_SIZE_SCALE.md, lineHeight: LINE_HEIGHT.caption, fontWeight: FONT_WEIGHT.bold },
-      h5: { fontSize: FONT_SIZE_SCALE.sm, lineHeight: LINE_HEIGHT.caption, fontWeight: FONT_WEIGHT.bold },
-      h6: { fontSize: FONT_SIZE_SCALE.xs, lineHeight: LINE_HEIGHT.caption, fontWeight: FONT_WEIGHT.bold },
+      h1: {
+        fontSize: FONT_DISPLAY,
+        lineHeight: LINE_HEIGHT.display,
+        fontWeight: FONT_WEIGHT.display,
+      },
+      h2: {
+        fontSize: FONT_SIZE_SCALE.xl,
+        lineHeight: LINE_HEIGHT.heading,
+        fontWeight: FONT_WEIGHT.bold,
+      },
+      h3: {
+        fontSize: FONT_SIZE_SCALE.lg,
+        lineHeight: LINE_HEIGHT.heading,
+        fontWeight: FONT_WEIGHT.bold,
+      },
+      h4: {
+        fontSize: FONT_SIZE_SCALE.md,
+        lineHeight: LINE_HEIGHT.caption,
+        fontWeight: FONT_WEIGHT.bold,
+      },
+      h5: {
+        fontSize: FONT_SIZE_SCALE.sm,
+        lineHeight: LINE_HEIGHT.caption,
+        fontWeight: FONT_WEIGHT.bold,
+      },
+      h6: {
+        fontSize: FONT_SIZE_SCALE.xs,
+        lineHeight: LINE_HEIGHT.caption,
+        fontWeight: FONT_WEIGHT.bold,
+      },
     },
   },
 });

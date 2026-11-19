@@ -13,11 +13,12 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.fakes import FakeEmbeddingProvider
 
-from fakes import FakeEmbeddingProvider
-from siku.api import library as library_module
+from siku.api import library_view as library_view_module
 from siku.api.app import create_app
-from siku.api.library import STAGING_ROOT, AttachmentDigestCache
+from siku.api.library import STAGING_ROOT
+from siku.api.library_view import AttachmentDigestCache
 from siku.graph.refresh import GraphRefreshOutcome
 from siku.ingest import IngestReport
 from siku.ingest.pipeline import IngestItem
@@ -220,13 +221,13 @@ def test_library_reuses_attachment_digests_across_requests(
     (attachments / "b.md").write_bytes(b"B" * 32)
 
     calls = {"count": 0}
-    real_sha256_file = library_module._sha256_file
+    real_sha256_file = library_view_module._sha256_file
 
     def counting(path: Path) -> str:
         calls["count"] += 1
         return real_sha256_file(path)
 
-    monkeypatch.setattr(library_module, "_sha256_file", counting)
+    monkeypatch.setattr(library_view_module, "_sha256_file", counting)
 
     first = listing(client)
     assert {source["name"] for source in first["sources"]} == {"a.md", "b.md"}
@@ -263,14 +264,14 @@ def test_library_skips_attachment_vanished_mid_scan(
     (attachments / "a.md").write_bytes(b"A")
     (attachments / "gone.md").write_bytes(b"G")
 
-    real_sha256_file = library_module._sha256_file
+    real_sha256_file = library_view_module._sha256_file
 
     def vanish(path: Path) -> str:
         if path.name == "gone.md":
             raise FileNotFoundError(f"vanished: {path}")
         return real_sha256_file(path)
 
-    monkeypatch.setattr(library_module, "_sha256_file", vanish)
+    monkeypatch.setattr(library_view_module, "_sha256_file", vanish)
     payload = listing(client)
     assert [source["name"] for source in payload["sources"]] == ["a.md"]
 

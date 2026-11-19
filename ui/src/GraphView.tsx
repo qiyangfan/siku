@@ -1,5 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Alert, Button, Group, Loader, Paper, Stack, TextInput } from "@mantine/core";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  Alert,
+  Button,
+  Group,
+  Loader,
+  Paper,
+  Stack,
+  TextInput,
+} from "@mantine/core";
 import {
   buildGraph,
   getGraphNeighbors,
@@ -47,7 +62,11 @@ type GraphModel = {
 /** 把邻域展开结果并入当前画布模型：节点/边取并集，候选总数取较大值。 */
 function mergeSubgraph(model: GraphModel, subgraph: GraphSubgraph): GraphModel {
   const nodeIds = new Set(model.nodes.map((node) => node.entity_id));
-  const edgeKeys = new Set(model.edges.map((edge) => `${edge.source}\u0000${edge.target}\u0000${edge.type}`));
+  const edgeKeys = new Set(
+    model.edges.map(
+      (edge) => `${edge.source}\u0000${edge.target}\u0000${edge.type}`,
+    ),
+  );
   const nodes = [...model.nodes];
   for (const node of subgraph.nodes) {
     if (!nodeIds.has(node.entity_id)) {
@@ -131,7 +150,8 @@ export function GraphView({
   }, []);
 
   useEffect(() => {
-    void loadGraph();
+    // 取数落到异步续体：effect 体内不直接触发 setState，避免提交阶段级联渲染
+    void Promise.resolve().then(loadGraph);
   }, [loadGraph]);
 
   const runSearch = useCallback(async () => {
@@ -171,11 +191,17 @@ export function GraphView({
       setExpanding(true);
       setActionError(null);
       try {
-        const subgraph = await getGraphNeighbors(node.entity_id, NEIGHBOR_LIMIT, NEIGHBOR_DEPTH);
+        const subgraph = await getGraphNeighbors(
+          node.entity_id,
+          NEIGHBOR_LIMIT,
+          NEIGHBOR_DEPTH,
+        );
         if (seq !== expandSeqRef.current) {
           return;
         }
-        setModel((current) => (current === null ? current : mergeSubgraph(current, subgraph)));
+        setModel((current) =>
+          current === null ? current : mergeSubgraph(current, subgraph),
+        );
         setExpanded((current) => new Set(current).add(node.entity_id));
       } catch (caught: unknown) {
         if (seq !== expandSeqRef.current) {
@@ -236,12 +262,22 @@ export function GraphView({
 
   if (missing) {
     return (
-      <Stack component="section" className="graph-view" gap="lg" aria-labelledby="graph-title">
+      <Stack
+        component="section"
+        className="graph-view"
+        gap="lg"
+        aria-labelledby="graph-title"
+      >
         <GraphHeader />
-        <Alert className="library-empty" color="gray" role="note" title="图谱尚未构建">
+        <Alert
+          className="library-empty"
+          color="gray"
+          role="note"
+          title="图谱尚未构建"
+        >
           <p>
-            图谱由笔记投影抽取实体与关系生成，使用「设置」中配置的 LLM 通道；真实抽取
-            可能需要几分钟，完成后画布自动加载。
+            图谱由笔记投影抽取实体与关系生成，使用「设置」中配置的 LLM
+            通道；真实抽取 可能需要几分钟，完成后画布自动加载。
           </p>
           <LlmReadinessHint onGoToSettings={onGoToSettings} />
           {buildNote !== null && (
@@ -249,14 +285,21 @@ export function GraphView({
               {buildNote}
             </p>
           )}
-          {actionError !== null && <Alert color="red" role="alert">{actionError}</Alert>}
+          {actionError !== null && (
+            <Alert color="red" role="alert">
+              {actionError}
+            </Alert>
+          )}
           {/* 构建成功但数据面刷新失败（loadGraph 内部吞错）不得静默：
               否则「尚未构建」卡与「已构建」note 同屏矛盾 */}
           {loadError !== null && (
-            <Alert color="red" role="alert">{loadError}</Alert>
+            <Alert color="red" role="alert">
+              {loadError}
+            </Alert>
           )}
           {loadError !== null && (
-            <Button variant="default"
+            <Button
+              variant="default"
               type="button"
               className="button-secondary"
               disabled={building}
@@ -265,7 +308,11 @@ export function GraphView({
               重试读取
             </Button>
           )}
-          <Button type="button" disabled={building} onClick={() => void runBuild()}>
+          <Button
+            type="button"
+            disabled={building}
+            onClick={() => void runBuild()}
+          >
             {building ? "构建中…（可能需要几分钟）" : "构建图谱"}
           </Button>
         </Alert>
@@ -275,9 +322,15 @@ export function GraphView({
 
   if (loadError !== null && model === null) {
     return (
-      <Alert className="status-card" color="red" role="alert" title="图谱读取失败">
+      <Alert
+        className="status-card"
+        color="red"
+        role="alert"
+        title="图谱读取失败"
+      >
         <p>{loadError}</p>
-        <Button variant="default"
+        <Button
+          variant="default"
           type="button"
           className="button-secondary"
           onClick={() => void loadGraph()}
@@ -290,7 +343,12 @@ export function GraphView({
 
   if (model === null) {
     return (
-      <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
+      <Group
+        className="settings-loading"
+        role="status"
+        aria-live="polite"
+        gap="sm"
+      >
         <Loader size="sm" />
         正在加载图谱…
       </Group>
@@ -298,10 +356,16 @@ export function GraphView({
   }
 
   return (
-    <Stack component="section" className="graph-view" gap="lg" aria-labelledby="graph-title">
+    <Stack
+      component="section"
+      className="graph-view"
+      gap="lg"
+      aria-labelledby="graph-title"
+    >
       <GraphHeader
         action={
-          <Button variant="default"
+          <Button
+            variant="default"
             type="button"
             className="button-secondary"
             disabled={building}
@@ -326,9 +390,19 @@ export function GraphView({
       {/* 已建态数据保留时 loadError 无渲染落点（全屏错误卡仅在 model===null）：
           生成成功但刷新失败必须显式告警，防统计与画布静默陈旧 */}
       {loadError !== null && (
-        <Alert className="status-card" color="red" role="alert" title="图谱刷新失败">
+        <Alert
+          className="status-card"
+          color="red"
+          role="alert"
+          title="图谱刷新失败"
+        >
           <p>{loadError}</p>
-          <Button variant="default" type="button" className="button-secondary" onClick={() => void loadGraph()}>
+          <Button
+            variant="default"
+            type="button"
+            className="button-secondary"
+            onClick={() => void loadGraph()}
+          >
             重试读取
           </Button>
         </Alert>
@@ -350,13 +424,18 @@ export function GraphView({
             placeholder="按实体名搜索…"
             onChange={(event) => setSearchQuery(event.target.value)}
           />
-          <Button type="submit" loading={searching} disabled={searchQuery.trim() === ""}>
+          <Button
+            type="submit"
+            loading={searching}
+            disabled={searchQuery.trim() === ""}
+          >
             {searching ? "搜索中…" : "搜索"}
           </Button>
         </form>
         {truncated && (
           <p className="graph-truncated" role="status">
-            已截断：当前展示 {model.nodes.length} / 全图 {model.totalNodes} 个实体。
+            已截断：当前展示 {model.nodes.length} / 全图 {model.totalNodes}{" "}
+            个实体。
           </p>
         )}
       </div>
@@ -367,6 +446,48 @@ export function GraphView({
         </p>
       )}
 
+      <GraphBody
+        model={model}
+        selected={selected}
+        onSelect={setSelected}
+        searchResults={searchResults}
+        searchTotal={searchTotal}
+        searchTruncated={searchTruncated}
+        expanding={expanding}
+        expanded={expanded}
+        onExpandNeighborhood={expandNeighborhood}
+        onAskEntity={onAskEntity}
+      />
+    </Stack>
+  );
+}
+
+// 画布主体：搜索结果、画布、实体详情面板。
+function GraphBody({
+  model,
+  selected,
+  onSelect,
+  searchResults,
+  searchTotal,
+  searchTruncated,
+  expanding,
+  expanded,
+  onExpandNeighborhood,
+  onAskEntity,
+}: {
+  model: GraphModel;
+  selected: GraphNode | null;
+  onSelect: (node: GraphNode) => void;
+  searchResults: GraphNode[] | null;
+  searchTotal: number;
+  searchTruncated: boolean;
+  expanding: boolean;
+  expanded: Set<string>;
+  onExpandNeighborhood: (node: GraphNode) => Promise<void>;
+  onAskEntity: (name: string) => void;
+}) {
+  return (
+    <>
       {searchResults !== null && searchResults.length > 0 && (
         <div className="graph-search-results" aria-label="搜索结果">
           <p className="hint" role="status">
@@ -385,7 +506,7 @@ export function GraphView({
                 }
                 variant="light"
                 title={node.name}
-                onClick={() => setSelected(node)}
+                onClick={() => onSelect(node)}
               >
                 {node.name}
               </Button>
@@ -399,10 +520,17 @@ export function GraphView({
           nodes={model.nodes}
           edges={model.edges}
           selectedId={selected?.entity_id ?? null}
-          onSelect={setSelected}
+          onSelect={onSelect}
         />
         {selected !== null && (
-          <Paper component="aside" withBorder shadow="xs" radius="md" className="graph-panel" aria-label="实体详情">
+          <Paper
+            component="aside"
+            withBorder
+            shadow="xs"
+            radius="md"
+            className="graph-panel"
+            aria-label="实体详情"
+          >
             <h3>{selected.name}</h3>
             <dl className="graph-panel-meta">
               <div>
@@ -415,14 +543,18 @@ export function GraphView({
               </div>
               <div>
                 <dt>社区</dt>
-                <dd>{selected.community_id === null ? "未分配" : `#${selected.community_id}`}</dd>
+                <dd>
+                  {selected.community_id === null
+                    ? "未分配"
+                    : `#${selected.community_id}`}
+                </dd>
               </div>
             </dl>
             <div className="graph-panel-actions">
               <Button
                 type="button"
                 disabled={expanding || expanded.has(selected.entity_id)}
-                onClick={() => void expandNeighborhood(selected)}
+                onClick={() => void onExpandNeighborhood(selected)}
               >
                 {expanded.has(selected.entity_id)
                   ? "邻域已展开"
@@ -430,27 +562,38 @@ export function GraphView({
                     ? "展开中…"
                     : "展开邻域"}
               </Button>
-              <Button variant="default" type="button" className="button-secondary" onClick={() => onAskEntity(selected.name)}>
+              <Button
+                variant="default"
+                type="button"
+                className="button-secondary"
+                onClick={() => onAskEntity(selected.name)}
+              >
                 在问答中查询
               </Button>
             </div>
           </Paper>
         )}
       </div>
-    </Stack>
+    </>
   );
 }
 
 function GraphHeader({ action }: { action?: ReactNode }) {
   return (
-    <Group component="header" className="graph-header" align="flex-start" justify="space-between" wrap="wrap">
+    <Group
+      component="header"
+      className="graph-header"
+      align="flex-start"
+      justify="space-between"
+      wrap="wrap"
+    >
       <div>
         <h2 id="graph-title">图谱</h2>
         <p className="hint">点击节点查看详情，服务端保证查询有界。</p>
       </div>
-      {action !== undefined && <div className="graph-header-actions">{action}</div>}
+      {action !== undefined && (
+        <div className="graph-header-actions">{action}</div>
+      )}
     </Group>
   );
 }
-
-export default GraphView;

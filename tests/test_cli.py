@@ -1,5 +1,6 @@
 """CLI 冒烟测试。"""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ _LLM_ONLY = ResolvedChannel(
 )
 
 
-def _raises(error: Exception):
+def _raises(error: Exception) -> Callable[..., None]:
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise error
 
@@ -35,7 +36,7 @@ def test_serve_fails_fast_on_unreadable_config_with_accurate_copy(
     cfg.chmod(0o000)
     # 若真的起服则立即失败，避免用例挂住端口。
     monkeypatch.setattr(
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("serve 不应走到起服")),
     )
     try:
@@ -52,7 +53,9 @@ def test_serve_rejects_illegal_llm_protocol_flag(
 ) -> None:
     """命令行边界：`--llm-protocol` 的枚举在解析阶段就拒，非法值交不进运行期。"""
     started: list[bool] = []
-    monkeypatch.setattr("siku.cli.uvicorn.run", lambda *_a, **_k: started.append(True))
+    monkeypatch.setattr(
+        "siku.cli.commands.serve.uvicorn.run", lambda *_a, **_k: started.append(True)
+    )
     result = runner.invoke(app, ["serve", "--port", "8195", "--llm-protocol", "bogus"])
     assert result.exit_code == 2
     assert started == []
@@ -74,7 +77,7 @@ def test_serve_startup_warning_names_the_invalid_field(
     cfg = tmp_path / "config.toml"
     monkeypatch.setattr("siku.model_supply.config_file_path", lambda: cfg)
     cfg.write_text('[llm]\nprotocol = "gemini-native"\n', encoding="utf-8")
-    monkeypatch.setattr("siku.cli.uvicorn.run", lambda *_a, **_k: None)
+    monkeypatch.setattr("siku.cli.commands.serve.uvicorn.run", lambda *_a, **_k: None)
     monkeypatch.setenv("DASHSCOPE_API_KEY", "")  # 关掉厂商回退，逼出文件层解析
     result = runner.invoke(app, ["serve", "--port", "8196"])
     assert result.exit_code == 0
@@ -93,7 +96,7 @@ def test_serve_reports_invalid_env_protocol_when_config_also_corrupt(
     cfg.write_text("not [valid toml", encoding="utf-8")
     uvicorn_calls: list[tuple[object, str, int]] = []
     monkeypatch.setattr(
-        "siku.cli.uvicorn.run",
+        "siku.cli.commands.serve.uvicorn.run",
         lambda application, *, host, port: uvicorn_calls.append((application, host, port)),
     )
     monkeypatch.setenv("SIKU_LLM_PROTOCOL", "totally-bogus-protocol")
@@ -118,8 +121,8 @@ def test_supply_banner_corrupt_config_is_not_reported_as_unconfigured(
     corrupt = ModelConfigFileError(
         "Model supply config file is not valid TOML", "其中 [llm] protocol 取值不在允许范围"
     )
-    monkeypatch.setattr("siku.cli.resolve_embedding_channel", _raises(corrupt))
-    monkeypatch.setattr("siku.cli.resolve_rerank_channel", _raises(corrupt))
+    monkeypatch.setattr("siku.cli.core.resolve_embedding_channel", _raises(corrupt))
+    monkeypatch.setattr("siku.cli.core.resolve_rerank_channel", _raises(corrupt))
     _announce_supply_channels(ChannelValues(), ChannelValues(), _LLM_ONLY)
     out = capsys.readouterr().err
     assert "embedding=配置文件无效" in out

@@ -18,16 +18,18 @@ from siku.qa.errors import AnswerOutputError
 from siku.qa.models import MAX_CONTEXT_CHARS, ContextPacker
 from siku.qa.service import AnswerService
 from siku.retrieve.errors import InvalidQueryError
-from siku.retrieve.models import SearchResult
+from siku.retrieve.models import Citation, SearchResult
 
 
 def result(chunk_id: str = "chunk-1", text: str = "证据正文") -> SearchResult:
     return SearchResult(
         chunk_id=chunk_id,
-        source_name="architecture.md",
-        note_path="notes/architecture.md",
-        source_hash="a" * 64,
-        anchor="本地优先",
+        citation=Citation(
+            source_name="architecture.md",
+            note_path="notes/architecture.md",
+            source_hash="a" * 64,
+            anchor="本地优先",
+        ),
         text=text,
         bm25_score=1.0,
         vector_score=0.9,

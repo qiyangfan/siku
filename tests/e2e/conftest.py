@@ -13,11 +13,12 @@ import socket
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
 import pytest
-from fake_channels import EMBEDDING_DIMENSIONS, FakeChannelServer
+from tests.e2e.fake_channels import EMBEDDING_DIMENSIONS, FakeChannelServer
 
 SEED_MARKER = "E2E-SEED-FACT-c41d7a"
 SEED_MD_NAME = "seed-note.md"
@@ -43,7 +44,7 @@ SEED_PDF_PAGES = ("墨丘山地质勘察报告。本页记录锡库星北麓岩�
 
 
 @pytest.fixture(scope="session")
-def fake_server() -> FakeChannelServer:
+def fake_server() -> Iterator[FakeChannelServer]:
     server = FakeChannelServer(seed_marker=SEED_MARKER)
     server.start()
     yield server
@@ -81,7 +82,7 @@ class ServeProcess:
 def serve(
     fake_server: FakeChannelServer,
     tmp_path_factory: pytest.TempPathFactory,
-) -> ServeProcess:
+) -> Iterator[ServeProcess]:
     vault = tmp_path_factory.mktemp("vault")
     data_dir = tmp_path_factory.mktemp("data")
     env = _clean_env(tmp_path_factory)

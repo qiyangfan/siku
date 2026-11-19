@@ -1,7 +1,6 @@
-"""桌面资料库：只读清单推导与进程内摄取/重建任务管理。
+"""桌面资料库：上传暂存与进程内摄取/重建任务管理。
 
-清单派生自既有摄取事实（attachments/ 原件 + notes/ 投影 frontmatter + 索引
-manifest），不复制第二份事实存储。任务状态保存在进程内存，任务串行执行；
+只读清单推导见 `siku.api.library_view`。任务状态保存在进程内存，任务串行执行；
 重启后任务状态丢失，重新执行依靠幂等语义。
 """
 
@@ -10,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import re
 import tempfile
 import threading
 from collections.abc import Callable
@@ -22,30 +20,17 @@ from uuid import uuid4
 from filelock import FileLock, Timeout
 
 from siku.api.messages import ingest_error_message, map_domain_error
-from siku.api.models import (
-    LibraryJobItemResponse,
-    LibraryJobResponse,
-    LibraryResponse,
-    LibrarySourceResponse,
-)
-from siku.extractors import extractor_registry
+from siku.api.models import LibraryJobItemResponse, LibraryJobResponse
 from siku.graph.refresh import GraphRefreshOutcome
 from siku.ingest import IngestError, IngestReport
-from siku.retrieve.errors import RetrievalError
-from siku.retrieve.indexer import database_path
-from siku.retrieve.models import DocumentRecord, IndexReport
-from siku.retrieve.notes_reader import read_frontmatter
-from siku.retrieve.store import SqliteIndex
+from siku.retrieve.models import IndexReport
 from siku.sync.locking import library_lock_path
-from siku.sync.registry import SyncRegistry, SyncTombstone
-from siku.sync.removal import USER_REMOVED_REASON, ensure_library_writable
+from siku.sync.registry import SyncRegistry
+from siku.sync.removal import ensure_library_writable
 from siku.sync.scanner import SourcePlan
 from siku.sync.service import (
-    QUARANTINE_DIR_NAME,
     ScanObserver,
     ScanOpResult,
-    _doc_files,
-    _quarantine_files,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,94 +39,6 @@ logger = logging.getLogger(__name__)
 # 残留文件位于系统临时目录，可安全忽略。
 STAGING_ROOT = Path(tempfile.gettempdir()) / "siku-uploads"
 _STAGE_IO_CHUNK = 1024 * 1024
-# 附件文件名中嵌入的 source_id 后缀（pipeline._artifact_stem 命名约定）
-_SOURCE_ID_SUFFIX = re.compile(r"--[0-9a-f]{8,64}$")
-
-IndexRunner = Callable[[bool], IndexReport]
-# 图谱自动维护执行体：返回执行或跳过结果及通知。
-GraphRefreshRunner = Callable[[], GraphRefreshOutcome]
-IngestHandler = Callable[[Path, Path], IngestReport]
-# 扫描执行体签名：(full, 槽外计划或 None, 观察者)。None 时由任务体自行生成计划。
-ScanRunner = Callable[[bool, list[SourcePlan] | None, ScanObserver], None]
-PurgeRunner = Callable[[ScanObserver], int]
-# 单来源确认移除执行体：返回是否完整收尾（False = 取消或可重试失败）
-RemoveRunner = Callable[[str, ScanObserver], bool]
-# 调度线程的槽外检测提供者
-PlanProvider = Callable[[bool], list[SourcePlan]]
-JobKind = Literal["ingest", "rebuild", "scan", "purge", "remove"]
-JobState = Literal["running", "succeeded", "failed", "cancelled"]
-JobPhase = Literal["scanning", "ingesting", "purging", "indexing"]
-ItemStatus = Literal["created", "updated", "skipped", "ignored", "failed", "removed"]
-
-
-class LibraryJobBusyError(RuntimeError):
-    """已有任务在跑时再次触发（HTTP 409 library_job_busy）。"""
-
-
-class LibraryJobNotRunningError(RuntimeError):
-    """取消一个非运行中任务（HTTP 409 library_job_not_running）。"""
-
-
-@dataclass
-class _JobItem:
-    name: str
-    path: str
-    status: ItemStatus
-    detail: str | None = None
-
-
-@dataclass
-class _Job:
-    job_id: str
-    kind: JobKind
-    state: JobState = "running"
-    phase: JobPhase = "ingesting"
-    total: int = 0
-    done: int = 0
-    failed: int = 0
-    current: str | None = None
-    items: list[_JobItem] = field(default_factory=list)
-    error: str | None = None
-    # 收尾阶段生成的通知（图谱刷新结果或失败原因）
-    notice: str | None = None
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(_STAGE_IO_CHUNK), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-@dataclass(frozen=True)
-class _DigestEntry:
-    """记录文件 stat 指纹与对应完整哈希。"""
-
-    size: int
-    mtime_ns: int
-    digest: str
-
-
-class AttachmentDigestCache:
-    """按（大小, mtime）缓存附件 SHA-256，命中时免读盘。
-
-    大小与 mtime 相同的内容替换可能漏检，摄取仍以真实 ``source_hash`` 为准。
-    缓存只驻留内存；并发请求可能重复计算同一文件，但不影响结果。
-    """
-
-    def __init__(self) -> None:
-        self._entries: dict[str, _DigestEntry] = {}
-
-    def digest_of(self, path: Path) -> str:
-        stat = path.stat()
-        key = str(path.absolute())
-        entry = self._entries.get(key)
-        if entry is not None and entry.size == stat.st_size and entry.mtime_ns == stat.st_mtime_ns:
-            return entry.digest
-        digest = _sha256_file(path)
-        self._entries[key] = _DigestEntry(stat.st_size, stat.st_mtime_ns, digest)
-        return digest
 
 
 def stage_upload(filename: str, stream: BinaryIO) -> Path:
@@ -177,230 +74,85 @@ def discard_staged(path: Path) -> None:
         logger.debug("staged cleanup skipped: path=%s", path)
 
 
-# ---- 只读清单推导 ----
+IndexRunner = Callable[[bool], IndexReport]
+# 图谱自动维护执行体：返回执行或跳过结果及通知。
+GraphRefreshRunner = Callable[[], GraphRefreshOutcome]
+IngestHandler = Callable[[Path, Path], IngestReport]
+# 扫描执行体签名：(full, 槽外计划或 None, 观察者)。None 时由任务体自行生成计划。
+ScanRunner = Callable[[bool, list[SourcePlan] | None, ScanObserver], None]
+PurgeRunner = Callable[[ScanObserver], int]
+# 单来源确认移除执行体：返回是否完整收尾（False = 取消或可重试失败）
+RemoveRunner = Callable[[str, ScanObserver], bool]
+# 调度线程的槽外检测提供者
+PlanProvider = Callable[[bool], list[SourcePlan]]
+JobKind = Literal["ingest", "rebuild", "scan", "purge", "remove"]
+JobState = Literal["running", "succeeded", "failed", "cancelled"]
+JobPhase = Literal["scanning", "ingesting", "purging", "indexing"]
+ItemStatus = Literal["created", "updated", "skipped", "ignored", "failed", "removed"]
 
 
-def _index_manifest(data_dir: Path) -> dict[str, tuple[str, str]]:
-    """读索引 manifest（source_id → (source_hash, note_path)）；索引缺失/损坏返回空。"""
-    index = SqliteIndex.open_if_exists(database_path(data_dir))
-    if index is None:
-        return {}
-    try:
-        return index.source_manifest()
-    finally:
-        index.close()
+@dataclass(frozen=True)
+class _JobTargets:
+    """任务管理器的目标环境；三个字段总是一起传递。"""
+
+    vault: Path
+    data_dir: Path | None = None
+    registry: SyncRegistry | None = None
 
 
-def _index_status_for(
-    source_id: str | None,
-    digest: str,
-    note_rel_path: str,
-    manifest: dict[str, tuple[str, str]],
-) -> Literal["indexed", "stale", "missing"]:
-    """按附件当前哈希判定索引状态（原件是事实源）：manifest 一致才算 indexed。"""
-    if source_id is None:
-        return "missing"
-    entry = manifest.get(source_id)
-    if entry is None:
-        return "missing"
-    if entry == (digest, note_rel_path):
-        return "indexed"
-    return "stale"
+@dataclass(frozen=True)
+class _JobRunners:
+    """任务体的可注入执行器；聚合后管理器只持有两个配置对象。"""
+
+    ingest: IngestHandler
+    index: IndexRunner
+    api_key_env: str
+    scan: ScanRunner | None = None
+    purge: PurgeRunner | None = None
+    remove: RemoveRunner | None = None
+    graph_refresh: GraphRefreshRunner | None = None
 
 
-def _source_row(
-    attachment: Path,
-    vault: Path,
-    notes: Path,
-    whitelist: set[str],
-    manifest: dict[str, tuple[str, str]],
-    tombstones: dict[str, SyncTombstone] | None = None,
-    origins: dict[str, str] | None = None,
-    digest_cache: AttachmentDigestCache | None = None,
-    managed_ids: set[str] | frozenset[str] = frozenset(),
-) -> LibrarySourceResponse:
-    if digest_cache is not None:
-        digest = digest_cache.digest_of(attachment)
-    else:
-        digest = _sha256_file(attachment)
-    note_path = notes / f"{attachment.stem}.md"
-    document: DocumentRecord | None = None
-    if note_path.is_file():
-        try:
-            document = read_frontmatter(note_path, vault)
-        except RetrievalError:
-            # 损坏的投影按待摄取处理，下次摄取会重写。
-            document = None
-    if attachment.suffix.lower() not in whitelist:
-        ingest_status: str = "ignored"
-        index_status: Literal["indexed", "stale", "missing"] = "missing"
-    else:
-        ingest_status = (
-            "pending"
-            if document is None
-            else ("ingested" if document.source_hash == digest else "stale")
-        )
-        source_id = (
-            document.source_id if document is not None else (_source_id_match(attachment.stem))
-        )
-        index_status = _index_status_for(source_id, digest, f"notes/{attachment.stem}.md", manifest)
-    source_id = document.source_id if document is not None else _source_id_match(attachment.stem)
-    # tombstone 覆盖推导状态：user_removed 保持可重试，missing/superseded 可清理。
-    removable = source_id is not None and source_id not in managed_ids
-    if source_id is not None and tombstones is not None:
-        tombstone = tombstones.get(source_id)
-        if tombstone is not None:
-            if tombstone.reason == USER_REMOVED_REASON:
-                ingest_status = "removing"
-                # 未完成的移除保持可重试。
-            else:
-                # 其他标记不可手动移除；missing/superseded 可走全量清理。
-                removable = False
-                if tombstone.reason in ("missing", "superseded") and ingest_status in (
-                    "ingested",
-                    "stale",
-                ):
-                    ingest_status = tombstone.reason
-    name = (
-        document.source_name
-        if document is not None
-        else _SOURCE_ID_SUFFIX.sub("", attachment.stem) + attachment.suffix
-    )
-    return LibrarySourceResponse(
-        name=name,
-        path=attachment.relative_to(vault).as_posix(),
-        source_hash=digest,
-        source_id=source_id,
-        removable=removable,
-        ingest_status=ingest_status,  # type: ignore[arg-type]
-        index_status=index_status,
-        origin_path=(origins or {}).get(source_id or ""),
-    )
+class LibraryJobBusyError(RuntimeError):
+    """已有任务在跑时再次触发（HTTP 409 library_job_busy）。"""
 
 
-def _quarantine_row(
-    original: Path,
-    vault: Path,
-    origins: dict[str, str] | None,
-    digest_cache: AttachmentDigestCache | None = None,
-) -> LibrarySourceResponse:
-    """检疫目录中的原件行：固定为 superseded，索引必不包含。"""
-    if digest_cache is not None:
-        digest = digest_cache.digest_of(original)
-    else:
-        digest = _sha256_file(original)
-    source_id = _source_id_match(original.stem)
-    return LibrarySourceResponse(
-        name=_SOURCE_ID_SUFFIX.sub("", original.stem) + original.suffix,
-        path=original.relative_to(vault).as_posix(),
-        source_hash=digest,
-        source_id=source_id,
-        removable=False,
-        ingest_status="superseded",
-        index_status="missing",
-        origin_path=(origins or {}).get(source_id or ""),
-    )
+class LibraryJobNotRunningError(RuntimeError):
+    """取消一个非运行中任务（HTTP 409 library_job_not_running）。"""
 
 
-def _source_id_match(stem: str) -> str | None:
-    match = _SOURCE_ID_SUFFIX.search(stem)
-    return match.group(0)[2:] if match else None
+@dataclass
+class _JobItem:
+    name: str
+    path: str
+    status: ItemStatus
+    detail: str | None = None
 
 
-def build_library_view(
-    vault: Path,
-    data_dir: Path,
-    *,
-    digest_cache: AttachmentDigestCache | None = None,
-    registry: SyncRegistry | None = None,
-) -> LibraryResponse:
-    """以 attachments/ 为主体推导来源清单；vault 为空或目录缺失时返回空清单。
+@dataclass
+class _JobProgress:
+    total: int = 0
+    done: int = 0
+    failed: int = 0
+    current: str | None = None
 
-    digest_cache 启用 stat 快路径，须按 vault 分实例复用。扫描期间文件消失或不可读
-    时跳过对应行或返回空清单，不报 500。registry 传入时叠加 tombstone 状态与上游
-    路径，并扫描 ``vault/superseded/`` 检疫目录。
-    """
-    attachments = vault / "attachments"
-    notes = vault / "notes"
-    whitelist = set(extractor_registry())
-    manifest = _index_manifest(data_dir)
-    tombstones = registry.list_tombstones() if registry is not None else None
-    origins: dict[str, str] | None = None
-    managed_ids: set[str] = set()
-    if registry is not None:
-        origins = {}
-        for entry in registry.all_entries():
-            origins.setdefault(entry.doc_source_id, entry.upstream_path)
-            managed_ids.add(entry.doc_source_id)
-        for tombstone in (tombstones or {}).values():
-            if tombstone.origin_path:
-                origins.setdefault(tombstone.doc_source_id, tombstone.origin_path)
-    sources: list[LibrarySourceResponse] = []
-    if attachments.is_dir():
-        try:
-            attachment_paths = sorted(path for path in attachments.rglob("*") if path.is_file())
-        except OSError as exc:
-            logger.warning("Attachments directory scan failed: detail=%s", exc)
-            attachment_paths = []
-        for attachment in attachment_paths:
-            try:
-                sources.append(
-                    _source_row(
-                        attachment,
-                        vault,
-                        notes,
-                        whitelist,
-                        manifest,
-                        tombstones,
-                        origins,
-                        digest_cache,
-                        managed_ids,
-                    )
-                )
-            except OSError as exc:
-                logger.debug("library attachment vanished during scan: detail=%s", exc)
-    # 检疫目录只列 attachments/ 下的原件；notes/ 下的投影副本不展示。
-    quarantine_originals = vault / QUARANTINE_DIR_NAME / "attachments"
-    if quarantine_originals.is_dir():
-        try:
-            originals = sorted(path for path in quarantine_originals.iterdir() if path.is_file())
-        except OSError as exc:
-            logger.warning("Quarantine directory scan failed: detail=%s", exc)
-            originals = []
-        for original in originals:
-            try:
-                sources.append(_quarantine_row(original, vault, origins, digest_cache))
-            except OSError as exc:
-                logger.debug("library quarantine vanished during scan: detail=%s", exc)
-    # 移除标记仍在但附件行已消失时单独补一行，避免把失败呈现为原件缺失。
-    represented_ids = {row.source_id for row in sources if row.source_id is not None}
-    for source_id, tombstone in (tombstones or {}).items():
-        if tombstone.reason != USER_REMOVED_REASON or source_id in represented_ids:
-            continue
-        remnants = [
-            *_quarantine_files(vault, source_id),
-            *_doc_files(vault, source_id),
-        ]
-        if remnants:
-            name = _SOURCE_ID_SUFFIX.sub("", remnants[0].stem) + remnants[0].suffix
-            path = remnants[0].relative_to(vault).as_posix()
-        else:
-            name = f"移除未完成的资料（{source_id[:8]}）"
-            path = f"attachments/（已删除，{source_id[:8]}）"
-        sources.append(
-            LibrarySourceResponse(
-                name=name,
-                path=path,
-                source_hash="",
-                source_id=source_id,
-                removable=source_id not in managed_ids,
-                ingest_status="removing",
-                index_status="missing",
-                origin_path=tombstone.origin_path,
-            )
-        )
-    sources.sort(key=lambda source: source.path)
-    return LibraryResponse(sources=sources)
+
+@dataclass
+class _JobResult:
+    error: str | None = None
+    # 收尾阶段生成的通知（图谱刷新结果或失败原因）
+    notice: str | None = None
+
+
+@dataclass
+class _Job:
+    job_id: str
+    kind: JobKind
+    state: JobState = "running"
+    phase: JobPhase = "ingesting"
+    progress: _JobProgress = field(default_factory=_JobProgress)
+    items: list[_JobItem] = field(default_factory=list)
+    result: _JobResult = field(default_factory=_JobResult)
 
 
 # ---- 进程内任务管理（单任务槽） ----
@@ -429,16 +181,16 @@ class LibraryJobManager:
         remove_runner: RemoveRunner | None = None,
         graph_refresh_runner: GraphRefreshRunner | None = None,
     ) -> None:
-        self._vault = vault
-        self._data_dir = data_dir
-        self._registry = registry
-        self._ingest_handler = ingest_handler
-        self._index_runner = index_runner
-        self._api_key_env = api_key_env
-        self._scan_runner = scan_runner
-        self._purge_runner = purge_runner
-        self._remove_runner = remove_runner
-        self._graph_refresh_runner = graph_refresh_runner
+        self._targets = _JobTargets(vault=vault, data_dir=data_dir, registry=registry)
+        self._runners = _JobRunners(
+            ingest=ingest_handler,
+            index=index_runner,
+            api_key_env=api_key_env,
+            scan=scan_runner,
+            purge=purge_runner,
+            remove=remove_runner,
+            graph_refresh=graph_refresh_runner,
+        )
         self._lock = threading.Lock()
         self._job: _Job | None = None
         self._staged: list[Path] = []
@@ -467,8 +219,8 @@ class LibraryJobManager:
 
     def _recover_before_write(self) -> None:
         """任务体第一步（写锁已持有）：完成上次中断的移除发布。"""
-        if self._registry is not None and self._data_dir is not None:
-            ensure_library_writable(self._data_dir, self._registry)
+        if self._targets.registry is not None and self._targets.data_dir is not None:
+            ensure_library_writable(self._targets.data_dir, self._targets.registry)
 
     def _spawn(self, target: Callable[..., None], job: _Job, *args: object) -> None:
         """启动任务线程；写锁在任务所有写入与发布结束后释放。
@@ -490,9 +242,9 @@ class LibraryJobManager:
                     )
                     with self._lock:
                         job.state = "failed"
-                        job.current = None
-                        job.error = map_domain_error(
-                            exc, api_key_env=self._api_key_env, surface="http"
+                        job.progress.current = None
+                        job.result.error = map_domain_error(
+                            exc, api_key_env=self._runners.api_key_env, surface="http"
                         ).message
             finally:
                 self._release_write_lock()
@@ -505,7 +257,9 @@ class LibraryJobManager:
         with self._lock:
             self._raise_if_busy()
             self._acquire_write_lock()
-            job = _Job(job_id=uuid4().hex, kind="ingest", total=len(staged_paths))
+            job = _Job(
+                job_id=uuid4().hex, kind="ingest", progress=_JobProgress(total=len(staged_paths))
+            )
             self._job = job
             self._staged = list(staged_paths)
             self._cancel = threading.Event()
@@ -533,7 +287,7 @@ class LibraryJobManager:
         ``plans`` 非 None 时只执行槽外已算好的计划；None 时由任务体自行计划并执行。
         写锁冲突时自动调度跳过本轮，手动扫描报忙。
         """
-        if self._scan_runner is None:
+        if self._runners.scan is None:
             raise RuntimeError("scan runner is not configured")
         with self._lock:
             self._raise_if_busy()
@@ -558,7 +312,7 @@ class LibraryJobManager:
 
     def start_purge(self) -> LibraryJobResponse:
         """物理清理全部已标记文档；唯一删除路径，端点层已强制确认标记。"""
-        if self._purge_runner is None:
+        if self._runners.purge is None:
             raise RuntimeError("purge runner is not configured")
         with self._lock:
             self._raise_if_busy()
@@ -573,12 +327,17 @@ class LibraryJobManager:
 
     def start_remove(self, source_id: str) -> LibraryJobResponse:
         """单来源确认移除任务；资格由端点层预判，任务体取得写锁后复核。"""
-        if self._remove_runner is None:
+        if self._runners.remove is None:
             raise RuntimeError("remove runner is not configured")
         with self._lock:
             self._raise_if_busy()
             self._acquire_write_lock()
-            job = _Job(job_id=uuid4().hex, kind="remove", phase="purging", total=1)
+            job = _Job(
+                job_id=uuid4().hex,
+                kind="remove",
+                phase="purging",
+                progress=_JobProgress(total=1),
+            )
             self._job = job
             self._staged = []
             self._cancel = threading.Event()
@@ -615,18 +374,18 @@ class LibraryJobManager:
             kind=job.kind,
             state=job.state,
             phase=job.phase,
-            total=job.total,
-            done=job.done,
-            failed=job.failed,
-            current=job.current,
+            total=job.progress.total,
+            done=job.progress.done,
+            failed=job.progress.failed,
+            current=job.progress.current,
             items=[
                 LibraryJobItemResponse(
                     name=item.name, path=item.path, status=item.status, detail=item.detail
                 )
                 for item in job.items
             ],
-            error=job.error,
-            notice=job.notice,
+            error=job.result.error,
+            notice=job.result.notice,
         )
 
     def _append_item(self, job: _Job, item: _JobItem) -> None:
@@ -649,9 +408,9 @@ class LibraryJobManager:
                 return
         with self._lock:
             job.phase = "indexing"
-            job.current = None
+            job.progress.current = None
         try:
-            self._index_runner(rebuild)
+            self._runners.index(rebuild)
         except Exception as exc:
             logger.debug(
                 "library index sync failed: error_class=%s detail=%s",
@@ -660,10 +419,12 @@ class LibraryJobManager:
                 exc_info=True,
             )
             # 错误文案面向桌面用户：指向设置页，不含配置路径与命令行教程。
-            message = map_domain_error(exc, api_key_env=self._api_key_env, surface="http").message
+            message = map_domain_error(
+                exc, api_key_env=self._runners.api_key_env, surface="http"
+            ).message
             with self._lock:
                 job.state = "failed"
-                job.error = message
+                job.result.error = message
             return
         if not rebuild:
             self._refresh_graph_after_index(job, cancelled=cancelled)
@@ -675,10 +436,10 @@ class LibraryJobManager:
 
         取消的任务不触发；刷新失败只写通知，不改任务终态，旧图谱保持可读。
         """
-        if cancelled or self._graph_refresh_runner is None:
+        if cancelled or self._runners.graph_refresh is None:
             return
         try:
-            outcome = self._graph_refresh_runner()
+            outcome = self._runners.graph_refresh()
         except Exception as exc:
             logger.debug(
                 "library graph auto refresh failed: error_class=%s detail=%s",
@@ -687,11 +448,11 @@ class LibraryJobManager:
                 exc_info=True,
             )
             with self._lock:
-                job.notice = "图谱自动更新失败：旧图谱保持有效，请稍后重试或显式更新图谱。"
+                job.result.notice = "图谱自动更新失败：旧图谱保持有效，请稍后重试或显式更新图谱。"
             return
         if outcome.message is not None:
             with self._lock:
-                job.notice = outcome.message
+                job.result.notice = outcome.message
 
     def _record_report(self, job: _Job, source_name: str, report: IngestReport) -> None:
         for item in report.items:
@@ -699,7 +460,7 @@ class LibraryJobManager:
                 job,
                 _JobItem(
                     name=item.source_path.name,
-                    path=item.attachment_path.relative_to(self._vault).as_posix(),
+                    path=item.attachment_path.relative_to(self._targets.vault).as_posix(),
                     status=item.status,
                 ),
             )
@@ -740,26 +501,26 @@ class LibraryJobManager:
                 cancelled = True
                 break
             with self._lock:
-                job.current = path.name
+                job.progress.current = path.name
             try:
-                report = self._ingest_handler(path, self._vault)
+                report = self._runners.ingest(path, self._targets.vault)
             except Exception as exc:  # IngestError 与未预期异常都归一为失败条目
                 self._record_failure(job, path, exc)
                 with self._lock:
-                    job.failed += 1
+                    job.progress.failed += 1
             else:
                 self._record_report(job, path.name, report)
             finally:
                 discard_staged(path)
                 with self._lock:
-                    job.done += 1
-                    job.current = None
+                    job.progress.done += 1
+                    job.progress.current = None
             processed += 1
         if cancelled:
             for path in staged[processed:]:
                 discard_staged(path)
             with self._lock:
-                job.current = None
+                job.progress.current = None
             # 取消后仍发布已入库的变更，避免文档暂时无法检索。
             self._finish_with_index(job, rebuild=False, cancelled=True)
             return
@@ -773,61 +534,67 @@ class LibraryJobManager:
 
         顶层异常必须转为任务失败，否则任务槽会一直返回 409。
         """
-        assert self._scan_runner is not None
+        scan_runner = self._runners.scan
+        if scan_runner is None:
+            raise RuntimeError("scan runner is not configured")
         try:
-            self._scan_runner(full, plans, _JobObserver(self, job))
+            scan_runner(full, plans, _JobObserver(self, job))
         except Exception as exc:
             logger.debug(
                 "library scan job failed: error_class=%s", type(exc).__name__, exc_info=True
             )
             with self._lock:
                 job.state = "failed"
-                job.current = None
-                job.error = "扫描执行失败：请查看服务日志后重试；已完成的动作保持有效。"
+                job.progress.current = None
+                job.result.error = "扫描执行失败：请查看服务日志后重试；已完成的动作保持有效。"
             return
         if self._cancel.is_set():
             with self._lock:
-                job.current = None
+                job.progress.current = None
             # 取消后仍发布已入库或已清理的变更。
             self._finish_with_index(job, rebuild=False, cancelled=True)
             return
         self._finish_with_index(job, rebuild=False)
 
     def _run_purge(self, job: _Job) -> None:
-        assert self._purge_runner is not None
+        purge_runner = self._runners.purge
+        if purge_runner is None:
+            raise RuntimeError("purge runner is not configured")
         # user_removed 已由无模型消减发布完成，跳过需要 embedding 的索引同步。
-        only_user_removals = self._registry is not None and all(
+        only_user_removals = self._targets.registry is not None and all(
             tombstone.reason == "user_removed"
-            for tombstone in self._registry.list_tombstones().values()
+            for tombstone in self._targets.registry.list_tombstones().values()
         )
         try:
-            self._purge_runner(_JobObserver(self, job))
+            purge_runner(_JobObserver(self, job))
         except Exception as exc:
             logger.debug(
                 "library purge job failed: error_class=%s", type(exc).__name__, exc_info=True
             )
             with self._lock:
                 job.state = "failed"
-                job.current = None
-                job.error = "清理执行失败：请查看服务日志后重试；未删除的标记仍保留。"
+                job.progress.current = None
+                job.result.error = "清理执行失败：请查看服务日志后重试；未删除的标记仍保留。"
             return
         if only_user_removals:
             with self._lock:
-                job.current = None
+                job.progress.current = None
                 job.state = "cancelled" if self._cancel.is_set() else "succeeded"
             return
         if self._cancel.is_set():
             with self._lock:
-                job.current = None
+                job.progress.current = None
             self._finish_with_index(job, rebuild=False, cancelled=True)
             return
         self._finish_with_index(job, rebuild=False)
 
     def _run_remove(self, job: _Job, source_id: str) -> None:
         """移除任务体；索引消减内含在执行体内，收尾不再触发模型相关同步。"""
-        assert self._remove_runner is not None
+        remove_runner = self._runners.remove
+        if remove_runner is None:
+            raise RuntimeError("remove runner is not configured")
         try:
-            completed = self._remove_runner(source_id, _JobObserver(self, job))
+            completed = remove_runner(source_id, _JobObserver(self, job))
         except Exception as exc:
             logger.debug(
                 "library remove job failed: source_id=%s error_class=%s",
@@ -837,20 +604,22 @@ class LibraryJobManager:
             )
             with self._lock:
                 job.state = "failed"
-                job.current = None
-                job.error = map_domain_error(
-                    exc, api_key_env=self._api_key_env, surface="http"
+                job.progress.current = None
+                job.result.error = map_domain_error(
+                    exc, api_key_env=self._runners.api_key_env, surface="http"
                 ).message
             return
         with self._lock:
-            job.current = None
+            job.progress.current = None
             if completed:
                 job.state = "succeeded"
             elif self._cancel.is_set():
                 job.state = "cancelled"
             else:
                 job.state = "failed"
-                job.error = "移除未完成：受管文件、索引或图谱/Wiki 收尾存在失败；可按同一来源重试。"
+                job.result.error = (
+                    "移除未完成：受管文件、索引或图谱/Wiki 收尾存在失败；可按同一来源重试。"
+                )
 
 
 class _JobObserver:
@@ -862,11 +631,11 @@ class _JobObserver:
 
     def set_total(self, total: int) -> None:
         with self._manager._lock:
-            self._job.total = total
+            self._job.progress.total = total
 
     def op_started(self, label: str) -> None:
         with self._manager._lock:
-            self._job.current = label
+            self._job.progress.current = label
 
     def op_finished(self, result: ScanOpResult) -> None:
         with self._manager._lock:
@@ -878,10 +647,10 @@ class _JobObserver:
                     detail=result.detail,
                 )
             )
-            self._job.done += 1
+            self._job.progress.done += 1
             if result.status == "failed":
-                self._job.failed += 1
-            self._job.current = None
+                self._job.progress.failed += 1
+            self._job.progress.current = None
 
     def is_cancelled(self) -> bool:
         return self._manager._cancel.is_set()

@@ -80,7 +80,8 @@ def fetch_binary(target: PandocTarget, *, cache_dir: Path = CACHE_DIR) -> Path:
     scratch = archive_path.with_name(f".{archive_path.name}.download")
     try:
         with (
-            urllib.request.urlopen(target.url, timeout=120) as response,
+            # URL 来自仓内固定清单中的 https 地址，不接收用户输入。
+            urllib.request.urlopen(target.url, timeout=120) as response,  # noqa: S310
             scratch.open("wb") as sink,
         ):
             shutil.copyfileobj(response, sink, _IO_CHUNK)

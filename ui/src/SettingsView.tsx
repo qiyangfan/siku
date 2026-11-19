@@ -64,9 +64,7 @@ function invalidTokenText(token: string): string {
 type SaveState = "idle" | "loading";
 
 type ChannelTestState =
-  | { kind: "loading" }
-  | { kind: "done"; ok: boolean; message: string }
-  | null;
+  { kind: "loading" } | { kind: "done"; ok: boolean; message: string } | null;
 
 // 厂商预设（UI 层静态表）；api_key_env 为 null 表示本地端点无凭证。
 type VendorPreset = {
@@ -298,11 +296,24 @@ const EMPTY_FORM: ChannelForm = {
   clearStoredKey: false,
 };
 
-const CHANNEL_META: { key: ChannelName; title: string; description: string }[] = [
-  { key: "llm", title: "LLM 通道", description: "问答、图谱与 wiki 总目使用的生成模型。" },
-  { key: "embedding", title: "embedding 通道", description: "检索的向量化通道；更换模型后需全量重建索引。" },
-  { key: "rerank", title: "rerank 通道（可选）", description: "留空即不启用重排，检索按 RRF 融合分数直接排序。" },
-];
+const CHANNEL_META: { key: ChannelName; title: string; description: string }[] =
+  [
+    {
+      key: "llm",
+      title: "LLM 通道",
+      description: "问答、图谱与 wiki 总目使用的生成模型。",
+    },
+    {
+      key: "embedding",
+      title: "embedding 通道",
+      description: "检索的向量化通道；更换模型后需全量重建索引。",
+    },
+    {
+      key: "rerank",
+      title: "rerank 通道（可选）",
+      description: "留空即不启用重排，检索按 RRF 融合分数直接排序。",
+    },
+  ];
 
 // 与内核 SIKU_LLM_* / SIKU_EMBEDDING_* / SIKU_RERANK_* 前缀一致，用于占位示例
 const CHANNEL_KEY_ENV_PREFIX: Record<ChannelName, string> = {
@@ -342,7 +353,9 @@ function formFrom(view: ChannelSettingsView): ChannelForm {
   };
 }
 
-function formsFrom(settings: SettingsResponse): Record<ChannelName, ChannelForm> {
+function formsFrom(
+  settings: SettingsResponse,
+): Record<ChannelName, ChannelForm> {
   return {
     llm: formFrom(settings.llm),
     embedding: formFrom(settings.embedding),
@@ -368,6 +381,151 @@ function payloadFrom(form: ChannelForm): ChannelSettingsPayload {
   return payload;
 }
 
+function CredentialSection({
+  channel,
+  form,
+  view,
+  setField,
+  setKeyMode,
+}: {
+  channel: ChannelName;
+  form: ChannelForm;
+  view: ChannelSettingsView;
+  setField: (
+    channel: ChannelName,
+    field: keyof ChannelForm,
+    value: string | boolean,
+  ) => void;
+  setKeyMode: (channel: ChannelName, mode: KeyMode) => void;
+}) {
+  return (
+    <Stack className="credential-group" gap="md">
+      <Radio.Group
+        className="credential-mode"
+        label="凭证来源"
+        value={form.key_mode}
+        onChange={(value) => setKeyMode(channel, value)}
+      >
+        <Group className="credential-options" gap="lg" mt="xs" wrap="wrap">
+          <Radio value="direct" label="直接填写 key" />
+          <Radio value="env" label="引用环境变量" />
+        </Group>
+      </Radio.Group>
+      {form.key_mode === "direct" ? (
+        <div className="field">
+          <PasswordInput
+            id={`${channel}-api-key`}
+            label="api_key（只写不回显）"
+            value={form.api_key}
+            onChange={(event) => {
+              setField(channel, "api_key", event.target.value);
+              if (event.target.value !== "") {
+                setField(channel, "clearStoredKey", false);
+              }
+            }}
+            placeholder={view.api_key_set ? "已设置——留空保持不变" : "未设置"}
+            autoComplete="new-password"
+            visibilityToggleButtonProps={{
+              className: "password-visibility-toggle",
+              "aria-label": "显示或隐藏 API key",
+            }}
+          />
+          <p className="hint">
+            明文保存在本机 config.toml（0600）；与环境变量同时存在时，明文优先。
+          </p>
+          {view.api_key_set && (
+            <Checkbox
+              className="field-check"
+              label="清除已保存的 key（保存后生效）"
+              checked={form.clearStoredKey}
+              onChange={(event) => {
+                setField(channel, "clearStoredKey", event.target.checked);
+                if (event.target.checked) {
+                  setField(channel, "api_key", "");
+                }
+              }}
+            />
+          )}
+          {form.api_key_env.trim() !== "" && (
+            <p className="hint">
+              已填写后备 api_key_env：<code>{form.api_key_env}</code>
+              ，继续生效；切换「引用环境变量」可修改。
+            </p>
+          )}
+        </div>
+      ) : (
+        <div className="field">
+          <TextInput
+            id={`${channel}-api-key-env`}
+            label="api_key_env（环境变量名）"
+            type="text"
+            value={form.api_key_env}
+            onChange={(event) =>
+              setField(channel, "api_key_env", event.target.value)
+            }
+            placeholder={`例如 ${CHANNEL_KEY_ENV_PREFIX[channel]}_API_KEY`}
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <p className="hint">
+            key 从该环境变量读取，需在启动 siku 的环境中已设置。
+          </p>
+          {view.api_key_set && (
+            <>
+              <p className="hint hint-warning" role="note">
+                已保存的明文 key 优先生效，需清除后环境变量才会启用：
+              </p>
+              <Checkbox
+                className="field-check"
+                label="清除已保存的 key（保存后生效）"
+                checked={form.clearStoredKey}
+                onChange={(event) => {
+                  setField(channel, "clearStoredKey", event.target.checked);
+                  if (event.target.checked) {
+                    setField(channel, "api_key", "");
+                  }
+                }}
+              />
+            </>
+          )}
+        </div>
+      )}
+    </Stack>
+  );
+}
+
+function TestFooter({
+  channel,
+  testState,
+  runTest,
+}: {
+  channel: ChannelName;
+  testState: ChannelTestState;
+  runTest: (channel: ChannelName) => Promise<void>;
+}) {
+  return (
+    <div className="channel-footer">
+      <Button
+        type="button"
+        className="button-secondary"
+        variant="default"
+        disabled={testState?.kind === "loading"}
+        onClick={() => void runTest(channel)}
+      >
+        {testState?.kind === "loading" ? "测试中…" : "测试连接"}
+      </Button>
+      {testState?.kind === "done" && (
+        <Alert
+          color={testState.ok ? "green" : "red"}
+          role={testState.ok ? "status" : "alert"}
+        >
+          {testState.message}
+        </Alert>
+      )}
+    </div>
+  );
+}
+
 export function SettingsView({
   onSaved,
 }: {
@@ -389,14 +547,19 @@ export function SettingsView({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   // 标记保存是否覆盖了「内容不可解析」的配置文件，避免静默替换。
-  const [overwrittenInvalidConfig, setOverwrittenInvalidConfig] = useState(false);
-  const [testStates, setTestStates] = useState<Record<ChannelName, ChannelTestState>>({
+  const [overwrittenInvalidConfig, setOverwrittenInvalidConfig] =
+    useState(false);
+  const [testStates, setTestStates] = useState<
+    Record<ChannelName, ChannelTestState>
+  >({
     llm: null,
     embedding: null,
     rerank: null,
   });
   // 预设下拉的选中值（仅记录选择，填充后的字段仍可自由编辑；清除选择不回滚已填字段）
-  const [presetIds, setPresetIds] = useState<Record<ChannelName, string | null>>({
+  const [presetIds, setPresetIds] = useState<
+    Record<ChannelName, string | null>
+  >({
     llm: null,
     embedding: null,
     rerank: null,
@@ -432,7 +595,11 @@ export function SettingsView({
     void load();
   }, [load]);
 
-  const setField = (channel: ChannelName, field: keyof ChannelForm, value: string | boolean) => {
+  const setField = (
+    channel: ChannelName,
+    field: keyof ChannelForm,
+    value: string | boolean,
+  ) => {
     setForms((prev) => ({
       ...prev,
       [channel]: { ...prev[channel], [field]: value },
@@ -464,7 +631,9 @@ export function SettingsView({
     if (presetId === null) {
       return;
     }
-    const preset = CHANNEL_PRESETS[channel].find((item) => item.id === presetId);
+    const preset = CHANNEL_PRESETS[channel].find(
+      (item) => item.id === presetId,
+    );
     if (!preset) {
       return;
     }
@@ -502,7 +671,9 @@ export function SettingsView({
       applySettings(response);
       setSaveMessage("设置已保存，无需重启即可生效。");
       setWarnings(response.warnings);
-      setOverwrittenInvalidConfig(response.invalid_config_file_overwritten ?? false);
+      setOverwrittenInvalidConfig(
+        response.invalid_config_file_overwritten ?? false,
+      );
       onSaved?.(response);
     } catch (caught: unknown) {
       setSaveError(
@@ -560,7 +731,12 @@ export function SettingsView({
 
   if (loadError !== null && !blankFormConfirmed) {
     return (
-      <Alert className="status-card" color="red" role="alert" title="设置读取失败">
+      <Alert
+        className="status-card"
+        color="red"
+        role="alert"
+        title="设置读取失败"
+      >
         <p>{loadError}</p>
         <Group gap="sm">
           <Button
@@ -589,7 +765,12 @@ export function SettingsView({
 
   if (views === null && !blankFormConfirmed) {
     return (
-      <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
+      <Group
+        className="settings-loading"
+        role="status"
+        aria-live="polite"
+        gap="sm"
+      >
         <Loader size="sm" />
         正在读取设置…
       </Group>
@@ -609,23 +790,33 @@ export function SettingsView({
     >
       <h2 id="settings-title">模型供给设置</h2>
       {views === null ? (
-        <Alert className="status-card" color="yellow" role="status" title="按空配置显示">
+        <Alert
+          className="status-card"
+          color="yellow"
+          role="status"
+          title="按空配置显示"
+        >
           读取时本机配置文件已损坏、无法读出，下方表单不含任何已存值；保存会以本次提交覆盖
           该文件（若其间你已手动修好，则改为正常合并，是否覆盖由响应的
-          <code>invalid_config_file_overwritten</code> 如实标注）。环境变量层与命令行层不受影响，
-          仍照常生效。
+          <code>invalid_config_file_overwritten</code>{" "}
+          如实标注）。环境变量层与命令行层不受影响， 仍照常生效。
         </Alert>
       ) : (
         <p className="hint settings-path">
-          配置写入 <code>{views.config_path}</code>，保存后免重启生效；环境变量层仍优先于文件层。
+          配置写入 <code>{views.config_path}</code>
+          ，保存后免重启生效；环境变量层仍优先于文件层。
         </p>
       )}
 
       {saveMessage !== null && (
-        <Alert color="green" role="status">{saveMessage}</Alert>
+        <Alert color="green" role="status">
+          {saveMessage}
+        </Alert>
       )}
       {saveError !== null && (
-        <Alert color="red" role="alert" title="设置保存失败">{saveError}</Alert>
+        <Alert color="red" role="alert" title="设置保存失败">
+          {saveError}
+        </Alert>
       )}
       {(views?.ask_readiness?.invalid ?? []).map((token) => (
         <Alert
@@ -645,7 +836,9 @@ export function SettingsView({
         </Alert>
       )}
       {warnings.map((warning) => (
-        <Alert key={warning} color="yellow" role="alert" title="需要重建索引">{warning}</Alert>
+        <Alert key={warning} color="yellow" role="alert" title="需要重建索引">
+          {warning}
+        </Alert>
       ))}
 
       {CHANNEL_META.map(({ key, title, description }) => {
@@ -677,13 +870,16 @@ export function SettingsView({
                   label="接口协议"
                   aria-label="LLM 通道接口协议"
                   value={form.protocol || "openai-chat"}
-                  onChange={(event) => setField(key, "protocol", event.currentTarget.value)}
+                  onChange={(event) =>
+                    setField(key, "protocol", event.currentTarget.value)
+                  }
                   data={LLM_PROTOCOL_OPTIONS}
                 />
                 <p className="hint">
-                  协议决定请求路径与凭证头：anthropic 的请求发往
-                  {" "}<code>{"{base_url}/v1/messages"}</code>，base_url 需填分支根地址
-                  （不要带 /v1 结尾的 OpenAI 兼容路径）；自建网关反代与官方端点平级，
+                  协议决定请求路径与凭证头：anthropic 的请求发往{" "}
+                  <code>{"{base_url}/v1/messages"}</code>，base_url
+                  需填分支根地址 （不要带 /v1 结尾的 OpenAI
+                  兼容路径）；自建网关反代与官方端点平级，
                   按其协议直接手填即可。
                 </p>
               </div>
@@ -694,7 +890,9 @@ export function SettingsView({
                 label="厂商预设"
                 aria-label={`${title}厂商预设`}
                 value={presetIds[key] ?? ""}
-                onChange={(event) => applyPreset(key, event.currentTarget.value || null)}
+                onChange={(event) =>
+                  applyPreset(key, event.currentTarget.value || null)
+                }
                 data={[
                   { value: "", label: "自定义（不自动填充）" },
                   ...CHANNEL_PRESETS[key].map((preset) => ({
@@ -706,8 +904,8 @@ export function SettingsView({
               <p className="hint">
                 {key === "llm"
                   ? "预设含各厂商 OpenAI 兼容端点与 Anthropic 分支（选中即联动接口协议），模型为常用默认、可手改；自建网关反代（muniu / one-api 等）与官方端点平级，选「自定义」手填即可。"
-                  : "预设填入常用端点与模型，可手改。"}
-                {" "}云端 key 需自备，Ollama 本地无需凭证。
+                  : "预设填入常用端点与模型，可手改。"}{" "}
+                云端 key 需自备，Ollama 本地无需凭证。
               </p>
             </div>
             <div className="field-grid">
@@ -717,7 +915,9 @@ export function SettingsView({
                   label="base_url"
                   type="text"
                   value={form.base_url}
-                  onChange={(event) => setField(key, "base_url", event.target.value)}
+                  onChange={(event) =>
+                    setField(key, "base_url", event.target.value)
+                  }
                   placeholder="http://127.0.0.1:11434/v1"
                   autoComplete="off"
                   spellCheck={false}
@@ -729,115 +929,25 @@ export function SettingsView({
                   label="model"
                   type="text"
                   value={form.model}
-                  onChange={(event) => setField(key, "model", event.target.value)}
-                  placeholder={key === "rerank" ? "留空 = 不启用重排" : "模型名称"}
+                  onChange={(event) =>
+                    setField(key, "model", event.target.value)
+                  }
+                  placeholder={
+                    key === "rerank" ? "留空 = 不启用重排" : "模型名称"
+                  }
                   autoComplete="off"
                   spellCheck={false}
                 />
               </div>
             </div>
-            <Stack className="credential-group" gap="md">
-              <Radio.Group
-                className="credential-mode"
-                label="凭证来源"
-                value={form.key_mode}
-                onChange={(value) => setKeyMode(key, value as KeyMode)}
-              >
-                <Group className="credential-options" gap="lg" mt="xs" wrap="wrap">
-                  <Radio value="direct" label="直接填写 key" />
-                  <Radio value="env" label="引用环境变量" />
-                </Group>
-              </Radio.Group>
-              {form.key_mode === "direct" ? (
-                <div className="field">
-                  <PasswordInput
-                    id={`${key}-api-key`}
-                    label="api_key（只写不回显）"
-                    value={form.api_key}
-                    onChange={(event) => {
-                      setField(key, "api_key", event.target.value);
-                      if (event.target.value !== "") {
-                        setField(key, "clearStoredKey", false);
-                      }
-                    }}
-                    placeholder={view.api_key_set ? "已设置——留空保持不变" : "未设置"}
-                    autoComplete="new-password"
-                    visibilityToggleButtonProps={{
-                      className: "password-visibility-toggle",
-                      "aria-label": "显示或隐藏 API key",
-                    }}
-                  />
-                  <p className="hint">明文保存在本机 config.toml（0600）；与环境变量同时存在时，明文优先。</p>
-                  {view.api_key_set && (
-                    <Checkbox
-                      className="field-check"
-                      label="清除已保存的 key（保存后生效）"
-                      checked={form.clearStoredKey}
-                      onChange={(event) => {
-                        setField(key, "clearStoredKey", event.target.checked);
-                        if (event.target.checked) {
-                            setField(key, "api_key", "");
-                        }
-                      }}
-                    />
-                  )}
-                  {form.api_key_env.trim() !== "" && (
-                    <p className="hint">
-                      已填写后备 api_key_env：<code>{form.api_key_env}</code>
-                      ，继续生效；切换「引用环境变量」可修改。
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div className="field">
-                  <TextInput
-                    id={`${key}-api-key-env`}
-                    label="api_key_env（环境变量名）"
-                    type="text"
-                    value={form.api_key_env}
-                    onChange={(event) => setField(key, "api_key_env", event.target.value)}
-                    placeholder={`例如 ${CHANNEL_KEY_ENV_PREFIX[key]}_API_KEY`}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <p className="hint">key 从该环境变量读取，需在启动 siku 的环境中已设置。</p>
-                  {view.api_key_set && (
-                    <>
-                      <p className="hint hint-warning" role="note">
-                        已保存的明文 key 优先生效，需清除后环境变量才会启用：
-                      </p>
-                      <Checkbox
-                        className="field-check"
-                        label="清除已保存的 key（保存后生效）"
-                        checked={form.clearStoredKey}
-                        onChange={(event) => {
-                          setField(key, "clearStoredKey", event.target.checked);
-                          if (event.target.checked) {
-                              setField(key, "api_key", "");
-                          }
-                        }}
-                      />
-                    </>
-                  )}
-                </div>
-              )}
-            </Stack>
-            <div className="channel-footer">
-              <Button
-                type="button"
-                className="button-secondary"
-                variant="default"
-                disabled={testState?.kind === "loading"}
-                onClick={() => void runTest(key)}
-              >
-                {testState?.kind === "loading" ? "测试中…" : "测试连接"}
-              </Button>
-              {testState?.kind === "done" && (
-                <Alert color={testState.ok ? "green" : "red"} role={testState.ok ? "status" : "alert"}>
-                  {testState.message}
-                </Alert>
-              )}
-            </div>
+            <CredentialSection
+              channel={key}
+              form={form}
+              view={view}
+              setField={setField}
+              setKeyMode={setKeyMode}
+            />
+            <TestFooter channel={key} testState={testState} runTest={runTest} />
           </Fieldset>
         );
       })}
@@ -847,8 +957,6 @@ export function SettingsView({
           {saveState === "loading" ? "保存中…" : "保存设置"}
         </Button>
       </Group>
-      </Stack>
+    </Stack>
   );
 }
-
-export default SettingsView;

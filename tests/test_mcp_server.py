@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.types import CallToolResult, TextContent
 from tests.test_api_reading import seed_small_graph, write_note
 from tests.test_entity_join import build_join_library, seed_join_graph
 
@@ -27,11 +28,19 @@ from siku.graph.errors import (
 from siku.mcp import server as mcp_server
 from siku.mcp.server import McpToolError
 from siku.retrieve.errors import InvalidQueryError
-from siku.retrieve.models import SearchResult
+from siku.retrieve.models import Citation, SearchResult
 
 # ---------------------------------------------------------------------------
 # 假上游
 # ---------------------------------------------------------------------------
+
+
+def _result_text(result: CallToolResult) -> str:
+    """取工具结果中的文本块；遇到非文本块说明接线异常，直接失败。"""
+    for content in result.content:
+        if isinstance(content, TextContent):
+            return content.text
+    raise AssertionError("tool result has no text content")
 
 
 class _FakeSearchService:
@@ -44,7 +53,23 @@ class _FakeSearchService:
     def search(self, query: str, options: object = None) -> list[SearchResult]:
         if not query.strip():
             raise InvalidQueryError("Query must be non-empty")
-        return [SearchResult(**item) for item in self._results]
+        return [
+            SearchResult(
+                chunk_id=item["chunk_id"],
+                citation=Citation(
+                    source_name=item["source_name"],
+                    note_path=item["note_path"],
+                    source_hash=item["source_hash"],
+                    anchor=item["anchor"],
+                ),
+                text=item["text"],
+                bm25_score=item["bm25_score"],
+                vector_score=item["vector_score"],
+                hybrid_score=item["hybrid_score"],
+                rerank_score=item["rerank_score"],
+            )
+            for item in self._results
+        ]
 
     def close(self) -> None:
         self.closed = True
@@ -530,8 +555,8 @@ class TestProtocolSubprocess:
     ) -> None:
         """握手 + tools/list 八工具 + 只读工具往返；stdout 无协议外输出。"""
         from mcp import Client
+        from tests.fakes import FakeEmbeddingProvider
 
-        from fakes import FakeEmbeddingProvider
         from siku.graph.models import Entity, SourceAnchor
         from siku.graph.store import save_graph
         from siku.retrieve.indexer import database_path, sync_index
@@ -591,11 +616,11 @@ class TestProtocolSubprocess:
             }
             result = await client.call_tool("list_documents", {})
             assert result.is_error is not True
-            payload = json.loads(result.content[0].text)
+            payload = json.loads(_result_text(result))
             assert payload["sources"][0]["source_id"] == "aa000001"
             evidence = await client.call_tool("entity_evidence", {"query": "Alpha Kernel 是什么"})
             assert evidence.is_error is not True
-            evidence_payload = json.loads(evidence.content[0].text)
+            evidence_payload = json.loads(_result_text(evidence))
             assert evidence_payload["empty_reason"] is None
             assert evidence_payload["results"][0]["anchor"] == "内容"
 
@@ -610,7 +635,7 @@ class TestProtocolSubprocess:
         async with client:
             result = await client.call_tool("search", {"query": "任何词"})
             assert result.is_error is True
-            text = result.content[0].text
+            text = _result_text(result)
             assert "model_not_available" in text
             assert "Traceback" not in text
 
@@ -662,7 +687,7 @@ class TestRegisteredErrorSurface:
         async with Client(server) as client:
             result = await client.call_tool("read_document", {"source_id": "zz999999"})
             assert result.is_error is True
-            assert "note_not_found" in result.content[0].text
+            assert "note_not_found" in _result_text(result)
 
     @pytest.mark.anyio
     async def test_unexpected_error_is_masked(
@@ -678,5 +703,5 @@ class TestRegisteredErrorSurface:
         async with Client(server) as client:
             result = await client.call_tool("search", {"query": "词"})
             assert result.is_error is True
-            assert "secret internal detail" not in result.content[0].text
-            assert "internal_error" in result.content[0].text
+            assert "secret internal detail" not in _result_text(result)
+            assert "internal_error" in _result_text(result)

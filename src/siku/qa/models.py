@@ -67,11 +67,11 @@ class ContextPacker:
         for index, result in enumerate(results, start=1):
             citation = AnswerCitation(
                 citation_id=f"C{index}",
-                source_name=result.source_name,
-                note_path=result.note_path,
-                anchor=result.anchor,
+                source_name=result.citation.source_name,
+                note_path=result.citation.note_path,
+                anchor=result.citation.anchor,
                 chunk_id=result.chunk_id,
-                source_hash=result.source_hash,
+                source_hash=result.citation.source_hash,
                 text=result.text,
             )
             citations.append(citation)

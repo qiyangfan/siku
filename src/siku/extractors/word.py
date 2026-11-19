@@ -28,7 +28,8 @@ class WordExtractor:
     def extract(self, source_path: Path) -> ExtractedDocument:
         command = resolve_pandoc_command()
         try:
-            result = subprocess.run(
+            # pandoc 命令与参数均为固定数组，路径以独立 argv 传入；不启用 shell。
+            result = subprocess.run(  # noqa: S603
                 [
                     *command,
                     str(source_path),

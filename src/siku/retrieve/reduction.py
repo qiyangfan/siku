@@ -92,34 +92,14 @@ def stage_index_reduction(
         tmp_index = SqliteIndex.create(tmp_db)
         tmp_store = LanceVectorStore.create(tmp_vectors, old_dimensions)
         if remaining_ids:
-            tmp_index.copy_sources_from(old_index, remaining_ids)
-            old_vectors = LanceVectorStore.open(final_vectors)
-            reused_chunks = old_index.chunks_of_sources(remaining_ids)
-            reused_rows = old_vectors.rows_for_chunks({chunk.chunk_id for chunk in reused_chunks})
-            if len(reused_rows) != len(reused_chunks):
-                raise IndexCorruptError(
-                    "Vector store is missing rows for surviving chunks"
-                    f" ({len(reused_rows)} of {len(reused_chunks)} present);"
-                    " run 'siku index --rebuild' to regenerate the index."
-                )
-            tmp_store.add_rows(reused_rows)
-            old_vectors.close()
-            old_vectors = None
+            _copy_surviving_sources(old_index, final_vectors, tmp_index, tmp_store, remaining_ids)
         _validate_staged_build(tmp_index, tmp_store, remaining_ids)
 
         commit_id = uuid.uuid4().hex
-        previous_version = _parse_int(old_meta.get("index_version"), default=0)
-        for key, value in old_meta.items():
-            if key not in _REGENERATED_META_KEYS:
-                tmp_index.set_meta(key, value)
-        tmp_index.set_meta("index_version", str(previous_version + 1))
-        tmp_index.set_meta("vectors_commit", commit_id)
-        tmp_index.set_meta("schema_version", str(SCHEMA_VERSION))
-        tmp_index.set_meta(_TARGETS_META_KEY, json.dumps(sorted(remove_source_ids)))
-        tmp_index.checkpoint_and_close()
+        _annotate_staged_meta(
+            tmp_index, tmp_store, tmp_vectors, old_meta, commit_id, remove_source_ids
+        )
         tmp_index = None
-        write_commit_marker(tmp_vectors, commit_id)
-        tmp_store.close()
         tmp_store = None
         reduction = StagedReduction(commit_id=commit_id, removed_source_ids=tuple(removed_present))
         logger.info(
@@ -140,6 +120,55 @@ def stage_index_reduction(
         raise
     finally:
         old_index.close()
+
+
+def _copy_surviving_sources(
+    old_index: SqliteIndex,
+    final_vectors: Path,
+    tmp_index: SqliteIndex,
+    tmp_store: LanceVectorStore,
+    remaining_ids: list[str],
+) -> None:
+    """复制剩余来源的文档/块/FTS5 与向量行；向量行必须与存活块一一对应。"""
+    tmp_index.copy_sources_from(old_index, remaining_ids)
+    old_vectors = LanceVectorStore.open(final_vectors)
+    try:
+        reused_chunks = old_index.chunks_of_sources(remaining_ids)
+        reused_rows = old_vectors.rows_for_chunks({chunk.chunk_id for chunk in reused_chunks})
+        if len(reused_rows) != len(reused_chunks):
+            raise IndexCorruptError(
+                "Vector store is missing rows for surviving chunks"
+                f" ({len(reused_rows)} of {len(reused_chunks)} present);"
+                " run 'siku index --rebuild' to regenerate the index."
+            )
+        tmp_store.add_rows(reused_rows)
+    finally:
+        old_vectors.close()
+
+
+def _annotate_staged_meta(
+    tmp_index: SqliteIndex,
+    tmp_store: LanceVectorStore,
+    tmp_vectors: Path,
+    old_meta: dict[str, str],
+    commit_id: str,
+    remove_source_ids: frozenset[str] | set[str],
+) -> None:
+    """写入版本递增的元数据、提交凭证并封存暂存对（SQLite 先落盘，再写向量凭证）。
+
+    返回时两个句柄均已关闭；调用方据此把自身的 tmp 引用置空，避免 finally 重复关闭。
+    """
+    previous_version = _parse_int(old_meta.get("index_version"), default=0)
+    for key, value in old_meta.items():
+        if key not in _REGENERATED_META_KEYS:
+            tmp_index.set_meta(key, value)
+    tmp_index.set_meta("index_version", str(previous_version + 1))
+    tmp_index.set_meta("vectors_commit", commit_id)
+    tmp_index.set_meta("schema_version", str(SCHEMA_VERSION))
+    tmp_index.set_meta(_TARGETS_META_KEY, json.dumps(sorted(remove_source_ids)))
+    tmp_index.checkpoint_and_close()
+    write_commit_marker(tmp_vectors, commit_id)
+    tmp_store.close()
 
 
 def _stored_dimensions(old_meta: dict[str, str]) -> int:

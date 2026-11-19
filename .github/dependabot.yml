@@ -7,3 +7,17 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+  # 三套依赖清单分别覆盖：Python（uv.lock）、前端（ui/package-lock.json）、
+  # Rust 桌面壳（ui/src-tauri/Cargo.lock）。月度与 Actions 同频，控制流水线消耗。
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "monthly"
+  - package-ecosystem: "cargo"
+    directory: "/ui/src-tauri"
+    schedule:
+      interval: "monthly"

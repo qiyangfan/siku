@@ -168,7 +168,8 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="siku-sidecar-") as workdir:
         work = Path(workdir)
         print("[build] running PyInstaller (onedir)…", flush=True)
-        subprocess.run(
+        # 解释器与 PyInstaller 参数均为固定数组，不启用 shell。
+        subprocess.run(  # noqa: S603
             [
                 sys.executable,
                 "-m",

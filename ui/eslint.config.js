@@ -1,4 +1,5 @@
 import eslint from "@eslint/js";
+import jsxA11y from "eslint-plugin-jsx-a11y";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 import globals from "globals";
@@ -8,11 +9,25 @@ export default tseslint.config(
   { ignores: ["dist", "node_modules", "src-tauri"] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
+  jsxA11y.flatConfigs.recommended,
+  {
+    files: ["**/*.cjs"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+    },
+  },
   {
     files: ["**/*.{ts,tsx}"],
+    // 类型感知规则：只用 TS 项目做语义检查，JS/CJS 配置文件不纳入 project service
+    extends: [tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       ecmaVersion: 2022,
       globals: globals.browser,
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     plugins: {
       "react-hooks": reactHooks,
@@ -20,12 +35,18 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      // react-hooks 7 随 compiler 诊断带入的规则：当前 5 个视图文件共 9 处取数
-      // 均为 effect 内 fetch + setState 模式，按官方范式重构（渲染期派生/事件
-      // 驱动）属独立行为重构面，不在依赖升级件内吞回归风险。告警留存信号，
-      // 待专门重构件逐处清零后恢复 error。
-      "react-hooks/set-state-in-effect": "warn",
-      "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      // 结构门禁：complexity 取 ESLint 默认阈值 20；模块行数沿用本仓 1000 行口径。
+      complexity: "error",
+      "max-lines": [
+        "error",
+        { max: 1000, skipBlankLines: true, skipComments: true },
+      ],
+      // react-hooks 推荐集已覆盖 set-state-in-effect（error）；
+      // 各视图取数均落到异步续体，effect 体内保持零同步 setState。
+      "react-refresh/only-export-components": [
+        "warn",
+        { allowConstantExport: true },
+      ],
     },
   },
 );

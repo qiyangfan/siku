@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+from tests.fakes import FakeEmbeddingProvider
 
-from fakes import FakeEmbeddingProvider
 from siku.extractors import extractor_registry
 from siku.ingest import ingest_path
 from siku.retrieve.indexer import database_path, sync_index

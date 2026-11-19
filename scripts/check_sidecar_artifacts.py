@@ -92,7 +92,8 @@ def probe_runtime(sidecar: Path) -> None:
         name: value for name, value in os.environ.items() if not name.startswith(("SIKU_", "SIKU"))
     }
     environment["PATH"] = ""  # 冻结运行时不得依赖系统 PATH
-    result = subprocess.run(
+    # exe 为构建产物路径，参数固定为 "version"；不启用 shell。
+    result = subprocess.run(  # noqa: S603
         [str(exe), "version"],
         capture_output=True,
         text=True,

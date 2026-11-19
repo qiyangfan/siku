@@ -9,14 +9,14 @@ from typing import Any
 
 import httpx
 import pytest
-
-from graph_fakes import (
+from tests.graph_fakes import (
     DISCONNECTED,
     EMPTY_RESPONSE,
     OVERLONG,
     RATE_LIMITED,
     ScriptedLlmProvider,
 )
+
 from siku.graph.errors import (
     GraphError,
     LlmAuthError,

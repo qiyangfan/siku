@@ -14,7 +14,7 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write
+  contents: read
 
 # 并发 tag 推送按序发布,不取消进行中的发布(发布不可半途取消)。
 concurrency:
@@ -32,7 +32,9 @@ jobs:
     outputs:
       version: ${{ steps.read.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - name: 读取单一版本源并校验 tag
         id: read
         run: |
@@ -62,13 +64,15 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # x86_64 macOS：在 arm64 runner 上经 Rosetta 用 x86_64 解释器构建 sidecar，
       # 保证 PyInstaller 产物与 Rust target 架构一致（PyInstaller 不支持交叉编译）
       - name: 安装 x86_64 Python（Rosetta）
         if: matrix.target == 'x86_64-apple-darwin'
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.12"
           architecture: "x64"
@@ -81,15 +85,18 @@ jobs:
 
       - name: 安装 uv
         if: matrix.target != 'x86_64-apple-darwin'
-        uses: astral-sh/setup-uv@v10.3.3 # 该仓库不维护 v10 滚动大版本标签，须钉精确版本
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3；该仓库不维护 v10 滚动大版本标签，须钉精确版本
         with:
           python-version: "3.12"
-          enable-cache: true
+          # 发布工作流不启用缓存：带写权限的 job 使用可写缓存有投毒面
+          enable-cache: false
 
       - name: 安装 Node 24
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
+          # 发布工作流不启用包管理器缓存：带写权限的 job 使用可写缓存有投毒面
+          package-manager-cache: false
 
       - name: 安装 Linux 系统依赖（webkit2gtk-4.1 基线 = Ubuntu 22.04）
         if: runner.os == 'Linux'
@@ -159,7 +166,7 @@ jobs:
           Copy-Item "ui/src-tauri/target/release/bundle/nsis/*.exe" artifacts/
           Get-ChildItem artifacts
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-${{ matrix.target }}
           path: artifacts/*
@@ -169,13 +176,18 @@ jobs:
   release:
     name: 发布 Release（失败不发布）
     needs: [version-check, build]
+    # 仅发布作业需要写权限；其余作业保持只读
+    permissions:
+      contents: write
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: 下载全部平台产物
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
           merge-multiple: true
@@ -210,14 +222,16 @@ jobs:
         if: env.HOMEBREW_TAP_TOKEN == ''
         run: echo "未配置 HOMEBREW_TAP_TOKEN，跳过 Cask 更新（tap 仓库创建属一次性仓库外动作）"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
         if: env.HOMEBREW_TAP_TOKEN != ''
 
       - name: 下载 macOS 产物并生成 Cask
         if: env.HOMEBREW_TAP_TOKEN != ''
         env:
           VERSION: ${{ needs.version-check.outputs.version }}
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
           merge-multiple: true

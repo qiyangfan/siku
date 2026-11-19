@@ -11,9 +11,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from tests.graph_fakes import FakeGraphExtractor
 from typer.testing import CliRunner
 
-from graph_fakes import FakeGraphExtractor
 from siku.cli import app
 from siku.graph.community import SUMMARIZER_ID, SUMMARY_PROMPT_VERSION
 from siku.graph.models import EntityMention, GraphExtraction, RelationMention
@@ -104,8 +104,8 @@ def patched_llm(
 ) -> Iterator[tuple[FakeGraphExtractor, StubSummarizer]]:
     extractor = patched_extractor()
     summarizer = StubSummarizer()
-    monkeypatch.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: extractor)
-    monkeypatch.setattr("siku.cli.CommunitySummarizer", lambda **kwargs: summarizer)
+    monkeypatch.setattr("siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: extractor)
+    monkeypatch.setattr("siku.cli.commands.graph.CommunitySummarizer", lambda **kwargs: summarizer)
     yield extractor, summarizer
 
 
@@ -160,7 +160,9 @@ class TestGraphCommand:
         # 惰性 key 校验：全部命中缓存时无需配置 key 也能重建图谱产物
         write_corpus(tmp_path / VAULT)
         with monkeypatch.context() as scoped:
-            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            scoped.setattr(
+                "siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: patched_extractor()
+            )
             first = runner.invoke(app, graph_args(tmp_path))
             assert first.exit_code == 0
         monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
@@ -178,7 +180,9 @@ class TestGraphCommand:
         # --rebuild 忽略缓存强制重抽：缺 key 时必须中文报错且保留旧图谱产物
         write_corpus(tmp_path / VAULT)
         with monkeypatch.context() as scoped:
-            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            scoped.setattr(
+                "siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: patched_extractor()
+            )
             assert runner.invoke(app, graph_args(tmp_path)).exit_code == 0
         monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
         monkeypatch.delenv("SIKU_LLM_PROTOCOL", raising=False)
@@ -225,7 +229,9 @@ class TestWikiCommand:
     ) -> None:
         write_corpus(tmp_path / VAULT)
         with monkeypatch.context() as scoped:
-            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            scoped.setattr(
+                "siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: patched_extractor()
+            )
             assert runner.invoke(app, graph_args(tmp_path)).exit_code == 0
         monkeypatch.delenv("SIKU_LLM_API_KEY", raising=False)
         monkeypatch.delenv("SIKU_LLM_PROTOCOL", raising=False)
@@ -242,7 +248,9 @@ class TestGraphPreWarning:
         """换模型后预告全量重抽：告警写 stderr，stdout 保持纯 JSON。"""
         write_corpus(tmp_path / VAULT)
         with monkeypatch.context() as scoped:
-            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            scoped.setattr(
+                "siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: patched_extractor()
+            )
             first = runner.invoke(app, graph_args(tmp_path, "--json"))
             assert first.exit_code == 0
             assert json.loads(first.output)["llm_calls"] == 2
@@ -254,7 +262,7 @@ class TestGraphPreWarning:
             respond=legal_extraction_for,
         )
         with monkeypatch.context() as scoped:
-            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: switched)
+            scoped.setattr("siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: switched)
             second = runner.invoke(app, graph_args(tmp_path, "--json"))
 
         assert second.exit_code == 0
@@ -271,11 +279,15 @@ class TestGraphPreWarning:
         """身份一致时不预告（增量是常态，不制造噪音）。"""
         write_corpus(tmp_path / VAULT)
         with monkeypatch.context() as scoped:
-            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            scoped.setattr(
+                "siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: patched_extractor()
+            )
             first = runner.invoke(app, graph_args(tmp_path, "--json"))
             assert first.exit_code == 0
         with monkeypatch.context() as scoped:
-            scoped.setattr("siku.cli.LlmGraphExtractor", lambda **kwargs: patched_extractor())
+            scoped.setattr(
+                "siku.cli.commands.graph.LlmGraphExtractor", lambda **kwargs: patched_extractor()
+            )
             second = runner.invoke(app, graph_args(tmp_path, "--json"))
         assert second.exit_code == 0
         assert "全量重抽" not in (second.stderr or "")

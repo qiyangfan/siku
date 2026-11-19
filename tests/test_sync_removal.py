@@ -12,11 +12,13 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from tests.document_fixtures import make_text_pdf
+from tests.fakes import FakeEmbeddingProvider
 
-from fakes import FakeEmbeddingProvider
 from siku.extractors import extractor_registry
 from siku.graph.errors import GraphArtifactsMissingError
 from siku.ingest import ingest_path
@@ -344,7 +346,7 @@ def test_partial_failure_retains_marker_and_retry_completes(tmp_path: Path) -> N
 
     with pytest.MonkeyPatch.context() as scoped:
 
-        def failing_stage(data_dir_arg, ids):
+        def failing_stage(data_dir_arg: Path, ids: frozenset[str] | set[str]) -> None:
             raise RuntimeError("simulated staging crash")
 
         scoped.setattr(service_module, "stage_index_reduction", failing_stage)
@@ -436,7 +438,7 @@ def test_two_process_mutex_via_subprocess(tmp_path: Path) -> None:
             "from siku.sync.locking import library_write_lock\n"
             "with library_write_lock(__import__('pathlib').Path(sys.argv[1]), timeout=1):\n"
             "    print('held', flush=True)\n"
-            "    time.sleep(3)\n",
+            "    time.sleep(10)\n",
             str(vault),
         ],
         stdout=subprocess.PIPE,
@@ -469,7 +471,13 @@ def test_two_process_mutex_via_subprocess(tmp_path: Path) -> None:
         assert result.returncode == 1
         assert "另一个 siku 进程正在写入该资料库" in result.stderr
     finally:
+        # 持锁期须显著长于 CLI 的 2s 锁超时 + 启动开销，否则超时窗口可能
+        # 覆盖到子进程释放锁之后，测试退化为"等锁成功"。
+        holder.terminate()
         holder.wait(timeout=10)
+        # 显式关闭 PIPE：交给 GC 关闭会在 warnings-as-errors 下变成不可忽略异常
+        if holder.stdout is not None:
+            holder.stdout.close()
 
 
 def test_scan_plan_revalidated_under_lock(tmp_path: Path) -> None:
@@ -504,8 +512,6 @@ def test_scan_plan_revalidated_under_lock(tmp_path: Path) -> None:
 
 def test_removal_endpoint_contract_via_api(tmp_path: Path) -> None:
     """HTTP 面：未确认 422、不存在 404、确认后走任务进度；清单资格由服务端给出。"""
-    from fastapi.testclient import TestClient
-
     from siku.api.app import create_app
 
     vault = tmp_path / "vault"
@@ -514,7 +520,13 @@ def test_removal_endpoint_contract_via_api(tmp_path: Path) -> None:
         vault=vault,
         data_dir=data_dir,
         index_runner=lambda rebuild: IndexReport(
-            created=0, updated=0, skipped=0, removed=0, total_chunks=0, index_version=1
+            created=0,
+            updated=0,
+            skipped=0,
+            removed=0,
+            total_chunks=0,
+            index_version=1,
+            rebuilt=False,
         ),
     )
     client = TestClient(app)
@@ -561,9 +573,9 @@ def test_removal_endpoint_contract_via_api(tmp_path: Path) -> None:
     assert manual_row["removable"] is True
 
 
-def _poll_job_done(client, job_id: str) -> dict:
+def _poll_job_done(client: TestClient, job_id: str) -> dict[str, Any]:
     deadline = time.monotonic() + 10.0
-    job = client.get(f"/api/library/jobs/{job_id}").json()
+    job: dict[str, Any] = client.get(f"/api/library/jobs/{job_id}").json()
     while time.monotonic() < deadline and job["state"] == "running":
         time.sleep(0.05)
         job = client.get(f"/api/library/jobs/{job_id}").json()
@@ -573,7 +585,7 @@ def _poll_job_done(client, job_id: str) -> dict:
 
 def test_removing_row_rendered_for_incomplete_removal(tmp_path: Path) -> None:
     """未完成的已确认移除如实呈现：文件删尽但标记仍在 → 合成行 + 可重试。"""
-    from siku.api.library import build_library_view
+    from siku.api.library_view import build_library_view
 
     _service, registry, vault, data_dir = make_service(tmp_path)
     external = tmp_path / "external"
@@ -599,6 +611,7 @@ def test_pdf_document_removes_end_to_end(tmp_path: Path) -> None:
     from siku.sync.service import source_id_of_artifact
 
     source_id = source_id_of_artifact(report.items[0].attachment_path)
+    assert source_id is not None
     sync_index(vault, data_dir, FakeEmbeddingProvider())
 
     assert service.run_removal(source_id, Recorder()) is True
@@ -683,13 +696,19 @@ def test_job_recovers_from_crashing_recovery_step(tmp_path: Path) -> None:
         registry=registry,
         ingest_handler=lambda source, target: None,  # type: ignore[arg-type,return-value]
         index_runner=lambda rebuild: IndexReport(
-            created=0, updated=0, skipped=0, removed=0, total_chunks=0, index_version=1
+            created=0,
+            updated=0,
+            skipped=0,
+            removed=0,
+            total_chunks=0,
+            index_version=1,
+            rebuilt=False,
         ),
         api_key_env="SIKU_LLM_API_KEY",
     )
     original = library_module.ensure_library_writable
 
-    def boom(data_dir_arg, registry_arg):
+    def boom(data_dir_arg: Path, registry_arg: SyncRegistry) -> None:
         raise RuntimeError("simulated recovery crash")
 
     monkeypatch = pytest.MonkeyPatch()
@@ -720,8 +739,6 @@ def test_job_recovers_from_crashing_recovery_step(tmp_path: Path) -> None:
 
 def test_purge_of_only_user_removed_survives_missing_provider(tmp_path: Path) -> None:
     """仅 user_removed 的全量清理不依赖 embedding 通道。"""
-
-    from fastapi.testclient import TestClient
 
     from siku.api.app import create_app
 

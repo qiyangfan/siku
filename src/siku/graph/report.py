@@ -13,19 +13,40 @@ SCALE_WARN_EDGES = 100_000
 
 
 @dataclass(frozen=True)
-class GraphHealthReport:
-    """一次图谱构建的体检报告；全部字段进 CLI `--json` 稳定输出。"""
+class GraphIdentity:
+    """抽取器身份；模型或 prompt 版本变更会让抽取缓存键失效。"""
 
     extractor_id: str
     model_id: str
     prompt_version: str
-    chunk_count: int
-    node_count: int
-    edge_count: int
-    community_count: int
-    ambiguous_entity_count: int
+
+
+@dataclass(frozen=True)
+class GraphCounts:
+    """本轮构建的规模计数。"""
+
+    chunks: int
+    nodes: int
+    edges: int
+    communities: int
+    ambiguous_entities: int
+
+
+@dataclass(frozen=True)
+class GraphCallStats:
+    """抽取调用统计：缓存命中数决定换模型后的重抽成本。"""
+
     cache_hits: int
     llm_calls: int
+
+
+@dataclass(frozen=True)
+class GraphHealthReport:
+    """一次图谱构建的体检报告；全部字段进 CLI `--json` 稳定输出。"""
+
+    identity: GraphIdentity
+    counts: GraphCounts
+    calls: GraphCallStats
     warnings: tuple[str, ...]
 
 

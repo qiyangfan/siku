@@ -10,6 +10,7 @@ import logging
 import os
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -146,26 +147,43 @@ def load_graph(
     产物缺失抛 `GraphArtifactsMissingError`；文件不可读或三件表引用不一致
     （混版损坏）抛 `GraphStoreCorruptError`——全部为可删除重建的派生物。
     """
-    entities_path, relations_path, communities_path = graph_file_paths(data_dir)
-    missing = [
-        path for path in (entities_path, relations_path, communities_path) if not path.is_file()
-    ]
+    paths = graph_file_paths(data_dir)
+    missing = [path for path in paths if not path.is_file()]
     if missing:
         raise GraphArtifactsMissingError(
             "Graph artifacts are missing: "
             + ", ".join(path.name for path in missing)
             + "; run 'siku graph' first"
         )
+    entity_rows, relation_rows, community_rows = _read_tables(paths, data_dir)
+    entities, entity_names = _load_entities(entity_rows)
+    relations = _load_relations(relation_rows, entity_names)
+    communities = _load_communities(community_rows, entity_names)
+    return entities, relations, communities
+
+
+def _read_tables(
+    paths: tuple[Path, Path, Path], data_dir: Path
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """读取三件 parquet；不可读统一报混版损坏。"""
+    entities_path, relations_path, communities_path = paths
     try:
-        entity_rows = pq.read_table(entities_path).to_pylist()
-        relation_rows = pq.read_table(relations_path).to_pylist()
-        community_rows = pq.read_table(communities_path).to_pylist()
+        return (
+            pq.read_table(entities_path).to_pylist(),
+            pq.read_table(relations_path).to_pylist(),
+            pq.read_table(communities_path).to_pylist(),
+        )
     except (pa.ArrowInvalid, OSError) as exc:
         raise GraphStoreCorruptError(
             f"Graph artifacts under {data_dir} are not readable parquet: {exc}; "
             "delete the graph data directory and run 'siku graph' to rebuild"
         ) from exc
-    entity_names = {row["entity_id"]: row["name"] for row in entity_rows}
+
+
+def _load_entities(
+    rows: list[dict[str, Any]],
+) -> tuple[tuple[Entity, ...], dict[str, str]]:
+    entity_names = {row["entity_id"]: row["name"] for row in rows}
     entities = tuple(
         Entity(
             entity_id=row["entity_id"],
@@ -173,9 +191,15 @@ def load_graph(
             type=row["type"],
             anchors=_anchors_of(row["anchors"]),
         )
-        for row in entity_rows
+        for row in rows
     )
-    for row in relation_rows:
+    return entities, entity_names
+
+
+def _load_relations(
+    rows: list[dict[str, Any]], entity_names: dict[str, str]
+) -> tuple[Relation, ...]:
+    for row in rows:
         # 关系引用了不存在的实体说明三件表混版，报损坏而不是静默回退裸 id。
         for endpoint in (row["source_entity"], row["target_entity"]):
             if endpoint not in entity_names:
@@ -184,7 +208,7 @@ def load_graph(
                     "graph artifacts are inconsistent — delete the graph data "
                     "directory and run 'siku graph' to rebuild"
                 )
-    relations = tuple(
+    return tuple(
         Relation(
             source_entity_id=row["source_entity"],
             target_entity_id=row["target_entity"],
@@ -194,9 +218,14 @@ def load_graph(
             evidence=row["evidence"],
             anchors=_anchors_of(row["anchors"]),
         )
-        for row in relation_rows
+        for row in rows
     )
-    for community_index, row in enumerate(community_rows):
+
+
+def _load_communities(
+    rows: list[dict[str, Any]], entity_names: dict[str, str]
+) -> tuple[Community, ...]:
+    for community_index, row in enumerate(rows):
         for member_id in row["member_entity_ids"]:
             if member_id not in entity_names:
                 raise GraphStoreCorruptError(
@@ -204,16 +233,15 @@ def load_graph(
                     f"{member_id!r}; graph artifacts are inconsistent — delete the "
                     "graph data directory and run 'siku graph' to rebuild"
                 )
-    communities = tuple(
+    return tuple(
         Community(
             community_id=row["community_id"],
             member_entity_ids=tuple(row["member_entity_ids"]),
             level=row["level"],
             summary_cache_key=row["summary_cache_key"],
         )
-        for row in community_rows
+        for row in rows
     )
-    return entities, relations, communities
 
 
 def _anchors_of(raw: list[dict[str, str]]) -> tuple[SourceAnchor, ...]:
@@ -228,7 +256,7 @@ def _anchors_of(raw: list[dict[str, str]]) -> tuple[SourceAnchor, ...]:
     )
 
 
-def _write_parquet(path: Path, schema: pa.Schema, rows: list[dict[str, object]]) -> None:
+def _write_parquet(path: Path, schema: pa.Schema, rows: list[dict[str, Any]]) -> None:
     table = pa.Table.from_pylist(rows, schema=schema)
     tmp_path = path.with_suffix(".parquet.tmp")
     try:

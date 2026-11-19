@@ -12,6 +12,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import networkx as nx
+
 from siku.graph.cache import ExtractionCache, extraction_cache_key
 from siku.graph.community import (
     DEFAULT_SUMMARY_IDENTITY,
@@ -22,8 +24,14 @@ from siku.graph.community import (
     summary_cache_key,
 )
 from siku.graph.merge import merge_extractions
-from siku.graph.models import Community, GraphExtraction, GraphExtractor
-from siku.graph.report import GraphHealthReport, scale_warnings
+from siku.graph.models import Community, GraphExtraction, GraphExtractor, MergedGraph
+from siku.graph.report import (
+    GraphCallStats,
+    GraphCounts,
+    GraphHealthReport,
+    GraphIdentity,
+    scale_warnings,
+)
 from siku.graph.store import cache_file_path, save_graph
 from siku.retrieve.errors import NotesDirMissingError
 from siku.retrieve.models import ChunkRecord
@@ -57,6 +65,64 @@ def load_chunks(vault: Path) -> tuple[ChunkRecord, ...]:
     return tuple(chunks)
 
 
+def _extract_chunks(
+    chunks: tuple[ChunkRecord, ...],
+    extractor: GraphExtractor,
+    cache: ExtractionCache,
+    *,
+    rebuild: bool,
+) -> tuple[list[tuple[ChunkRecord, GraphExtraction]], int, int]:
+    """逐 chunk 抽取（缓存优先），返回 (chunk, 抽取) 序列与命中/调用计数。"""
+    pairs: list[tuple[ChunkRecord, GraphExtraction]] = []
+    cache_hits = 0
+    llm_calls = 0
+    for chunk in chunks:
+        cache_key = extraction_cache_key(
+            chunk.chunk_id,
+            extractor.extractor_id,
+            extractor.model_id,
+            extractor.prompt_version,
+        )
+        extraction = None if rebuild else cache.get_extraction(cache_key)
+        if extraction is not None:
+            cache_hits += 1
+        else:
+            logger.info(
+                "extracting chunk via LLM: chunk_id=%s extractor=%s model=%s",
+                chunk.chunk_id,
+                extractor.extractor_id,
+                extractor.model_id,
+            )
+            extraction = extractor.extract(chunk)
+            llm_calls += 1
+            # 逐 chunk 落缓存：中断重跑自动续传，不重复烧 key
+            cache.put_extraction(cache_key, extraction)
+        pairs.append((chunk, extraction))
+    return pairs, cache_hits, llm_calls
+
+
+def _community_rows(
+    merged: MergedGraph,
+    memory_graph: nx.Graph,
+    summary_identity: SummaryIdentity,
+) -> tuple[Community, ...]:
+    """按社区发现结果生成社区记录；摘要键与 wiki 阶段的过期校验共用同一函数。"""
+    entity_by_id = {entity.entity_id: entity for entity in merged.entities}
+    return tuple(
+        Community(
+            community_id=community_id,
+            member_entity_ids=members,
+            level=0,
+            summary_cache_key=summary_cache_key(
+                [entity_by_id[member] for member in members],
+                internal_relation_triples(merged.relations, set(members)),
+                identity=summary_identity,
+            ),
+        )
+        for community_id, members in enumerate(detect_communities(memory_graph))
+    )
+
+
 def build_graph(
     vault: Path,
     data_dir: Path,
@@ -72,51 +138,11 @@ def build_graph(
     """
     chunks = load_chunks(vault)
     cache = ExtractionCache(cache_file_path(data_dir))
-    pairs: list[tuple[ChunkRecord, GraphExtraction]] = []
-    cache_hits = 0
-    llm_calls = 0
     try:
-        for chunk in chunks:
-            cache_key = extraction_cache_key(
-                chunk.chunk_id,
-                extractor.extractor_id,
-                extractor.model_id,
-                extractor.prompt_version,
-            )
-            extraction = None if rebuild else cache.get_extraction(cache_key)
-            if extraction is not None:
-                cache_hits += 1
-            else:
-                logger.info(
-                    "extracting chunk via LLM: chunk_id=%s extractor=%s model=%s",
-                    chunk.chunk_id,
-                    extractor.extractor_id,
-                    extractor.model_id,
-                )
-                extraction = extractor.extract(chunk)
-                llm_calls += 1
-                # 逐 chunk 落缓存：中断重跑自动续传，不重复烧 key
-                cache.put_extraction(cache_key, extraction)
-            pairs.append((chunk, extraction))
-
+        pairs, cache_hits, llm_calls = _extract_chunks(chunks, extractor, cache, rebuild=rebuild)
         merged = merge_extractions(pairs)
         memory_graph = build_memory_graph(merged.entities, merged.relations)
-        member_groups = detect_communities(memory_graph)
-        entity_by_id = {entity.entity_id: entity for entity in merged.entities}
-        communities = tuple(
-            Community(
-                community_id=community_id,
-                member_entity_ids=members,
-                level=0,
-                # 摘要键与 wiki 阶段的过期校验共用同一函数。
-                summary_cache_key=summary_cache_key(
-                    [entity_by_id[member] for member in members],
-                    internal_relation_triples(merged.relations, set(members)),
-                    identity=summary_identity,
-                ),
-            )
-            for community_id, members in enumerate(member_groups)
-        )
+        communities = _community_rows(merged, memory_graph, summary_identity)
         save_graph(data_dir, merged.entities, merged.relations, communities)
         # 产物发布成功才记录抽取器身份，供自动维护检查配置是否匹配；
         # 构建失败不落身份，避免把旧产物的身份误记为当前通道
@@ -126,24 +152,28 @@ def build_graph(
     finally:
         cache.close()
 
+    edge_count = memory_graph.number_of_edges()
     report = GraphHealthReport(
-        extractor_id=extractor.extractor_id,
-        model_id=extractor.model_id,
-        prompt_version=extractor.prompt_version,
-        chunk_count=len(chunks),
-        node_count=memory_graph.number_of_nodes(),
-        edge_count=memory_graph.number_of_edges(),
-        community_count=len(communities),
-        ambiguous_entity_count=len(merged.ambiguous_entity_names),
-        cache_hits=cache_hits,
-        llm_calls=llm_calls,
-        warnings=scale_warnings(edge_count=memory_graph.number_of_edges()),
+        identity=GraphIdentity(
+            extractor_id=extractor.extractor_id,
+            model_id=extractor.model_id,
+            prompt_version=extractor.prompt_version,
+        ),
+        counts=GraphCounts(
+            chunks=len(chunks),
+            nodes=memory_graph.number_of_nodes(),
+            edges=edge_count,
+            communities=len(communities),
+            ambiguous_entities=len(merged.ambiguous_entity_names),
+        ),
+        calls=GraphCallStats(cache_hits=cache_hits, llm_calls=llm_calls),
+        warnings=scale_warnings(edge_count=edge_count),
     )
     logger.info(
         "graph built: nodes=%d edges=%d communities=%d cache_hits=%d llm_calls=%d",
-        report.node_count,
-        report.edge_count,
-        report.community_count,
+        report.counts.nodes,
+        report.counts.edges,
+        report.counts.communities,
         cache_hits,
         llm_calls,
     )

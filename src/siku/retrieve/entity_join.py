@@ -111,12 +111,28 @@ def plan_join(seeds: tuple[SeedEntity, ...], entities: tuple[Entity, ...]) -> _J
     frontier 超预算按与种子的连接密度截断（预算给连接密度最高者）。
     """
     by_id = {entity.entity_id: entity for entity in entities}
-    seed_ids = {seed.entity_id for seed in seeds}
     chunks_of = {
         entity.entity_id: tuple(dict.fromkeys(anchor.chunk_id for anchor in entity.anchors))
         for entity in entities
     }
+    seed_counter, seed_provenance = _count_seed_chunks(seeds, chunks_of)
+    frontier_ids = _select_frontier(entities, seeds, seed_counter)
+    bridge_counter, bridge_provenance = _count_bridge_chunks(
+        frontier_ids, by_id, chunks_of, seed_counter
+    )
+    bridge_entries = tuple(
+        _PlannedChunk(chunk_id, float(bridge_counter[chunk_id]), tuple(bridge_provenance[chunk_id]))
+        for chunk_id in sorted(bridge_counter, key=lambda cid: (-bridge_counter[cid], cid))
+    )
+    seed_entries = _plan_seed_chunks(seed_counter, seed_provenance, bridge_counter)
+    return _JoinPlan(seeds=seed_entries, bridges=bridge_entries, frontier_size=len(frontier_ids))
 
+
+def _count_seed_chunks(
+    seeds: tuple[SeedEntity, ...],
+    chunks_of: dict[str, tuple[str, ...]],
+) -> tuple[Counter[str], dict[str, list[EntityProvenance]]]:
+    """零跳计数：每个种子 chunk 记录被多少个种子命中及其溯源。"""
     seed_counter: Counter[str] = Counter()
     seed_provenance: dict[str, list[EntityProvenance]] = {}
     for seed in seeds:
@@ -125,8 +141,16 @@ def plan_join(seeds: tuple[SeedEntity, ...], entities: tuple[Entity, ...]) -> _J
             seed_provenance.setdefault(chunk_id, []).append(
                 EntityProvenance(seed.entity_id, seed.name, KIND_SEED)
             )
+    return seed_counter, seed_provenance
 
-    # frontier：种子 chunk 中共现的非种子实体；预算按连接密度分配。
+
+def _select_frontier(
+    entities: tuple[Entity, ...],
+    seeds: tuple[SeedEntity, ...],
+    seed_counter: Counter[str],
+) -> list[str]:
+    """frontier：种子 chunk 中共现的非种子实体；预算按连接密度分配。"""
+    seed_ids = {seed.entity_id for seed in seeds}
     chunk_entities: dict[str, set[str]] = {}
     for entity in entities:
         for anchor in entity.anchors:
@@ -136,10 +160,16 @@ def plan_join(seeds: tuple[SeedEntity, ...], entities: tuple[Entity, ...]) -> _J
         for entity_id in chunk_entities.get(chunk_id, ()):
             if entity_id not in seed_ids:
                 frontier_counter[entity_id] += 1
-    frontier_ids = sorted(frontier_counter, key=lambda eid: (-frontier_counter[eid], eid))[
-        :FRONTIER_LIMIT
-    ]
+    return sorted(frontier_counter, key=lambda eid: (-frontier_counter[eid], eid))[:FRONTIER_LIMIT]
 
+
+def _count_bridge_chunks(
+    frontier_ids: list[str],
+    by_id: dict[str, Entity],
+    chunks_of: dict[str, tuple[str, ...]],
+    seed_counter: Counter[str],
+) -> tuple[Counter[str], dict[str, list[EntityProvenance]]]:
+    """一跳计数：frontier 实体在种子 chunk 之外的 chunk 及其溯源。"""
     bridge_counter: Counter[str] = Counter()
     bridge_provenance: dict[str, list[EntityProvenance]] = {}
     for entity_id in frontier_ids:
@@ -151,15 +181,19 @@ def plan_join(seeds: tuple[SeedEntity, ...], entities: tuple[Entity, ...]) -> _J
             bridge_provenance.setdefault(chunk_id, []).append(
                 EntityProvenance(entity_id, entity.name, KIND_BRIDGE)
             )
-    bridge_entries = tuple(
-        _PlannedChunk(chunk_id, float(bridge_counter[chunk_id]), tuple(bridge_provenance[chunk_id]))
-        for chunk_id in sorted(bridge_counter, key=lambda cid: (-bridge_counter[cid], cid))
-    )
+    return bridge_counter, bridge_provenance
 
-    # 种子分加层级偏移：rerank_score 契约是「最终排序第一关键字」，偏移保证任何
-    # 按分数降序的消费端不逆转种子在前、桥接在后的既定顺序；类内仍按计数保序。
+
+def _plan_seed_chunks(
+    seed_counter: Counter[str],
+    seed_provenance: dict[str, list[EntityProvenance]],
+    bridge_counter: Counter[str],
+) -> tuple[_PlannedChunk, ...]:
+    """种子分加层级偏移：rerank_score 契约是「最终排序第一关键字」，偏移保证任何
+    按分数降序的消费端不逆转种子在前、桥接在后的既定顺序；类内仍按计数保序。
+    """
     seed_tier_offset = float(max(bridge_counter.values(), default=0) + 1)
-    seed_entries = tuple(
+    return tuple(
         _PlannedChunk(
             chunk_id,
             float(seed_counter[chunk_id]) + seed_tier_offset,
@@ -167,7 +201,6 @@ def plan_join(seeds: tuple[SeedEntity, ...], entities: tuple[Entity, ...]) -> _J
         )
         for chunk_id in sorted(seed_counter, key=lambda cid: (-seed_counter[cid], cid))
     )
-    return _JoinPlan(seeds=seed_entries, bridges=bridge_entries, frontier_size=len(frontier_ids))
 
 
 def entity_join_search(
@@ -223,10 +256,7 @@ def _execute_join(
         EntityJoinHit(
             result=SearchResult(
                 chunk_id=entry.chunk_id,
-                source_name=chunk.source_name,
-                note_path=chunk.note_path,
-                source_hash=chunk.source_hash,
-                anchor=chunk.anchor,
+                citation=chunk.citation,
                 text=chunk.text,
                 bm25_score=None,
                 vector_score=None,

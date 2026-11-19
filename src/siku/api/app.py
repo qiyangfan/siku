@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -13,7 +12,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Query, Request, UploadFile
+from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -21,46 +20,23 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from siku import __version__
-from siku.api.library import (
-    AttachmentDigestCache,
-    IndexRunner,
-    LibraryJobBusyError,
-    LibraryJobManager,
-    LibraryJobNotRunningError,
-    SyncScheduler,
-    build_library_view,
-    discard_staged,
-    stage_upload,
+from siku.api.http_help import (
+    _LIBRARY_BUSY_RESPONSE,
+    _WRITE_LOCK_TIMEOUT_SECS,
+    _close_if_supported,
+    _error_response,
 )
+from siku.api.library import IndexRunner, LibraryJobManager, SyncScheduler
+from siku.api.library_view import AttachmentDigestCache
 from siku.api.messages import map_ask_error, map_domain_error, map_read_error
 from siku.api.models import (
     AskCitationResponse,
     AskRequest,
     AskResponse,
     AskRetrievalResponse,
-    ErrorResponse,
-    GraphExtractorResponse,
-    GraphRequest,
-    GraphResponse,
-    GraphSearchResponse,
-    GraphStatsResponse,
-    GraphSubgraphResponse,
     HealthResponse,
     IngestRequest,
     IngestResponse,
-    LibraryJobResponse,
-    LibraryPurgeRequest,
-    LibraryRebuildRequest,
-    LibraryRemoveRequest,
-    LibraryResponse,
-    LibraryScanRequest,
-    LibraryScanSettingsResponse,
-    LibraryScanSettingsUpdateRequest,
-    LibrarySourceCreateRequest,
-    LibrarySourceInfo,
-    LibrarySourceRemovedResponse,
-    LibrarySourcesResponse,
-    LibrarySourceUpdateRequest,
     NoteDetailResponse,
     NotesPageResponse,
     NoteSummaryResponse,
@@ -72,22 +48,10 @@ from siku.api.models import (
     SettingsTestResponse,
     SettingsUpdateRequest,
     SettingsWriteResponse,
-    WikiEntriesResponse,
-    WikiEntryDetailResponse,
-    WikiEntrySummaryResponse,
-    WikiRequest,
-    WikiResponse,
 )
-from siku.api.reading import (
-    graph_neighbors,
-    graph_overview,
-    graph_search,
-    graph_stats,
-    list_notes,
-    list_wiki_entries,
-    read_note_detail,
-    read_wiki_entry,
-)
+from siku.api.reading import list_notes, read_note_detail
+from siku.api.routes_graph_wiki import register_graph_wiki_routes
+from siku.api.routes_library import register_library_routes
 from siku.api.settings import (
     SettingsValidationError,
     apply_update,
@@ -99,7 +63,6 @@ from siku.api.settings import (
     resolve_probe_target,
 )
 from siku.extractors import extractor_registry
-from siku.graph.community import SummaryIdentity
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.models import GraphExtractor
 from siku.graph.providers import (
@@ -130,16 +93,11 @@ from siku.qa.providers import AnswerProvider
 from siku.qa.service import AnswerService
 from siku.retrieve.errors import InvalidQueryError, ModelNotAvailableError
 from siku.retrieve.indexer import sync_index
-from siku.retrieve.models import IndexReport, SearchOptions
+from siku.retrieve.models import IndexReport, SearchOptions, SearchResult
 from siku.retrieve.service import SearchService
 from siku.sync.locking import LibraryWriteBusyError, library_write_lock
-from siku.sync.registry import SourceAlreadyRegisteredError, SyncRegistry, library_db_path
-from siku.sync.removal import (
-    SourceNotFoundError,
-    SourceSyncManagedError,
-    ensure_library_writable,
-    removal_eligibility,
-)
+from siku.sync.registry import SyncRegistry, library_db_path
+from siku.sync.removal import ensure_library_writable
 from siku.sync.scanner import SourcePlan
 from siku.sync.service import ScanObserver, SyncService
 from siku.wiki.service import WikiResult, generate_wiki
@@ -151,13 +109,6 @@ DEFAULT_VAULT = Path("vault")
 DEFAULT_DATA_DIR = Path("data")
 ALLOWED_CORS_ORIGINS = ("http://127.0.0.1:5173", "http://localhost:5173")
 SNAPSHOT_GENERATOR = "uv run python -m siku.api.contract --refresh"
-# 同库写入的锁等待上限：正常交接够用，真冲突时快速返回忙。
-_WRITE_LOCK_TIMEOUT_SECS = 1.0
-_LIBRARY_BUSY_RESPONSE = (
-    409,
-    "library_job_busy",
-    "另一个 siku 进程正在写入该资料库，请等待其完成后再试。",
-)
 
 IngestHandler = Callable[[Path, Path], IngestReport]
 SearchServiceFactory = Callable[[Path], SearchService]
@@ -236,12 +187,6 @@ def _llm_provider_factory(
     return factory
 
 
-def _close_if_supported(resource: object) -> None:
-    close = getattr(resource, "close", None)
-    if callable(close):
-        close()
-
-
 def _supply_index_runner(
     vault: Path,
     data_dir: Path,
@@ -278,21 +223,6 @@ def _supply_graph_refresh_runner(
         )
 
     return runner
-
-
-def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content=ErrorResponse(code=code, message=message).model_dump(),
-    )
-
-
-def _paths_overlap(a: str, b: str) -> bool:
-    """两个已解析路径相等或存在包含关系时返回 True。"""
-    parts_a = Path(a).parts
-    parts_b = Path(b).parts
-    common = min(len(parts_a), len(parts_b))
-    return parts_a[:common] == parts_b[:common]
 
 
 def create_app(
@@ -414,6 +344,36 @@ def create_app(
     application.state.wiki_generator = wiki_generator
     application.state.answer_provider_factory = answer_provider_factory or llm_providers
 
+    _register_error_handlers(application)
+
+    @application.get("/api/health", response_model=HealthResponse)
+    async def health() -> HealthResponse:
+        return HealthResponse(status="ok", version=__version__)
+
+    # 资料库、图谱与 wiki 路由按资源拆到独立模块注册；注册顺序沿用拆分前的路径顺序，
+    # 以免契约快照与文档顺序漂移（/api/ingest 在资料库路由之前）。
+    _register_ingest_route(application, sync_registry=sync_registry)
+    register_library_routes(
+        application,
+        vault=vault,
+        data_dir=data_dir,
+        sync_registry=sync_registry,
+        library_jobs=library_jobs,
+        digest_cache=application.state.digest_cache,
+    )
+
+    _register_core_routes(application)
+    register_graph_wiki_routes(application, sync_registry=sync_registry)
+
+    _register_settings_routes(application, cli_supply_layer=cli_supply_layer, llm_supply=llm_supply)
+    if ui_dir is not None:
+        application.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")
+
+    _install_openapi(application)
+    return application
+
+
+def _register_error_handlers(application: FastAPI) -> None:
     @application.exception_handler(RequestValidationError)
     async def handle_validation_error(
         request: Request, _exc: RequestValidationError
@@ -436,303 +396,29 @@ def create_app(
         logger.exception("unhandled API error: error_class=%s", type(exc).__name__)
         return _error_response(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
 
-    @application.get("/api/health", response_model=HealthResponse)
-    async def health() -> HealthResponse:
-        return HealthResponse(status="ok", version=__version__)
 
-    @application.post("/api/ingest", response_model=IngestResponse)
-    def ingest(request: IngestRequest) -> IngestResponse | JSONResponse:
-        target_vault = request.vault or application.state.vault
-        try:
-            # 摄取与资料库任务共享跨进程写锁；仅应用自身 vault 需要检查清理态。
-            with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
-                if target_vault == application.state.vault:
-                    ensure_library_writable(application.state.data_dir, sync_registry)
-                report = application.state.ingest_handler(request.source, target_vault)
-        except LibraryWriteBusyError:
-            return _error_response(*_LIBRARY_BUSY_RESPONSE)
-        except Exception as exc:
-            logger.debug(
-                "API ingest failed: error_class=%s error_detail=%s",
-                type(exc).__name__,
-                exc,
-                exc_info=True,
-            )
-            mapping = map_domain_error(
-                exc, api_key_env=application.state.api_key_env, surface="http"
-            )
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return IngestResponse(
-            created=report.created,
-            updated=report.updated,
-            skipped=report.skipped,
-            ignored=report.ignored,
-        )
-
-    @application.get("/api/library", response_model=LibraryResponse)
-    def library() -> LibraryResponse | JSONResponse:
-        """桌面 vault 来源级清单：派生自摄取元数据与库域登记，只读不落盘。"""
-        try:
-            return build_library_view(
-                application.state.vault,
-                application.state.data_dir,
-                digest_cache=application.state.digest_cache,
-                registry=application.state.sync_registry,
-            )
-        except Exception as exc:
-            logger.debug(
-                "API library listing failed: error_class=%s detail=%s", type(exc).__name__, exc
-            )
-            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-
-    @application.get("/api/library/sources", response_model=LibrarySourcesResponse)
-    def library_sources_list() -> LibrarySourcesResponse:
-        """来源目录登记清单（库域注册表掩码视图，按路径排序）。"""
-        sources = sync_registry.list_sources()
-        return LibrarySourcesResponse(
-            sources=[
-                LibrarySourceInfo(
-                    id=source.id,
-                    path=source.path,
-                    enabled=source.enabled,
-                    created_at=source.created_at,
-                    last_scan_at=source.last_scan_at,
-                )
-                for source in sources
-            ]
-        )
-
-    @application.post("/api/library/sources", response_model=LibrarySourceInfo)
-    def library_sources_create(
-        request: LibrarySourceCreateRequest,
-    ) -> LibrarySourceInfo | JSONResponse:
-        """注册来源目录：校验存在且为目录，同一真实路径不重复登记。"""
-        try:
-            resolved = str(Path(request.path).expanduser().resolve())
-        except OSError as exc:
-            logger.debug("API source registration failed: detail=%s", exc)
-            return _error_response(422, "invalid_request", "无法解析目录路径，请检查后重试。")
-        if not Path(resolved).is_dir():
-            return _error_response(
-                422, "invalid_request", "来源目录不存在或不是目录，请检查后重试。"
-            )
-        # 来源目录不得与 vault 重叠，否则扫描会把 vault 内文件（含检疫副本）重新摄取。
-        vault_resolved = str(Path(application.state.vault).resolve())
-        if _paths_overlap(resolved, vault_resolved):
-            return _error_response(
-                422,
-                "invalid_request",
-                "来源目录不能与资料库 vault 目录重叠，请另选外部目录。",
-            )
-        try:
-            source = sync_registry.add_source(resolved, enabled=request.enabled)
-        except SourceAlreadyRegisteredError:
-            return _error_response(
-                409, "source_already_registered", "该目录已登记为来源，无需重复添加。"
-            )
-        except sqlite3.IntegrityError:
-            # 并发注册同一真实路径时由 UNIQUE 约束兜底。
-            return _error_response(
-                409, "source_already_registered", "该目录已登记为来源，无需重复添加。"
-            )
-        except OSError as exc:
-            logger.debug("API source registration failed: detail=%s", exc)
-            return _error_response(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
-        return LibrarySourceInfo(
-            id=source.id,
-            path=source.path,
-            enabled=source.enabled,
-            created_at=source.created_at,
-            last_scan_at=source.last_scan_at,
-        )
-
-    @application.put("/api/library/sources/{source_id}", response_model=LibrarySourceInfo)
-    def library_sources_update(
-        source_id: str, request: LibrarySourceUpdateRequest
-    ) -> LibrarySourceInfo | JSONResponse:
-        """启停来源目录：停用后扫描跳过该目录，登记与文档不受影响。"""
-        # 启停改变同步归属，需与移除、扫描共用同库写锁。
-        try:
-            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
-                source = sync_registry.set_source_enabled(source_id, request.enabled)
-        except LibraryWriteBusyError:
-            return _error_response(*_LIBRARY_BUSY_RESPONSE)
-        if source is None:
-            return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
-        return LibrarySourceInfo(
-            id=source.id,
-            path=source.path,
-            enabled=source.enabled,
-            created_at=source.created_at,
-            last_scan_at=source.last_scan_at,
-        )
-
-    @application.delete(
-        "/api/library/sources/{source_id}", response_model=LibrarySourceRemovedResponse
+def _search_result_response(result: SearchResult) -> SearchResultResponse:
+    """检索命中 → API 响应；JSON 保持扁平字段（citation 只在内核内部结构化）。"""
+    return SearchResultResponse(
+        chunk_id=result.chunk_id,
+        source_name=result.citation.source_name,
+        note_path=result.citation.note_path,
+        source_hash=result.citation.source_hash,
+        anchor=result.citation.anchor,
+        text=result.text,
+        bm25_score=result.bm25_score,
+        vector_score=result.vector_score,
+        hybrid_score=result.hybrid_score,
+        rerank_score=result.rerank_score,
     )
-    def library_sources_delete(source_id: str) -> LibrarySourceRemovedResponse | JSONResponse:
-        """移除登记与检测缓存；已入库文档与既有标记不受影响。"""
-        try:
-            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
-                removed = sync_registry.remove_source(source_id)
-        except LibraryWriteBusyError:
-            return _error_response(*_LIBRARY_BUSY_RESPONSE)
-        if not removed:
-            return _error_response(404, "source_not_found", "来源目录登记不存在，请刷新后重试。")
-        return LibrarySourceRemovedResponse(removed=True)
 
-    @application.post("/api/library/scan", response_model=LibraryJobResponse)
-    def library_scan(request: LibraryScanRequest) -> LibraryJobResponse | JSONResponse:
-        """立即执行一轮来源扫描：变更入库幂等，进度经任务快照轮询反馈。"""
-        try:
-            return library_jobs.start_scan(full=request.full)
-        except LibraryJobBusyError:
-            return _error_response(
-                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
-            )
 
-    @application.get("/api/library/scan-settings", response_model=LibraryScanSettingsResponse)
-    def library_scan_settings_read() -> LibraryScanSettingsResponse:
-        """自动扫描间隔（秒；0 = 关闭）与图谱自动刷新开关（缺省关闭）。"""
-        return LibraryScanSettingsResponse(
-            interval_secs=sync_registry.get_scan_interval(),
-            graph_auto_refresh=sync_registry.get_graph_auto_refresh(),
-        )
+def _register_core_routes(application: FastAPI) -> None:
+    _register_notes_routes(application)
+    _register_retrieval_routes(application)
 
-    @application.put("/api/library/scan-settings", response_model=LibraryScanSettingsResponse)
-    def library_scan_settings_write(
-        request: LibraryScanSettingsUpdateRequest,
-    ) -> LibraryScanSettingsResponse | JSONResponse:
-        """更新自动扫描间隔与图谱刷新开关；负数非法，设置每轮现读。"""
-        if request.interval_secs is not None and request.interval_secs < 0:
-            return _error_response(
-                422, "invalid_request", "扫描间隔不能为负数；0 表示关闭自动扫描。"
-            )
-        if request.interval_secs is not None:
-            sync_registry.set_scan_interval(request.interval_secs)
-        if request.graph_auto_refresh is not None:
-            sync_registry.set_graph_auto_refresh(request.graph_auto_refresh)
-        return LibraryScanSettingsResponse(
-            interval_secs=sync_registry.get_scan_interval(),
-            graph_auto_refresh=sync_registry.get_graph_auto_refresh(),
-        )
 
-    @application.post("/api/library/purge", response_model=LibraryJobResponse)
-    def library_purge(request: LibraryPurgeRequest) -> LibraryJobResponse | JSONResponse:
-        """物理清理全部已标记文档：唯一删除路径，必须显式携带确认标记。"""
-        if not request.confirm:
-            return _error_response(
-                422,
-                "purge_confirm_required",
-                "清理需要显式确认：请在请求中携带 confirm=true。",
-            )
-        try:
-            return library_jobs.start_purge()
-        except LibraryJobBusyError:
-            return _error_response(
-                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
-            )
-
-    @application.post("/api/library/remove", response_model=LibraryJobResponse)
-    def library_remove(request: LibraryRemoveRequest) -> LibraryJobResponse | JSONResponse:
-        """按来源 ID 确认移除；请求不接受文件路径。"""
-        if not request.confirmed:
-            return _error_response(
-                422,
-                "remove_confirm_required",
-                "移除需要显式确认：请在请求中携带 confirmed=true。",
-            )
-        # 先判定资格；任务体内取得写锁后再核对同步登记。
-        try:
-            removal_eligibility(
-                sync_registry,
-                application.state.vault,
-                application.state.data_dir,
-                request.source_id,
-            )
-        except SourceNotFoundError:
-            return _error_response(
-                404, "source_not_found", "目标资料不存在，可能已被移除；请刷新清单后重试。"
-            )
-        except SourceSyncManagedError:
-            return _error_response(
-                409,
-                "source_sync_managed",
-                "该资料由来源目录同步管理：请经来源目录的停用/解除登记与既有清理流程处理，"
-                "不能手动单项移除。",
-            )
-        try:
-            return library_jobs.start_remove(request.source_id)
-        except LibraryJobBusyError:
-            return _error_response(
-                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
-            )
-
-    @application.post("/api/library/ingest", response_model=LibraryJobResponse)
-    def library_ingest(
-        files: Annotated[list[UploadFile], File()],
-    ) -> LibraryJobResponse | JSONResponse:
-        """暂存上传文件并启动摄取任务，完成后增量索引。"""
-        staged: list[Path] = []
-        try:
-            for upload in files:
-                staged.append(stage_upload(upload.filename or "", upload.file))
-        except ValueError:
-            for path in staged:
-                discard_staged(path)
-            return _error_response(422, "invalid_request", "请求参数无效，请检查后重试。")
-        except OSError:
-            for path in staged:
-                discard_staged(path)
-            logger.debug("API library staging failed", exc_info=True)
-            return _error_response(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
-        # 同内容同名上传会落到同一路径，去重避免重复处理。
-        staged = list(dict.fromkeys(staged))
-        try:
-            return library_jobs.start_ingest(staged)
-        except LibraryJobBusyError:
-            for path in staged:
-                discard_staged(path)
-            return _error_response(
-                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
-            )
-
-    @application.get("/api/library/jobs/{job_id}", response_model=LibraryJobResponse)
-    def library_job(job_id: str) -> LibraryJobResponse | JSONResponse:
-        """轮询摄取/重建任务进度；任务只存内存，进程重启后旧 id 即失效。"""
-        snapshot = library_jobs.snapshot(job_id)
-        if snapshot is None:
-            return _error_response(404, "job_not_found", "任务不存在或服务已重启，请重新触发。")
-        return snapshot
-
-    @application.post("/api/library/jobs/{job_id}/cancel", response_model=LibraryJobResponse)
-    def library_job_cancel(job_id: str) -> LibraryJobResponse | JSONResponse:
-        """协作式取消：当前文件处理完毕后停止，已完成部分保留（幂等兜底）。"""
-        try:
-            snapshot = library_jobs.request_cancel(job_id)
-        except LibraryJobNotRunningError:
-            return _error_response(409, "library_job_not_running", "任务已结束，无需取消。")
-        if snapshot is None:
-            return _error_response(404, "job_not_found", "任务不存在或服务已重启，请重新触发。")
-        return snapshot
-
-    @application.post("/api/library/rebuild", response_model=LibraryJobResponse)
-    def library_rebuild(request: LibraryRebuildRequest) -> LibraryJobResponse | JSONResponse:
-        """全量重建检索索引：需显式确认标记，进度经任务快照轮询反馈。"""
-        if not request.confirm:
-            return _error_response(
-                422,
-                "rebuild_confirm_required",
-                "全量重建需要显式确认：请在请求中携带 confirm=true。",
-            )
-        try:
-            return library_jobs.start_rebuild()
-        except LibraryJobBusyError:
-            return _error_response(
-                409, "library_job_busy", "已有一个摄取或重建任务正在执行，请等待其完成后再试。"
-            )
-
+def _register_notes_routes(application: FastAPI) -> None:
     @application.get("/api/notes", response_model=NotesPageResponse)
     def notes_list_view(
         page: Annotated[int, Query(ge=1)] = 1,
@@ -767,6 +453,39 @@ def create_app(
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return NoteDetailResponse(**asdict(detail))
 
+
+def _register_ingest_route(application: FastAPI, *, sync_registry: SyncRegistry) -> None:
+    @application.post("/api/ingest", response_model=IngestResponse)
+    def ingest(request: IngestRequest) -> IngestResponse | JSONResponse:
+        target_vault = request.vault or application.state.vault
+        try:
+            # 摄取与资料库任务共享跨进程写锁；仅应用自身 vault 需要检查清理态。
+            with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
+                if target_vault == application.state.vault:
+                    ensure_library_writable(application.state.data_dir, sync_registry)
+                report = application.state.ingest_handler(request.source, target_vault)
+        except LibraryWriteBusyError:
+            return _error_response(*_LIBRARY_BUSY_RESPONSE)
+        except Exception as exc:
+            logger.debug(
+                "API ingest failed: error_class=%s error_detail=%s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            mapping = map_domain_error(
+                exc, api_key_env=application.state.api_key_env, surface="http"
+            )
+            return _error_response(mapping.status_code, mapping.code, mapping.message)
+        return IngestResponse(
+            created=report.created,
+            updated=report.updated,
+            skipped=report.skipped,
+            ignored=report.ignored,
+        )
+
+
+def _register_retrieval_routes(application: FastAPI) -> None:
     @application.post("/api/search", response_model=SearchResponse)
     def search(request: SearchRequest) -> SearchResponse | JSONResponse:
         options = SearchOptions(top_k=request.top_k, candidate_k=request.candidate_k)
@@ -790,7 +509,7 @@ def create_app(
             query=request.query,
             top_k=request.top_k,
             candidate_k=request.candidate_k,
-            results=[SearchResultResponse(**asdict(result)) for result in results],
+            results=[_search_result_response(result) for result in results],
         )
 
     @application.post("/api/ask", response_model=AskResponse)
@@ -799,11 +518,11 @@ def create_app(
         provider: AnswerProvider | None = None
         logger.info("API ask started: request_id=%s", request_id)
         try:
-            provider = application.state.answer_provider_factory()
-            assert provider is not None  # 工厂按请求解析通道，不会返回 None
+            configured_provider = application.state.answer_provider_factory()
+            provider = configured_provider
             service = AnswerService(
                 application.state.search_service_factory(application.state.data_dir),
-                provider,
+                configured_provider,
             )
             result = service.ask(
                 request.question,
@@ -837,195 +556,24 @@ def create_app(
             model=result.model,
         )
 
-    @application.post("/api/graph", response_model=GraphResponse)
-    def graph(request: GraphRequest) -> GraphResponse | JSONResponse:
-        target_vault = request.vault or application.state.vault
-        target_data_dir = request.data_dir or application.state.data_dir
-        extractor: GraphExtractor | None = None
-        try:
-            extractor = application.state.graph_extractor_factory()
-            assert extractor is not None  # 工厂按请求解析通道，不会返回 None
-            # 图谱构建与移除、摄取共用写锁，避免发布已移除内容。
-            with library_write_lock(target_vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
-                if target_vault == application.state.vault:
-                    ensure_library_writable(application.state.data_dir, sync_registry)
-                result = application.state.graph_builder(
-                    target_vault,
-                    target_data_dir,
-                    extractor,
-                    rebuild=request.rebuild,
-                    summary_identity=SummaryIdentity(model_id=extractor.model_id),
-                )
-        except LibraryWriteBusyError:
-            if extractor is not None:
-                _close_if_supported(extractor)
-                extractor = None
-            return _error_response(*_LIBRARY_BUSY_RESPONSE)
-        except Exception as exc:
-            logger.debug(
-                "API graph failed: error_class=%s error_detail=%s",
-                type(exc).__name__,
-                exc,
-                exc_info=True,
-            )
-            mapping = map_domain_error(
-                exc, api_key_env=application.state.api_key_env, surface="http"
-            )
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        finally:
-            if extractor is not None:
-                _close_if_supported(extractor)
-        report = result.report
-        return GraphResponse(
-            chunks=report.chunk_count,
-            nodes=report.node_count,
-            edges=report.edge_count,
-            communities=report.community_count,
-            ambiguous_entities=report.ambiguous_entity_count,
-            cache_hits=report.cache_hits,
-            llm_calls=report.llm_calls,
-            warnings=list(report.warnings),
-            empty_corpus=result.empty_corpus,
-            extractor=GraphExtractorResponse(
-                id=report.extractor_id,
-                model=report.model_id,
-                prompt_version=report.prompt_version,
-            ),
-        )
 
-    @application.get("/api/graph/stats", response_model=GraphStatsResponse)
-    def graph_stats_view() -> GraphStatsResponse | JSONResponse:
-        """读取节点、边与社区计数及类型分布。"""
-        try:
-            stats = graph_stats(application.state.data_dir)
-        except Exception as exc:
-            logger.debug(
-                "API graph stats failed: error_class=%s detail=%s", type(exc).__name__, exc
-            )
-            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return GraphStatsResponse(**asdict(stats))
+def _register_settings_routes(
+    application: FastAPI,
+    *,
+    cli_supply_layer: ModelSupplyConfig,
+    llm_supply: ChannelValues | None,
+) -> None:
+    _register_settings_read(application, cli_supply_layer=cli_supply_layer, llm_supply=llm_supply)
+    _register_settings_write(application, cli_supply_layer=cli_supply_layer, llm_supply=llm_supply)
+    _register_settings_test(application)
 
-    @application.get("/api/graph/overview", response_model=GraphSubgraphResponse)
-    def graph_overview_view(
-        limit: Annotated[int, Query(ge=1, le=500)] = 200,
-    ) -> GraphSubgraphResponse | JSONResponse:
-        """返回度数最高的 N 个节点及它们之间的边；超限时标记截断。"""
-        try:
-            subgraph = graph_overview(application.state.data_dir, limit=limit)
-        except Exception as exc:
-            logger.debug(
-                "API graph overview failed: error_class=%s detail=%s", type(exc).__name__, exc
-            )
-            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return GraphSubgraphResponse(**asdict(subgraph))
 
-    @application.get("/api/graph/search", response_model=GraphSearchResponse)
-    def graph_search_view(
-        q: Annotated[str, Query(min_length=1)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 20,
-    ) -> GraphSearchResponse | JSONResponse:
-        """按名称大小写不敏感包含匹配搜索实体，按度数降序，超限时标记截断。"""
-        if not q.strip():
-            return _error_response(422, "invalid_request", "请求参数无效，请检查后重试。")
-        try:
-            subgraph = graph_search(application.state.data_dir, query=q, limit=limit)
-        except Exception as exc:
-            logger.debug(
-                "API graph search failed: error_class=%s detail=%s", type(exc).__name__, exc
-            )
-            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return GraphSearchResponse(**asdict(subgraph))
-
-    @application.get("/api/graph/neighbors/{entity_id}", response_model=GraphSubgraphResponse)
-    def graph_neighbors_view(
-        entity_id: str,
-        limit: Annotated[int, Query(ge=1, le=200)] = 50,
-        depth: Annotated[int, Query(ge=1, le=2)] = 1,
-    ) -> GraphSubgraphResponse | JSONResponse:
-        """返回中心节点的有界 BFS 邻域；节点数超限时标记截断。"""
-        try:
-            subgraph = graph_neighbors(
-                application.state.data_dir, entity_id, limit=limit, depth=depth
-            )
-        except Exception as exc:
-            logger.debug(
-                "API graph neighbors failed: error_class=%s detail=%s", type(exc).__name__, exc
-            )
-            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return GraphSubgraphResponse(**asdict(subgraph))
-
-    @application.post("/api/wiki", response_model=WikiResponse)
-    def wiki(request: WikiRequest) -> WikiResponse | JSONResponse:
-        target_data_dir = request.data_dir or application.state.data_dir
-        summarizer: Summarizer | None = None
-        try:
-            summarizer = application.state.summarizer_factory()
-            # wiki 写盘与移除共用写锁，避免复活已移除内容。
-            with library_write_lock(application.state.vault, timeout=_WRITE_LOCK_TIMEOUT_SECS):
-                ensure_library_writable(application.state.data_dir, sync_registry)
-                result = application.state.wiki_generator(target_data_dir, summarizer)
-        except LibraryWriteBusyError:
-            if summarizer is not None:
-                _close_if_supported(summarizer)
-                summarizer = None
-            return _error_response(*_LIBRARY_BUSY_RESPONSE)
-        except Exception as exc:
-            logger.debug(
-                "API wiki failed: error_class=%s error_detail=%s",
-                type(exc).__name__,
-                exc,
-                exc_info=True,
-            )
-            mapping = map_domain_error(
-                exc, api_key_env=application.state.api_key_env, surface="http"
-            )
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        finally:
-            if summarizer is not None:
-                _close_if_supported(summarizer)
-        return WikiResponse(
-            entries=result.entry_count,
-            cache_hits=result.cache_hits,
-            llm_calls=result.llm_calls,
-            empty_graph=result.empty_graph,
-        )
-
-    @application.get("/api/wiki/entries", response_model=WikiEntriesResponse)
-    def wiki_entries_view() -> WikiEntriesResponse | JSONResponse:
-        """读取 data/wiki/entries 下的条目清单，不触发生成。"""
-        try:
-            entries = list_wiki_entries(application.state.data_dir)
-        except Exception as exc:
-            logger.debug(
-                "API wiki entries listing failed: error_class=%s detail=%s",
-                type(exc).__name__,
-                exc,
-            )
-            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return WikiEntriesResponse(
-            entries=[WikiEntrySummaryResponse(**asdict(entry)) for entry in entries]
-        )
-
-    @application.get("/api/wiki/entries/{community_id}", response_model=WikiEntryDetailResponse)
-    def wiki_entry_view(community_id: int) -> WikiEntryDetailResponse | JSONResponse:
-        """读取单条 wiki 的 Markdown 与时效元数据。"""
-        try:
-            entry = read_wiki_entry(application.state.data_dir, community_id)
-        except Exception as exc:
-            logger.debug(
-                "API wiki entry detail failed: error_class=%s detail=%s",
-                type(exc).__name__,
-                exc,
-            )
-            mapping = map_read_error(exc, api_key_env=application.state.api_key_env)
-            return _error_response(mapping.status_code, mapping.code, mapping.message)
-        return WikiEntryDetailResponse(**asdict(entry))
-
+def _register_settings_read(
+    application: FastAPI,
+    *,
+    cli_supply_layer: ModelSupplyConfig,
+    llm_supply: ChannelValues | None,
+) -> None:
     @application.get("/api/settings", response_model=SettingsResponse)
     def read_settings() -> SettingsResponse | JSONResponse:
         """返回三通道掩码视图；凭证不回显，环境变量覆盖字段会标注。
@@ -1055,6 +603,13 @@ def create_app(
             return _error_response(mapping.status_code, mapping.code, mapping.message)
         return view
 
+
+def _register_settings_write(
+    application: FastAPI,
+    *,
+    cli_supply_layer: ModelSupplyConfig,
+    llm_supply: ChannelValues | None,
+) -> None:
     @application.put("/api/settings", response_model=SettingsWriteResponse)
     def write_settings(update: SettingsUpdateRequest) -> SettingsWriteResponse | JSONResponse:
         """合并并原子写入 config.toml（0600），失效检索缓存后返回新视图。
@@ -1120,6 +675,8 @@ def create_app(
             invalid_config_file_overwritten=recovered,
         )
 
+
+def _register_settings_test(application: FastAPI) -> None:
     @application.post("/api/settings/test", response_model=SettingsTestResponse)
     def test_settings(request: SettingsTestRequest) -> SettingsTestResponse | JSONResponse:
         """对单通道发起最小连通性探测：不持久化，不回显上游错误体。"""
@@ -1145,9 +702,8 @@ def create_app(
         latency_ms = int((time.perf_counter() - started) * 1000)
         return SettingsTestResponse(ok=True, channel=request.channel, latency_ms=latency_ms)
 
-    if ui_dir is not None:
-        application.mount("/", StaticFiles(directory=ui_dir, html=True), name="ui")
 
+def _install_openapi(application: FastAPI) -> None:
     original_openapi = application.openapi
 
     def openapi_with_generator() -> dict[str, Any]:
@@ -1155,4 +711,3 @@ def create_app(
         return {"x-siku-generated-by": SNAPSHOT_GENERATOR, **schema}
 
     application.openapi = openapi_with_generator  # type: ignore[method-assign]
-    return application

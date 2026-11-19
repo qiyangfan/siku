@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from siku.retrieve.errors import IndexCorruptError, IndexUnavailableError
-from siku.retrieve.models import ChunkRecord, DocumentRecord
+from siku.retrieve.models import ChunkRecord, Citation, DocumentRecord
 from siku.retrieve.tokenizer import ensure_fts5_available
 
 SCHEMA_VERSION = 1
@@ -54,6 +54,10 @@ _SCHEMA_SQL = (
 )
 
 _CHUNK_COLUMNS = "chunk_id, source_id, source_hash, source_name, note_path, anchor, ordinal, text"
+_INSERT_CHUNK_SQL = (
+    "INSERT INTO chunks(chunk_id, source_id, source_hash, source_name, note_path, anchor, "
+    "ordinal, text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+)
 _BATCH_SIZE = 500
 
 
@@ -61,10 +65,12 @@ def _chunk_from_row(row: tuple) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=row[0],
         source_id=row[1],
-        source_hash=row[2],
-        source_name=row[3],
-        note_path=row[4],
-        anchor=row[5],
+        citation=Citation(
+            source_name=row[3],
+            note_path=row[4],
+            source_hash=row[2],
+            anchor=row[5],
+        ),
         ordinal=row[6],
         text=row[7],
     )
@@ -201,8 +207,9 @@ class SqliteIndex:
             "embedding_dimensions",
             "tokenizer_version",
         )
+        # 仅拼接 "?" 占位符，值全部参数化传入；S608 误报。
         rows = self._connection.execute(
-            f"SELECT key, value FROM index_meta WHERE key IN ({', '.join('?' for _ in keys)})",
+            f"SELECT key, value FROM index_meta WHERE key IN ({', '.join('?' for _ in keys)})",  # noqa: S608
             keys,
         ).fetchall()
         return {str(key): str(value) for key, value in rows}
@@ -230,14 +237,14 @@ class SqliteIndex:
 
     def insert_chunk(self, chunk: ChunkRecord, tokens: list[str]) -> None:
         self._connection.execute(
-            "INSERT INTO chunks(" + _CHUNK_COLUMNS + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            _INSERT_CHUNK_SQL,
             (
                 chunk.chunk_id,
                 chunk.source_id,
-                chunk.source_hash,
-                chunk.source_name,
-                chunk.note_path,
-                chunk.anchor,
+                chunk.citation.source_hash,
+                chunk.citation.source_name,
+                chunk.citation.note_path,
+                chunk.citation.anchor,
                 chunk.ordinal,
                 chunk.text,
             ),
@@ -252,8 +259,9 @@ class SqliteIndex:
         for start in range(0, len(source_ids), _BATCH_SIZE):
             batch = source_ids[start : start + _BATCH_SIZE]
             placeholders = ", ".join("?" for _ in batch)
+            # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
             documents = source._connection.execute(
-                f"SELECT source_id, source_hash, source_name, note_path, extractor "
+                "SELECT source_id, source_hash, source_name, note_path, extractor "  # noqa: S608
                 f"FROM documents WHERE source_id IN ({placeholders})",
                 batch,
             ).fetchall()
@@ -264,7 +272,7 @@ class SqliteIndex:
                 documents,
             )
             chunks = source._connection.execute(
-                "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE source_id IN ({placeholders})",
+                "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE source_id IN ({placeholders})",  # noqa: S608
                 batch,
             ).fetchall()
             self._connection.executemany(
@@ -272,8 +280,9 @@ class SqliteIndex:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 chunks,
             )
+            # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
             fts_rows = source._connection.execute(
-                "SELECT f.chunk_id, f.tokens FROM chunks_fts AS f "
+                "SELECT f.chunk_id, f.tokens FROM chunks_fts AS f "  # noqa: S608
                 "WHERE f.chunk_id IN "
                 f"(SELECT chunk_id FROM chunks WHERE source_id IN ({placeholders}))",
                 batch,
@@ -315,7 +324,7 @@ class SqliteIndex:
             batch = source_ids[start : start + _BATCH_SIZE]
             placeholders = ", ".join("?" for _ in batch)
             rows = self._connection.execute(
-                "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE source_id IN ({placeholders})",
+                "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE source_id IN ({placeholders})",  # noqa: S608
                 batch,
             ).fetchall()
             chunks.extend(_chunk_from_row(row) for row in rows)
@@ -327,7 +336,7 @@ class SqliteIndex:
             batch = chunk_ids[start : start + _BATCH_SIZE]
             placeholders = ", ".join("?" for _ in batch)
             rows = self._connection.execute(
-                "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE chunk_id IN ({placeholders})",
+                "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE chunk_id IN ({placeholders})",  # noqa: S608
                 batch,
             ).fetchall()
             for row in rows:

@@ -1,8 +1,8 @@
 """默认 `LlmGraphExtractor` 的行为测试：prompt 组装、chunk 映射与错误传播。"""
 
 import pytest
+from tests.graph_fakes import RATE_LIMITED, ScriptedLlmProvider
 
-from graph_fakes import RATE_LIMITED, ScriptedLlmProvider
 from siku.graph.errors import (
     GraphExtractionError,
     LlmRateLimitError,
@@ -13,17 +13,19 @@ from siku.graph.extractor import (
     LlmGraphExtractor,
     build_user_prompt,
 )
-from siku.retrieve.models import ChunkRecord
+from siku.retrieve.models import ChunkRecord, Citation
 
 
 def make_chunk(text: str = "张三来到北京。", ordinal: int = 0) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=f"chunk-{ordinal}",
         source_id="a" * 12,
-        source_hash="b" * 64,
-        source_name="report.pdf",
-        note_path="notes/report--aaaaaaaaaaaa.md",
-        anchor="page:1",
+        citation=Citation(
+            source_name="report.pdf",
+            note_path="notes/report--aaaaaaaaaaaa.md",
+            source_hash="b" * 64,
+            anchor="page:1",
+        ),
         ordinal=ordinal,
         text=text,
     )

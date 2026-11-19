@@ -3,8 +3,8 @@
 from pathlib import Path
 
 import pytest
+from tests.fakes import FakeEmbeddingProvider
 
-from fakes import FakeEmbeddingProvider
 from siku.retrieve.errors import (
     IndexCorruptError,
     ModelConfigMismatchError,
@@ -190,7 +190,9 @@ class TestIncrementalSync:
             assert document is not None
             assert document.note_path == "notes/renamed--bbbbbbbbbbbb.md"
             chunks = index.chunks_of_sources(["b" * 12])
-            assert all(chunk.note_path == "notes/renamed--bbbbbbbbbbbb.md" for chunk in chunks)
+            assert all(
+                chunk.citation.note_path == "notes/renamed--bbbbbbbbbbbb.md" for chunk in chunks
+            )
         finally:
             index.close()
 
@@ -337,4 +339,4 @@ class TestNotesReaderIntegration:
     def test_read_note_parses_projection(self, vault: Path, tmp_path: Path) -> None:
         document, chunks = read_note(vault / "notes" / "a--aaaaaaaaaaaa.md", vault)
         assert document.source_id == "a" * 12
-        assert chunks[0].anchor == "page:1"
+        assert chunks[0].citation.anchor == "page:1"

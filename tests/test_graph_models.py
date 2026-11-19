@@ -13,17 +13,19 @@ from siku.graph.models import (
     extraction_from_payload,
     extraction_to_payload,
 )
-from siku.retrieve.models import ChunkRecord
+from siku.retrieve.models import ChunkRecord, Citation
 
 
 def _minimal_chunk() -> ChunkRecord:
     return ChunkRecord(
         chunk_id="c1",
         source_id="a" * 12,
-        source_hash="b" * 64,
-        source_name="a.pdf",
-        note_path="notes/a.md",
-        anchor="page:1",
+        citation=Citation(
+            source_name="a.pdf",
+            note_path="notes/a.md",
+            source_hash="b" * 64,
+            anchor="page:1",
+        ),
         ordinal=0,
         text="正文",
     )

@@ -39,8 +39,7 @@ def detect_communities(graph: nx.Graph) -> tuple[tuple[str, ...], ...]:
     if graph.number_of_nodes() == 0:
         return ()
     raw_communities = nx.community.louvain_communities(graph, seed=COMMUNITY_SEED)
-    communities = tuple(sorted(tuple(sorted(members)) for members in raw_communities))
-    return communities
+    return tuple(sorted(tuple(sorted(members)) for members in raw_communities))
 
 
 def internal_relation_triples(

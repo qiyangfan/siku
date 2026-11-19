@@ -11,6 +11,9 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
     "pydantic-settings>=2.4",
+    # 应用异常映射直接 catch StarletteHTTPException（覆盖 FastAPI 子类），
+    # 属直接 import，必须声明为一等依赖（deptry DEP003）
+    "starlette>=0.40",
     "typer>=0.12",
     # 图谱依赖：内存图、parquet 本体读写和 OpenAI 兼容 LLM 通道。
     # 三者均为轻依赖，不引入 torch 系重依赖与 server 形态组件（架构红线 #4、ADR-0003）
@@ -49,6 +52,15 @@ dev = [
     "pyinstaller>=6.10",
     # 测试专用 PDF 夹具生成（含中文 CID 字体）；不进运行时依赖
     "reportlab>=4.0",
+    "pylint>=3.3",
+    "import-linter>=2.0",
+    # 死代码门禁（knip 的 Python 对应物）：与 knip 同口径只报高置信命中
+    "vulture>=2.14",
+    # 依赖卫生：未声明/未使用/传递依赖直接 import 三类问题
+    "deptry>=0.23",
+    # 依赖审计的漏洞扫描件与工作流安全审计（P0-2 / P0-5）
+    "pip-audit>=2.9",
+    "zizmor>=1.32",
 ]
 
 [build-system]
@@ -81,11 +93,29 @@ select = [
     "C4",  # flake8-comprehensions
     "SIM", # flake8-simplify
     "RUF", # ruff 专属规则
+    # 结构门禁取 ruff 默认阈值（与 kongming 同口径）：圈复杂度 10、分支 12、语句 50
+    "C901",
+    "PLR0912",
+    "PLR0915",
+    # 性能与返回/导入卫生（均为默认规则集，无自定义参数）
+    "PERF",
+    "RET",
+    "TID",
+    "ICN",
+    "PLR0402", # 子模块只用 from 导入，禁止 import x.y as y 形式的别名
+    "S",   # flake8-bandit 安全规则（P0-3 SAST 的 Python 侧）
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试代码只处理本地夹具：断言是测试惯用法，临时目录/pickle/子进程启动
+# 均不接收不受信输入。生产代码不放行任何 S 规则。
+"tests/**" = ["S101", "S104", "S105", "S106", "S107", "S108", "S301", "S603", "S607"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# 告警即失败：全量实测零告警；防止新依赖/新代码把弃用警告带进 CI。
+filterwarnings = ["error"]
 # e2e（真实 serve 进程接线冒烟）默认排除，由 CI 独立 job 经 `pytest -m e2e` 运行。
 addopts = "-q -m 'not e2e'"
 markers = [
@@ -94,7 +124,74 @@ markers = [
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src", "tests"]
+# tests 统一用 `tests.xxx` 包限定导入（namespace package），
+# explicit_package_bases 让 mypy 与 pytest（pythonpath=.）解析口径一致。
+# scripts/benchmarks 同属可执行代码，一并纳入检查面。
+files = ["src", "tests", "scripts", "benchmarks"]
+mypy_path = ["src"]
+explicit_package_bases = true
 disallow_untyped_defs = true
 warn_return_any = true
 ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["siku"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# 基线 89.97%（行+分支合计，向下取整）；只降不升由门禁保证。
+fail_under = 89
+
+# 架构边界（红线 #2/#4 的依赖面）：底层模块不得反向依赖入口层/编排层。
+[tool.importlinter]
+root_packages = ["siku"]
+
+[[tool.importlinter.contracts]]
+name = "抽取器不依赖其他内核模块（ADR-0005 可插拔边界）"
+type = "forbidden"
+source_modules = ["siku.extractors"]
+forbidden_modules = [
+    "siku.api",
+    "siku.cli",
+    "siku.graph",
+    "siku.ingest",
+    "siku.mcp",
+    "siku.model_supply",
+    "siku.qa",
+    "siku.retrieve",
+    "siku.sidecar",
+    "siku.sync",
+    "siku.wiki",
+]
+
+[[tool.importlinter.contracts]]
+name = "内核模块不反向依赖入口层与同步编排"
+type = "forbidden"
+source_modules = [
+    "siku.ingest",
+    "siku.retrieve",
+    "siku.graph",
+    "siku.wiki",
+    "siku.qa",
+    "siku.model_supply",
+]
+forbidden_modules = ["siku.api", "siku.cli", "siku.mcp", "siku.sidecar", "siku.sync"]
+
+[[tool.importlinter.contracts]]
+name = "检索内核不依赖摄取与同步"
+type = "forbidden"
+source_modules = ["siku.retrieve"]
+forbidden_modules = ["siku.ingest", "siku.sync"]
+
+# 死代码：只认高置信命中（80%），60% 档会把 pydantic model_config、
+# 框架注册函数等动态引用误报（实测 15 条噪音）
+[tool.vulture]
+paths = ["src"]
+min_confidence = 80
+
+[tool.deptry]
+# 合法例外：python-multipart 仅供 FastAPI multipart 解析、无 Python import；
+# docling 只经可选 extra 的动态导入接入，二者都不应写死导入点
+per_rule_ignores = { DEP002 = ["python-multipart", "docling"] }
+package_module_name_map = { docling = "docling" }

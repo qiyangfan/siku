@@ -12,13 +12,14 @@ import json
 
 import httpx
 import pytest
-from conftest import SEED_MARKER
-from fake_channels import (
+from tests.e2e.fake_channels import (
     CANNED_EXTRACTION,
     EMBEDDING_DIMENSIONS,
     WIKI_SUMMARY,
     FakeChannelServer,
 )
+
+from conftest import SEED_MARKER
 
 pytestmark = pytest.mark.e2e
 

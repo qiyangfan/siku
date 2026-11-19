@@ -1,0 +1,50 @@
+# 许可证 allowlist（默认 deny-all）。只列宽松/弱 copyleft 许可，
+# 强 copyleft（GPL/AGPL/SSPL）不在其中即被拒绝。
+allow:
+  - MIT
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - 0BSD
+  - Unlicense
+  - CC0-1.0
+  - MPL-2.0
+  - EPL-2.0
+  - LGPL-2.1-only
+  - LGPL-2.1-or-later
+  - LGPL-3.0-only
+  - LGPL-3.0-or-later
+  - Python-2.0
+  - PSF-2.0
+  - Zlib
+  - BSL-1.0
+  - MIT-0
+  - MIT-CMU
+  - CNRI-Python
+  - Unicode-3.0
+  # 以下为包元数据中的非 SPDX 自由文本写法，均为宽松许可（与上面同义）。
+  - PSFL              # defusedxml：PSF License
+  - Apache 2          # deprecation
+  - Apache 2.0        # sortedcontainers
+  - BSD               # nodeenv
+  - BSD 2-Clause License   # grimp / import-linter
+  - Expat license     # mccabe（即 MIT）
+  - ISC License       # shellingham
+  - MIT License       # uvloop
+
+# Cargo.lock 与 uv.lock 不携带许可证元数据，SBOM 中相应组件无 license 字段；
+# 这类未知项跳过（SBOM 仍作为 artifact 留存供审计），已知许可证照常执行 allowlist。
+require-license: false
+require-known-license: false
+
+# 仅构建期/开发期工具；均不进入发布产物，且无宽松替代。
+# 复核到期日：2027-06-30（到期前替换或重新裁决）。
+ignore-packages:
+  - pylint            # GPL-2.0-or-later；开发期 lint 工具
+  - astroid           # LGPL-2.1-or-later；pylint 依赖（已允许 LGPL，保留兜底）
+  - pyinstaller       # GPLv2+ 特殊例外；仅桌面打包构建期
+  - pyinstaller-hooks-contrib  # GPL-2.0-only；仅桌面打包构建期
+  - autocommand       # LGPLv3 非 SPDX 名称；开发期传递依赖
+  - python-dateutil   # "Dual License" = Apache-2.0 或 BSD-3-Clause，两者均允许
+  - reportlab         # 元数据为自由文本 BSD（license.txt），仅测试夹具生成用

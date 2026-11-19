@@ -3,7 +3,18 @@ export type ApiError = {
   message: string;
 };
 
-export type AskCitation = {
+/** HTTP 错误载体：保留稳定 code 字段，同时满足 Error 抛出约定。 */
+class ApiHttpError extends Error implements ApiError {
+  readonly code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+  }
+}
+
+type AskCitation = {
   citation_id: string;
   source_name: string;
   note_path: string;
@@ -53,7 +64,7 @@ export type AskReadiness = {
 };
 
 // LLM 通道厂商环境变量回退的端点描述（不含凭证明文）；旧内核缺失该字段时按无回退处理
-export type LlmEnvFallback = {
+type LlmEnvFallback = {
   vendor: string;
   base_url: string;
   model: string;
@@ -90,7 +101,9 @@ export type SettingsUpdatePayload = {
   rerank?: ChannelSettingsPayload;
 };
 
-export type SettingsTestPayload = { channel: ChannelName } & ChannelSettingsPayload;
+export type SettingsTestPayload = {
+  channel: ChannelName;
+} & ChannelSettingsPayload;
 
 export type SettingsTestResponse = {
   ok: boolean;
@@ -127,25 +140,20 @@ export type LibraryResponse = {
 };
 
 export type LibraryJobItemStatus =
-  | "created"
-  | "updated"
-  | "skipped"
-  | "ignored"
-  | "failed"
-  | "removed";
+  "created" | "updated" | "skipped" | "ignored" | "failed" | "removed";
 
-export type LibraryJobItem = {
+type LibraryJobItem = {
   name: string;
   path: string;
   status: LibraryJobItemStatus;
   detail: string | null;
 };
 
-export type LibraryJobKind = "ingest" | "rebuild" | "scan" | "purge" | "remove";
+type LibraryJobKind = "ingest" | "rebuild" | "scan" | "purge" | "remove";
 
-export type LibraryJobState = "running" | "succeeded" | "failed" | "cancelled";
+type LibraryJobState = "running" | "succeeded" | "failed" | "cancelled";
 
-export type LibraryJobPhase = "scanning" | "ingesting" | "purging" | "indexing";
+type LibraryJobPhase = "scanning" | "ingesting" | "purging" | "indexing";
 
 export type LibraryJob = {
   job_id: string;
@@ -228,7 +236,7 @@ export type GraphSearchResult = GraphSubgraph & {
   limit: number;
 };
 
-export type GraphExtractorInfo = {
+type GraphExtractorInfo = {
   id: string;
   model: string;
   prompt_version: string;
@@ -256,7 +264,7 @@ export type WikiGenerateResponse = {
   empty_graph: boolean;
 };
 
-export type WikiEntrySummary = {
+type WikiEntrySummary = {
   community_id: number;
   title: string;
   generated_at: string;
@@ -283,14 +291,16 @@ async function parseResponse<T>(response: Response): Promise<T> {
     payload = null;
   }
   if (!response.ok) {
-    const error = typeof payload === "object" && payload !== null ? payload : {};
-    throw {
-      code: "code" in error && typeof error.code === "string" ? error.code : "http_error",
-      message:
-        "message" in error && typeof error.message === "string"
-          ? error.message
-          : "请求失败，请稍后重试。",
-    } satisfies ApiError;
+    const error =
+      typeof payload === "object" && payload !== null ? payload : {};
+    throw new ApiHttpError(
+      "code" in error && typeof error.code === "string"
+        ? error.code
+        : "http_error",
+      "message" in error && typeof error.message === "string"
+        ? error.message
+        : "请求失败，请稍后重试。",
+    );
   }
   return payload as T;
 }
@@ -299,7 +309,10 @@ const HEALTH_REQUEST_TIMEOUT_MS = 3_000;
 
 export async function checkHealth(): Promise<HealthResponse> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), HEALTH_REQUEST_TIMEOUT_MS);
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    HEALTH_REQUEST_TIMEOUT_MS,
+  );
   try {
     return await parseResponse<HealthResponse>(
       await fetch("/api/health", { signal: controller.signal }),
@@ -335,7 +348,9 @@ export async function updateSettings(
   );
 }
 
-export async function testChannel(payload: SettingsTestPayload): Promise<SettingsTestResponse> {
+export async function testChannel(
+  payload: SettingsTestPayload,
+): Promise<SettingsTestResponse> {
   return parseResponse<SettingsTestResponse>(
     await fetch("/api/settings/test", {
       method: "POST",
@@ -360,12 +375,16 @@ export async function ingestFiles(files: File[]): Promise<LibraryJob> {
 }
 
 export async function getLibraryJob(jobId: string): Promise<LibraryJob> {
-  return parseResponse<LibraryJob>(await fetch(`/api/library/jobs/${encodeURIComponent(jobId)}`));
+  return parseResponse<LibraryJob>(
+    await fetch(`/api/library/jobs/${encodeURIComponent(jobId)}`),
+  );
 }
 
 export async function cancelLibraryJob(jobId: string): Promise<LibraryJob> {
   return parseResponse<LibraryJob>(
-    await fetch(`/api/library/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" }),
+    await fetch(`/api/library/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+    }),
   );
 }
 
@@ -383,7 +402,10 @@ export async function getLibrarySources(): Promise<LibrarySyncSources> {
   return parseResponse<LibrarySyncSources>(await fetch("/api/library/sources"));
 }
 
-export async function addLibrarySource(path: string, enabled: boolean): Promise<LibrarySyncSource> {
+export async function addLibrarySource(
+  path: string,
+  enabled: boolean,
+): Promise<LibrarySyncSource> {
   return parseResponse<LibrarySyncSource>(
     await fetch("/api/library/sources", {
       method: "POST",
@@ -406,9 +428,13 @@ export async function setLibrarySourceEnabled(
   );
 }
 
-export async function removeLibrarySource(sourceId: string): Promise<{ removed: boolean }> {
+export async function removeLibrarySource(
+  sourceId: string,
+): Promise<{ removed: boolean }> {
   return parseResponse<{ removed: boolean }>(
-    await fetch(`/api/library/sources/${encodeURIComponent(sourceId)}`, { method: "DELETE" }),
+    await fetch(`/api/library/sources/${encodeURIComponent(sourceId)}`, {
+      method: "DELETE",
+    }),
   );
 }
 
@@ -434,7 +460,9 @@ export type LibraryScanSettingsUpdate = {
 };
 
 export async function getScanSettings(): Promise<LibraryScanSettings> {
-  return parseResponse<LibraryScanSettings>(await fetch("/api/library/scan-settings"));
+  return parseResponse<LibraryScanSettings>(
+    await fetch("/api/library/scan-settings"),
+  );
 }
 
 export async function updateScanSettings(
@@ -460,7 +488,9 @@ export async function purgeLibrary(): Promise<LibraryJob> {
 }
 
 // 单来源确认移除：服务端先行资格判定，进度沿既有 LibraryJobs 契约轮询
-export async function removeLibraryDocument(sourceId: string): Promise<LibraryJob> {
+export async function removeLibraryDocument(
+  sourceId: string,
+): Promise<LibraryJob> {
   return parseResponse<LibraryJob>(
     await fetch("/api/library/remove", {
       method: "POST",
@@ -470,13 +500,23 @@ export async function removeLibraryDocument(sourceId: string): Promise<LibraryJo
   );
 }
 
-export async function getNotes(page: number, pageSize: number): Promise<NotesPage> {
-  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
-  return parseResponse<NotesPage>(await fetch(`/api/notes?${params.toString()}`));
+export async function getNotes(
+  page: number,
+  pageSize: number,
+): Promise<NotesPage> {
+  const params = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  });
+  return parseResponse<NotesPage>(
+    await fetch(`/api/notes?${params.toString()}`),
+  );
 }
 
 export async function getNote(sourceId: string): Promise<NoteDetail> {
-  return parseResponse<NoteDetail>(await fetch(`/api/notes/${encodeURIComponent(sourceId)}`));
+  return parseResponse<NoteDetail>(
+    await fetch(`/api/notes/${encodeURIComponent(sourceId)}`),
+  );
 }
 
 export async function getGraphStats(): Promise<GraphStats> {
@@ -495,12 +535,19 @@ export async function buildGraph(): Promise<GraphBuildResponse> {
 }
 
 export async function getGraphOverview(limit: number): Promise<GraphSubgraph> {
-  return parseResponse<GraphSubgraph>(await fetch(`/api/graph/overview?limit=${limit}`));
+  return parseResponse<GraphSubgraph>(
+    await fetch(`/api/graph/overview?limit=${limit}`),
+  );
 }
 
-export async function searchGraphEntities(query: string, limit: number): Promise<GraphSearchResult> {
+export async function searchGraphEntities(
+  query: string,
+  limit: number,
+): Promise<GraphSearchResult> {
   const params = new URLSearchParams({ q: query, limit: String(limit) });
-  return parseResponse<GraphSearchResult>(await fetch(`/api/graph/search?${params.toString()}`));
+  return parseResponse<GraphSearchResult>(
+    await fetch(`/api/graph/search?${params.toString()}`),
+  );
 }
 
 export async function getGraphNeighbors(
@@ -508,9 +555,14 @@ export async function getGraphNeighbors(
   limit: number,
   depth: number,
 ): Promise<GraphSubgraph> {
-  const params = new URLSearchParams({ limit: String(limit), depth: String(depth) });
+  const params = new URLSearchParams({
+    limit: String(limit),
+    depth: String(depth),
+  });
   return parseResponse<GraphSubgraph>(
-    await fetch(`/api/graph/neighbors/${encodeURIComponent(entityId)}?${params.toString()}`),
+    await fetch(
+      `/api/graph/neighbors/${encodeURIComponent(entityId)}?${params.toString()}`,
+    ),
   );
 }
 
@@ -518,8 +570,12 @@ export async function getWikiEntries(): Promise<WikiEntries> {
   return parseResponse<WikiEntries>(await fetch("/api/wiki/entries"));
 }
 
-export async function getWikiEntry(communityId: number): Promise<WikiEntryDetail> {
-  return parseResponse<WikiEntryDetail>(await fetch(`/api/wiki/entries/${communityId}`));
+export async function getWikiEntry(
+  communityId: number,
+): Promise<WikiEntryDetail> {
+  return parseResponse<WikiEntryDetail>(
+    await fetch(`/api/wiki/entries/${communityId}`),
+  );
 }
 
 // 全量幂等生成（等价 `siku wiki`），图谱产物缺失时后端返回 graph_artifacts_missing

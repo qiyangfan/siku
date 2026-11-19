@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import Protocol
 
 import httpx
 from pydantic import SecretStr
@@ -396,83 +397,133 @@ def _probe_rerank(
         provider.close()
 
 
+class _ProbeErrorMapper(Protocol):
+    """单个异常类型到 `ErrorMapping` 的纯转换函数。"""
+
+    def __call__(self, exc: Exception, label: str, protocol: str | None) -> ErrorMapping: ...
+
+
+def _map_not_configured(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(
+        503,
+        "llm_not_configured",
+        f"未配置 API key：请在表单填写 {label} 通道的 api_key，或设置对应"
+        " api_key_env 环境变量后再测试。",
+    )
+
+
+def _map_credential_rejected(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(
+        503,
+        "model_not_available",
+        f"{label} 端点拒绝了当前凭证：请在表单核对该通道的 api_key 与 base_url 是否成套"
+        "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
+    )
+
+
+def _map_config_file_error(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    # 本类同时覆盖不可解析与取值非法，提示里点名具体字段。
+    if not isinstance(exc, ModelConfigFileError):
+        raise TypeError(f"unexpected exception type: {type(exc).__name__}")
+    hint = f"{exc.detail}。" if exc.detail else ""
+    return ErrorMapping(
+        503,
+        "invalid_config_file",
+        "模型配置文件对模型供给无效（内容不可解析，或字段取值非法）："
+        + hint
+        + "请先在「设置」页重新填写并保存以覆盖该文件，保存后免重启生效；"
+        "表单提交到的字段不依赖原文件内容。",
+    )
+
+
+def _map_config_file_unreadable(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(
+        503,
+        "config_file_unreadable",
+        "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）：请修复该文件的可读性后"
+        "重试；此情况不会由保存覆盖，以免毁掉可能完好的配置。",
+    )
+
+
+def _map_protocol_config(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    # 与读取面共用协议错误映射，避免同一故障出现两个 code。
+    if not isinstance(exc, ProtocolConfigError):
+        raise TypeError(f"unexpected exception type: {type(exc).__name__}")
+    return protocol_error_mapping(exc, surface="http")
+
+
+def _map_model_not_available(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(
+        503,
+        "model_not_available",
+        f"{label} 端点配置不完整：请检查该通道的 base_url、model 与 api_key / api_key_env 后重试。",
+    )
+
+
+def _map_auth_rejected(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(
+        503,
+        "llm_provider_error",
+        f"{label} 端点拒绝了当前凭证：请在表单核对 api_key 与 base_url 是否成套"
+        "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
+    )
+
+
+def _map_rate_limited(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(503, "llm_rate_limited", f"{label} 端点限流（HTTP 429）：请稍后重试。")
+
+
+def _map_llm_unreachable(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(
+        503,
+        "llm_connection_error",
+        f"无法连接 {label} 端点：请检查 base_url 与网络可达性（断连或超时）后重试。",
+    )
+
+
+def _map_llm_provider_error(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    endpoint_hint = (
+        "Anthropic Messages 兼容服务（{base}/v1/messages）"
+        if protocol == PROTOCOL_ANTHROPIC
+        else "openai 兼容服务"
+    )
+    return ErrorMapping(
+        503,
+        "llm_provider_error",
+        f"{label} 端点返回了无法解析的响应：请确认 base_url 与接口协议匹配"
+        f"（当前协议要求指向{endpoint_hint}）后重试。",
+    )
+
+
+def _map_provider_error(exc: Exception, label: str, protocol: str | None) -> ErrorMapping:
+    return ErrorMapping(
+        503,
+        "provider_error",
+        f"{label} 端点调用失败：请检查端点可达性、凭证与模型名称后重试；"
+        "若为限流（HTTP 429）请稍后再试。",
+    )
+
+
+# 顺序即匹配优先级：派生异常必须排在基类之前，否则会被宽泛分支吞掉。
+_PROBE_ERROR_MAPPERS: tuple[tuple[type[Exception], _ProbeErrorMapper], ...] = (
+    (LlmNotConfiguredError, _map_not_configured),
+    (ModelCredentialError, _map_credential_rejected),
+    (ModelConfigFileError, _map_config_file_error),
+    (ModelConfigFileUnreadableError, _map_config_file_unreadable),
+    (ProtocolConfigError, _map_protocol_config),
+    (ModelNotAvailableError, _map_model_not_available),
+    (LlmAuthError, _map_auth_rejected),
+    (LlmRateLimitError, _map_rate_limited),
+    (LlmConnectionError, _map_llm_unreachable),
+    (LlmProviderError, _map_llm_provider_error),
+    (ProviderError, _map_provider_error),
+)
+
+
 def map_probe_error(exc: Exception, channel: str, protocol: str | None = None) -> ErrorMapping:
     """把探测失败映射为稳定错误码和中文指引，不包含上游响应体。"""
     label = _CHANNEL_LABELS[channel]
-    if isinstance(exc, LlmNotConfiguredError):
-        return ErrorMapping(
-            503,
-            "llm_not_configured",
-            f"未配置 API key：请在表单填写 {label} 通道的 api_key，或设置对应"
-            " api_key_env 环境变量后再测试。",
-        )
-    if isinstance(exc, ModelCredentialError):
-        return ErrorMapping(
-            503,
-            "model_not_available",
-            f"{label} 端点拒绝了当前凭证：请在表单核对该通道的 api_key 与 base_url 是否成套"
-            "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
-        )
-    if isinstance(exc, ModelConfigFileError):
-        # 本类同时覆盖不可解析与取值非法，提示里点名具体字段。
-        hint = f"{exc.detail}。" if exc.detail else ""
-        return ErrorMapping(
-            503,
-            "invalid_config_file",
-            "模型配置文件对模型供给无效（内容不可解析，或字段取值非法）："
-            + hint
-            + "请先在「设置」页重新填写并保存以覆盖该文件，保存后免重启生效；"
-            "表单提交到的字段不依赖原文件内容。",
-        )
-    if isinstance(exc, ModelConfigFileUnreadableError):
-        return ErrorMapping(
-            503,
-            "config_file_unreadable",
-            "模型配置文件当前无法读取（权限或磁盘故障，不是内容损坏）：请修复该文件的可读性后"
-            "重试；此情况不会由保存覆盖，以免毁掉可能完好的配置。",
-        )
-    if isinstance(exc, ProtocolConfigError):
-        # 与读取面共用协议错误映射，避免同一故障出现两个 code。
-        return protocol_error_mapping(exc, surface="http")
-    if isinstance(exc, ModelNotAvailableError):
-        return ErrorMapping(
-            503,
-            "model_not_available",
-            f"{label} 端点配置不完整：请检查该通道的 base_url、"
-            "model 与 api_key / api_key_env 后重试。",
-        )
-    if isinstance(exc, LlmAuthError):
-        return ErrorMapping(
-            503,
-            "llm_provider_error",
-            f"{label} 端点拒绝了当前凭证：请在表单核对 api_key 与 base_url 是否成套"
-            "（同一厂商同一账号；不同厂商的 key 不能跨端点使用），修正后保存免重启生效。",
-        )
-    if isinstance(exc, LlmRateLimitError):
-        return ErrorMapping(503, "llm_rate_limited", f"{label} 端点限流（HTTP 429）：请稍后重试。")
-    if isinstance(exc, LlmConnectionError):
-        return ErrorMapping(
-            503,
-            "llm_connection_error",
-            f"无法连接 {label} 端点：请检查 base_url 与网络可达性（断连或超时）后重试。",
-        )
-    if isinstance(exc, LlmProviderError):
-        endpoint_hint = (
-            "Anthropic Messages 兼容服务（{base}/v1/messages）"
-            if protocol == PROTOCOL_ANTHROPIC
-            else "openai 兼容服务"
-        )
-        return ErrorMapping(
-            503,
-            "llm_provider_error",
-            f"{label} 端点返回了无法解析的响应：请确认 base_url 与接口协议匹配"
-            f"（当前协议要求指向{endpoint_hint}）后重试。",
-        )
-    if isinstance(exc, ProviderError):
-        return ErrorMapping(
-            503,
-            "provider_error",
-            f"{label} 端点调用失败：请检查端点可达性、凭证与模型名称后重试；"
-            "若为限流（HTTP 429）请稍后再试。",
-        )
+    for exc_type, mapper in _PROBE_ERROR_MAPPERS:
+        if isinstance(exc, exc_type):
+            return mapper(exc, label, protocol)
     return map_domain_error(exc, api_key_env="SIKU_LLM_API_KEY", surface="http")

@@ -1,6 +1,12 @@
 import { Alert, Button, Group, Loader, Paper, Stack } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getNote, getNotes, type ApiError, type NoteDetail, type NotesPage } from "./api";
+import {
+  getNote,
+  getNotes,
+  type ApiError,
+  type NoteDetail,
+  type NotesPage,
+} from "./api";
 import { handleMarkdownClick, renderMarkdown } from "./markdown";
 
 const PAGE_SIZE = 20;
@@ -50,7 +56,8 @@ export function BrowseView() {
   }, []);
 
   useEffect(() => {
-    void loadPage(1);
+    // 取数落到异步续体：effect 体内不直接触发 setState，避免提交阶段级联渲染
+    void Promise.resolve().then(() => loadPage(1));
   }, [loadPage]);
 
   const openNote = useCallback(async (sourceId: string) => {
@@ -86,9 +93,19 @@ export function BrowseView() {
 
   if (listError !== null && page === null) {
     return (
-      <Alert className="status-card" color="red" role="alert" title="浏览清单读取失败">
+      <Alert
+        className="status-card"
+        color="red"
+        role="alert"
+        title="浏览清单读取失败"
+      >
         <p>{listError}</p>
-        <Button variant="default" type="button" className="button-secondary" onClick={() => void loadPage(1)}>
+        <Button
+          variant="default"
+          type="button"
+          className="button-secondary"
+          onClick={() => void loadPage(1)}
+        >
           重试读取
         </Button>
       </Alert>
@@ -97,7 +114,12 @@ export function BrowseView() {
 
   if (page === null) {
     return (
-      <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
+      <Group
+        className="settings-loading"
+        role="status"
+        aria-live="polite"
+        gap="sm"
+      >
         <Loader size="sm" />
         正在读取笔记清单…
       </Group>
@@ -110,8 +132,18 @@ export function BrowseView() {
   const detailOpen = loadingDetail || selected !== null || detailError !== null;
 
   return (
-    <Stack component="section" className="browse-view" gap="lg" aria-labelledby="browse-title">
-      <Group component="header" className="browse-toolbar" align="flex-start" justify="space-between">
+    <Stack
+      component="section"
+      className="browse-view"
+      gap="lg"
+      aria-labelledby="browse-title"
+    >
+      <Group
+        component="header"
+        className="browse-toolbar"
+        align="flex-start"
+        justify="space-between"
+      >
         <div>
           <h2 id="browse-title">浏览</h2>
           <p className="hint">
@@ -121,18 +153,33 @@ export function BrowseView() {
       </Group>
 
       {emptyLibrary ? (
-        <Alert className="library-empty" color="gray" role="note" title="还没有可阅读的笔记">
+        <Alert
+          className="library-empty"
+          color="gray"
+          role="note"
+          title="还没有可阅读的笔记"
+        >
           <p>先在资料库导入文档，摄取完成后的笔记投影会出现在这里。</p>
         </Alert>
       ) : (
-        <div className={`browse-layout${detailOpen ? " browse-detail-open" : ""}`}>
+        <div
+          className={`browse-layout${detailOpen ? " browse-detail-open" : ""}`}
+        >
           <div className="browse-pane browse-list-pane">
             {emptyPage ? (
               <p className="settings-loading" role="status">
                 本页无内容（共 {totalPages} 页），请返回上一页。
               </p>
             ) : (
-              <Paper component="ul" withBorder radius="md" shadow="xs" p="xs" className="browse-list" aria-label="笔记清单">
+              <Paper
+                component="ul"
+                withBorder
+                radius="md"
+                shadow="xs"
+                p="xs"
+                className="browse-list"
+                aria-label="笔记清单"
+              >
                 {page.notes.map((note) => (
                   <li key={note.source_id}>
                     <Button
@@ -146,7 +193,9 @@ export function BrowseView() {
                       title={note.note_path}
                       onClick={() => void openNote(note.source_id)}
                     >
-                      <span className="browse-item-name">{note.source_name}</span>
+                      <span className="browse-item-name">
+                        {note.source_name}
+                      </span>
                       <span className="browse-item-path">{note.note_path}</span>
                     </Button>
                   </li>
@@ -159,7 +208,8 @@ export function BrowseView() {
               </p>
             )}
             <div className="browse-pager">
-              <Button variant="default"
+              <Button
+                variant="default"
                 type="button"
                 className="button-secondary"
                 disabled={page.page <= 1}
@@ -170,7 +220,8 @@ export function BrowseView() {
               <span className="hint">
                 第 {page.page} / {totalPages} 页
               </span>
-              <Button variant="default"
+              <Button
+                variant="default"
                 type="button"
                 className="button-secondary"
                 disabled={page.page >= totalPages}
@@ -192,16 +243,35 @@ export function BrowseView() {
               ← 返回笔记列表
             </Button>
             {loadingDetail && (
-              <Group className="settings-loading" role="status" aria-live="polite" gap="sm">
+              <Group
+                className="settings-loading"
+                role="status"
+                aria-live="polite"
+                gap="sm"
+              >
                 <Loader size="sm" />
                 正在加载笔记…
               </Group>
             )}
             {detailError !== null && (
-              <Alert className="status-card" color="red" role="alert" title="笔记读取失败">{detailError}</Alert>
+              <Alert
+                className="status-card"
+                color="red"
+                role="alert"
+                title="笔记读取失败"
+              >
+                {detailError}
+              </Alert>
             )}
             {!loadingDetail && selected !== null && (
-              <Paper component="article" withBorder radius="md" shadow="xs" className="browse-reader" aria-labelledby="browse-note-title">
+              <Paper
+                component="article"
+                withBorder
+                radius="md"
+                shadow="xs"
+                className="browse-reader"
+                aria-labelledby="browse-note-title"
+              >
                 <header className="browse-reader-head">
                   <h3 id="browse-note-title">{selected.source_name}</h3>
                   <p className="browse-meta">
@@ -221,17 +291,26 @@ export function BrowseView() {
                     </p>
                   )}
                 </header>
+                {/* 点击委托给内容中的链接；键盘 Enter 同样触发 click 冒泡，容器本身不可交互 */}
+                {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
                 <div
                   className="markdown-body"
                   onClick={handleMarkdownClick}
                   // 内容经 renderMarkdown（DOMPurify 清洗）产出安全只读 HTML，
                   // 链接导航经 handleMarkdownClick 拦截（只读视图不跳转）
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(selected.content) }}
+                  dangerouslySetInnerHTML={{
+                    __html: renderMarkdown(selected.content),
+                  }}
                 />
               </Paper>
             )}
             {!loadingDetail && selected === null && detailError === null && (
-              <Alert className="library-empty" color="gray" role="note" title="从左侧选择一篇笔记">
+              <Alert
+                className="library-empty"
+                color="gray"
+                role="note"
+                title="从左侧选择一篇笔记"
+              >
                 <p>笔记由摄取管线从原件投影生成，此处只读展示，不可编辑。</p>
               </Alert>
             )}
@@ -241,5 +320,3 @@ export function BrowseView() {
     </Stack>
   );
 }
-
-export default BrowseView;

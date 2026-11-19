@@ -211,44 +211,58 @@ class HttpxLlmProvider:
         if not isinstance(data, dict):
             return ""
         if self._protocol == PROTOCOL_ANTHROPIC:
-            blocks = data.get("content")
-            if not isinstance(blocks, list):
-                return ""
-            parts = [
-                block.get("text")
-                for block in blocks
-                if isinstance(block, dict)
-                and block.get("type") == "text"
-                and isinstance(block.get("text"), str)
-            ]
-            return "".join(parts)
+            return _extract_anthropic_text(data)
         if self._protocol == PROTOCOL_OPENAI_RESPONSES:
-            outputs = data.get("output")
-            if not isinstance(outputs, list):
-                return ""
-            parts: list[str] = []
-            for item in outputs:
-                if not isinstance(item, dict) or item.get("type") != "message":
-                    continue
-                content = item.get("content")
-                if not isinstance(content, list):
-                    continue
-                parts.extend(
-                    part.get("text")
-                    for part in content
-                    if isinstance(part, dict)
-                    and part.get("type") == "output_text"
-                    and isinstance(part.get("text"), str)
-                )
-            return "".join(parts)
-        choices = data.get("choices")
-        if not isinstance(choices, list) or not choices:
-            return ""
-        first = choices[0]
-        if not isinstance(first, dict):
-            return ""
-        message = first.get("message")
-        if not isinstance(message, dict):
-            return ""
-        content = message.get("content")
-        return content if isinstance(content, str) else ""
+            return _extract_responses_text(data)
+        return _extract_chat_text(data)
+
+
+def _extract_anthropic_text(data: dict[str, object]) -> str:
+    """拼接 anthropic `content` 中全部 text 块。"""
+    blocks = data.get("content")
+    if not isinstance(blocks, list):
+        return ""
+    parts: list[str] = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
+
+
+def _extract_responses_text(data: dict[str, object]) -> str:
+    """拼接 openai responses `output` 中全部 message 的 output_text 片段。"""
+    outputs = data.get("output")
+    if not isinstance(outputs, list):
+        return ""
+    parts: list[str] = []
+    for item in outputs:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "output_text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def _extract_chat_text(data: dict[str, object]) -> str:
+    """取 openai chat `choices[0].message.content`；仅接受字符串形态。"""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""

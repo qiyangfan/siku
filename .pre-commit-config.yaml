@@ -25,3 +25,47 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  # 类型与依赖边界：与 CI 同命令，避免"本地绿、CI 红"。pytest/pylint 太慢，仍只跑 CI。
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (src+tests)
+        entry: uv run mypy
+        language: system
+        pass_filenames: false
+      - id: lint-imports
+        name: import-linter
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+      - id: vulture
+        name: vulture (src)
+        entry: uv run vulture
+        language: system
+        pass_filenames: false
+      - id: deptry
+        name: deptry (src)
+        entry: uv run deptry src
+        language: system
+        pass_filenames: false
+      # 治理：与 CI governance job 同命令，本地即拦（无需 GitHub）
+      - id: openspec-validate
+        name: openspec validate --all --strict
+        entry: openspec validate --all --strict
+        language: node
+        additional_dependencies: ["@fission-ai/openspec@1.17.0"]
+        pass_filenames: false
+        always_run: true
+      # 依赖 Homebrew actionlint；CI 侧由 governance job 下载固定版本兜底
+      - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        files: ^\.github/workflows/
+      - id: zizmor
+        name: zizmor（工作流安全审计）
+        entry: uv run zizmor .github/workflows
+        language: system
+        pass_filenames: false
+        files: ^\.github/workflows/

@@ -99,8 +99,9 @@ def build_docx(path: Path) -> None:
         handle.write(markdown)
         temp_name = handle.name
     try:
-        subprocess.run(
-            ["pandoc", temp_name, "-o", str(path)],
+        # pandoc 为固定命令，参数是本脚本生成的临时文件；不启用 shell。
+        subprocess.run(  # noqa: S603
+            ["pandoc", temp_name, "-o", str(path)],  # noqa: S607
             check=True,
             capture_output=True,
             encoding="utf-8",

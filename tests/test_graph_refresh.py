@@ -8,8 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from tests.graph_fakes import FakeGraphExtractor
 
-from graph_fakes import FakeGraphExtractor
 from siku.graph.errors import LlmRateLimitError
 from siku.graph.models import EntityMention, GraphExtraction, GraphExtractor
 from siku.graph.refresh import (

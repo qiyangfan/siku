@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -18,7 +18,7 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
-from siku.api.library import build_library_view
+from siku.api.library_view import build_library_view
 from siku.api.messages import (
     map_ask_error,
     map_domain_error,
@@ -97,7 +97,7 @@ def _library_busy() -> McpToolError:
 
 
 @contextmanager
-def _library_write_guard(vault: Path, data_dir: Path):
+def _library_write_guard(vault: Path, data_dir: Path) -> Iterator[None]:
     """MCP 写命令的统一前置：跨进程写锁与中断移除的恢复。"""
     try:
         with library_write_lock(vault, timeout=_MCP_WRITE_LOCK_TIMEOUT_SECS):
@@ -152,7 +152,18 @@ def _answer_provider() -> HttpxLlmProvider:
 
 
 def _result_to_dict(result: SearchResult) -> dict[str, Any]:
-    return asdict(result)
+    return {
+        "chunk_id": result.chunk_id,
+        "source_name": result.citation.source_name,
+        "note_path": result.citation.note_path,
+        "source_hash": result.citation.source_hash,
+        "anchor": result.citation.anchor,
+        "text": result.text,
+        "bm25_score": result.bm25_score,
+        "vector_score": result.vector_score,
+        "hybrid_score": result.hybrid_score,
+        "rerank_score": result.rerank_score,
+    }
 
 
 def tool_search(
@@ -305,7 +316,10 @@ def tool_entity_evidence(
         "query": query.strip(),
         "limit": limit,
         "results": [
-            {**asdict(hit.result), "provenance": [asdict(item) for item in hit.provenance]}
+            {
+                **_result_to_dict(hit.result),
+                "provenance": [asdict(item) for item in hit.provenance],
+            }
             for hit in result.hits
         ],
         "seed_entities": [asdict(seed) for seed in result.seed_entities],

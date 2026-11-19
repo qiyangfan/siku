@@ -10,17 +10,19 @@ from siku.graph.models import (
     SourceAnchor,
     entity_id_from_name,
 )
-from siku.retrieve.models import ChunkRecord
+from siku.retrieve.models import ChunkRecord, Citation
 
 
 def make_chunk(chunk_id: str, note: str = "notes/a.md", anchor: str = "page:1") -> ChunkRecord:
     return ChunkRecord(
         chunk_id=chunk_id,
         source_id="a" * 12,
-        source_hash="b" * 64,
-        source_name="a.pdf",
-        note_path=note,
-        anchor=anchor,
+        citation=Citation(
+            source_name="a.pdf",
+            note_path=note,
+            source_hash="b" * 64,
+            anchor=anchor,
+        ),
         ordinal=0,
         text="正文",
     )
@@ -29,9 +31,9 @@ def make_chunk(chunk_id: str, note: str = "notes/a.md", anchor: str = "page:1") 
 def anchor_of(chunk: ChunkRecord) -> SourceAnchor:
     return SourceAnchor(
         chunk_id=chunk.chunk_id,
-        source_hash=chunk.source_hash,
-        note_path=chunk.note_path,
-        anchor=chunk.anchor,
+        source_hash=chunk.citation.source_hash,
+        note_path=chunk.citation.note_path,
+        anchor=chunk.citation.anchor,
     )
 
 

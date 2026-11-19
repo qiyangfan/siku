@@ -4,7 +4,11 @@ import forceAtlas2 from "graphology-layout-forceatlas2";
 import Sigma, { DEFAULT_STYLES } from "sigma";
 import { useComputedColorScheme } from "@mantine/core";
 import type { GraphEdge, GraphNode } from "./api";
-import { GRAPH_COMMUNITY_COLORS, GRAPH_UNASSIGNED_COLOR, graphCanvasThemeColors } from "./theme";
+import {
+  GRAPH_COMMUNITY_COLORS,
+  GRAPH_UNASSIGNED_COLOR,
+  graphCanvasThemeColors,
+} from "./theme";
 
 /** 画布数据边界：永远只渲染服务端有界查询的返回集合。 */
 export type GraphCanvasProps = {
@@ -19,8 +23,9 @@ function communityColor(communityId: number | null): string {
     return GRAPH_UNASSIGNED_COLOR;
   }
   return (
-    GRAPH_COMMUNITY_COLORS[Math.abs(communityId) % GRAPH_COMMUNITY_COLORS.length] ??
-    GRAPH_UNASSIGNED_COLOR
+    GRAPH_COMMUNITY_COLORS[
+      Math.abs(communityId) % GRAPH_COMMUNITY_COLORS.length
+    ] ?? GRAPH_UNASSIGNED_COLOR
   );
 }
 
@@ -29,14 +34,21 @@ function nodeSize(degree: number): number {
   return 4 + Math.min(Math.sqrt(Math.max(degree, 0)) * 2.2, 16);
 }
 
-export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasProps) {
+export function GraphCanvas({
+  nodes,
+  edges,
+  selectedId,
+  onSelect,
+}: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<Graph | null>(null);
   const rendererRef = useRef<Sigma | null>(null);
   const selectedRef = useRef<string | null>(null);
   const nodesByIdRef = useRef<Map<string, GraphNode>>(new Map());
   // 边线与标签色按主题解析后经 ref 中转，避免主题切换触发数据重建（会重掷布局）。
-  const colorScheme = useComputedColorScheme("light", { getInitialValueInEffect: false });
+  const colorScheme = useComputedColorScheme("light", {
+    getInitialValueInEffect: false,
+  });
   const colorSchemeRef = useRef(colorScheme);
   const onSelectRef = useRef(onSelect);
   useEffect(() => {
@@ -45,9 +57,14 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
   }, [colorScheme, onSelect]);
 
   /** 选中高亮：选中节点放大并平移相机聚焦，其余恢复基准尺寸。 */
-  const applySelection = (graph: Graph, renderer: Sigma, nodeId: string | null) => {
+  const applySelection = (
+    graph: Graph,
+    renderer: Sigma,
+    nodeId: string | null,
+  ) => {
     for (const id of graph.nodes()) {
-      const baseSize = graph.getNodeAttribute(id, "baseSize") as number | undefined;
+      const baseSize = graph.getNodeAttribute(id, "baseSize") as
+        number | undefined;
       const base = baseSize ?? 6;
       graph.setNodeAttribute(id, "size", id === nodeId ? base * 1.8 : base);
     }
@@ -110,7 +127,11 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
         itemSizesReference: "screen",
       },
       styles: {
-        nodes: { ...DEFAULT_STYLES.nodes, labelSize: 12, labelColor: { attribute: "labelColor" } },
+        nodes: {
+          ...DEFAULT_STYLES.nodes,
+          labelSize: 12,
+          labelColor: { attribute: "labelColor" },
+        },
         edges: DEFAULT_STYLES.edges,
       },
     });
@@ -143,8 +164,12 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
       return;
     }
     const canvasColors = graphCanvasThemeColors(colorScheme);
-    graph.forEachNode((node) => graph.setNodeAttribute(node, "labelColor", canvasColors.label));
-    graph.forEachEdge((edge) => graph.setEdgeAttribute(edge, "color", canvasColors.edge));
+    graph.forEachNode((node) =>
+      graph.setNodeAttribute(node, "labelColor", canvasColors.label),
+    );
+    graph.forEachEdge((edge) =>
+      graph.setEdgeAttribute(edge, "color", canvasColors.edge),
+    );
     renderer.refresh();
   }, [colorScheme]);
 
@@ -157,14 +182,19 @@ export function GraphCanvas({ nodes, edges, selectedId, onSelect }: GraphCanvasP
     if (selectedId !== null && graph.hasNode(selectedId)) {
       const position = renderer.getNodeDisplayData(selectedId);
       if (position !== undefined) {
-        renderer.getCamera().animate(position, { duration: 240 });
+        void renderer.getCamera().animate(position, { duration: 240 });
       }
     }
     selectedRef.current = selectedId;
     applySelection(graph, renderer, selectedId);
   }, [selectedId]);
 
-  return <div ref={containerRef} className="graph-canvas" role="img" aria-label="图谱画布" />;
+  return (
+    <div
+      ref={containerRef}
+      className="graph-canvas"
+      role="img"
+      aria-label="图谱画布"
+    />
+  );
 }
-
-export default GraphCanvas;

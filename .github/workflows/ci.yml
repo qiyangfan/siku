@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -21,8 +24,9 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       e2e: ${{ steps.filter.outputs.e2e }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           fetch-depth: 0
       - id: filter
         run: |
@@ -60,10 +64,12 @@ jobs:
       matrix:
         python-version: ["3.12", "3.14"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v10.3.3 # 该仓库不维护 v10 滚动大版本标签，须钉精确版本
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3；该仓库不维护 v10 滚动大版本标签，须钉精确版本
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
@@ -77,8 +83,34 @@ jobs:
       - name: Ruff Format 检查
         run: uv run ruff format --check .
 
-      - name: 测试
-        run: uv run pytest
+      # 结构门禁只跑一次（矩阵两版本只取 3.12 桶），阈值全部为工具默认值。
+      # 扫描面覆盖全部 Python 代码（生产、测试、脚本），避免测试/脚本成为体积黑洞。
+      - name: Pylint 模块体积
+        if: matrix.python-version == '3.12'
+        run: >
+          uv run pylint --disable=all
+          --enable=too-many-lines,too-many-public-methods,too-many-return-statements,too-many-instance-attributes
+          --jobs=0 src/siku tests scripts benchmarks
+
+      - name: 依赖边界（import-linter）
+        if: matrix.python-version == '3.12'
+        run: uv run lint-imports
+
+      - name: 死代码（vulture）
+        if: matrix.python-version == '3.12'
+        run: uv run vulture
+
+      - name: 依赖卫生（deptry）
+        if: matrix.python-version == '3.12'
+        run: uv run deptry src
+
+      - name: 类型检查（mypy）
+        if: matrix.python-version == '3.12'
+        run: uv run mypy
+
+      # 覆盖率阈值在 pyproject.toml（行+分支合计 fail_under），低于基线即阻断。
+      - name: 测试（含覆盖率阈值）
+        run: uv run pytest --cov=siku --cov-report=term-missing
 
   # CI 版 E2E 冒烟:真实 serve 进程五段接线回归(设计见
   # openspec/changes/add-ci-e2e-smoke/design.md)。fake 三通道端点确定性罐头,
@@ -91,10 +123,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v10.3.3 # 该仓库不维护 v10 滚动大版本标签，须钉精确版本
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3；该仓库不维护 v10 滚动大版本标签，须钉精确版本
         with:
           python-version: "3.12"
           enable-cache: true
@@ -105,16 +139,57 @@ jobs:
       - name: E2E 冒烟（真实 serve 进程 + fake 三通道端点）
         run: uv run pytest -m e2e
 
+  # 治理文件自检：OpenSpec 严格校验 + 工作流语法与安全审计。
+  # 独立 job，不受路径门控影响（与 security workflow 同一原则）。
+  governance:
+    name: OpenSpec + actionlint + zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 同步依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+
+      - name: OpenSpec 严格校验
+        run: npx --yes @fission-ai/openspec@1.17.0 validate --all --strict
+
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          VERSION=1.7.12
+          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin actionlint
+          actionlint -color
+
+      - name: zizmor（工作流安全审计）
+        run: uv run zizmor .github/workflows
+
   # 前端作业仅在 ui/package.json 存在时执行；hashFiles 只能用于 step 级 if。
   ui:
     name: 前端（Node 24）
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: 安装 Node 24
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "24"
         if: ${{ hashFiles('ui/package.json') != '' }}
@@ -124,10 +199,18 @@ jobs:
         if: ${{ hashFiles('ui/package.json') != '' }}
         run: npm ci
 
-      - name: Lint / 测试 / 构建
+      - name: 格式 / Lint / 架构 / 死代码 / 重复 / 覆盖率 / 构建
         working-directory: ui
         if: ${{ hashFiles('ui/package.json') != '' }}
-        run: npm run lint --if-present && npm test --if-present && npm run build --if-present
+        run: >
+          npm run format:check --if-present &&
+          npm run lint --if-present &&
+          npm run lint:css --if-present &&
+          npm run lint:arch --if-present &&
+          npm run lint:dead --if-present &&
+          npm run lint:dup --if-present &&
+          npm run test:cov --if-present &&
+          npm run build --if-present
 
   # 桌面壳 Rust 检查：fmt、clippy 和测试。
   # 仅当 ui/src-tauri 路径变化时执行（changes 门控）。
@@ -138,15 +221,17 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: 安装 Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: rustfmt, clippy
 
       - name: Rust 编译缓存
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: ui/src-tauri
 
@@ -195,10 +280,12 @@ jobs:
           - os: windows-latest
             probe: ""
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: 安装 uv
-        uses: astral-sh/setup-uv@v10.3.3
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.12"
           enable-cache: true

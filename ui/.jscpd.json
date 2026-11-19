@@ -1,0 +1,12 @@
+{
+  "threshold": 5.2,
+  "minLines": 10,
+  "minTokens": 70,
+  "reporters": ["console"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.gen.ts",
+    "**/coverage/**"
+  ]
+}

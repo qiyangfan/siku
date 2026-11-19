@@ -6,6 +6,7 @@ from siku.retrieve.errors import RetrievalError
 from siku.retrieve.models import (
     CHUNK_ID_VERSION,
     ChunkRecord,
+    Citation,
     DocumentRecord,
     IndexReport,
     SearchOptions,
@@ -81,14 +82,16 @@ class TestRecords:
         record = ChunkRecord(
             chunk_id="c" * 64,
             source_id="abc123",
-            source_hash="0" * 64,
-            source_name="slides.pptx",
-            note_path="notes/slides--abc123.md",
-            anchor="slide:2",
+            citation=Citation(
+                source_name="slides.pptx",
+                note_path="notes/slides--abc123.md",
+                source_hash="0" * 64,
+                anchor="slide:2",
+            ),
             ordinal=1,
             text="本页要点",
         )
-        assert record.anchor == "slide:2"
+        assert record.citation.anchor == "slide:2"
         assert record.ordinal == 1
 
 
@@ -127,10 +130,12 @@ class TestSearchResult:
     def test_single_channel_candidate_allows_missing_score(self) -> None:
         result = SearchResult(
             chunk_id="c" * 64,
-            source_name="doc.docx",
-            note_path="notes/doc--abc123.md",
-            source_hash="0" * 64,
-            anchor="content",
+            citation=Citation(
+                source_name="doc.docx",
+                note_path="notes/doc--abc123.md",
+                source_hash="0" * 64,
+                anchor="content",
+            ),
             text="段落",
             bm25_score=None,
             vector_score=0.83,

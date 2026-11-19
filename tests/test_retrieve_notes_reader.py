@@ -46,7 +46,7 @@ class TestReadNote:
         assert document.source_name == "report.pdf"
         assert document.extractor == "PdfExtractor"
         assert document.note_path == "notes/report--aaaaaaaaaaaa.md"
-        assert [chunk.anchor for chunk in chunks] == ["page:1", "page:2"]
+        assert [chunk.citation.anchor for chunk in chunks] == ["page:1", "page:2"]
         assert [chunk.ordinal for chunk in chunks] == [0, 1]
         assert chunks[0].text == "第一页内容"
 
@@ -61,14 +61,14 @@ class TestReadNote:
         write_note(note, body="只有一段普通正文。\n")
         _, chunks = read_note(note, tmp_path / VAULT)
         assert len(chunks) == 1
-        assert chunks[0].anchor == "content"
+        assert chunks[0].citation.anchor == "content"
         assert chunks[0].text == "只有一段普通正文。"
 
     def test_empty_sections_skipped_ordinals_compact(self, tmp_path: Path) -> None:
         note = tmp_path / VAULT / "notes" / "gaps.md"
         write_note(note, body="## page:1\n\n\n## page:2\n\n实内容\n")
         _, chunks = read_note(note, tmp_path / VAULT)
-        assert [chunk.anchor for chunk in chunks] == ["page:2"]
+        assert [chunk.citation.anchor for chunk in chunks] == ["page:2"]
         assert chunks[0].ordinal == 0
 
     def test_body_whitespace_normalized(self, tmp_path: Path) -> None:
@@ -94,7 +94,7 @@ class TestReadNote:
         )
         _, chunks = read_note(note, tmp_path / VAULT)
         assert len(chunks) == 1
-        assert chunks[0].anchor == "content"
+        assert chunks[0].citation.anchor == "content"
         assert chunks[0].text == "这是正文段落。"
 
     def test_section_comment_line_stripped(self, tmp_path: Path) -> None:

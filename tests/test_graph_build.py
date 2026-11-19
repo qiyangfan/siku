@@ -3,8 +3,8 @@
 from pathlib import Path
 
 import pytest
+from tests.graph_fakes import RATE_LIMITED, FakeGraphExtractor, ScriptedLlmProvider
 
-from graph_fakes import RATE_LIMITED, FakeGraphExtractor, ScriptedLlmProvider
 from siku.graph.cache import ExtractionCache, extraction_cache_key
 from siku.graph.errors import LlmRateLimitError
 from siku.graph.extractor import LlmGraphExtractor
@@ -68,7 +68,7 @@ class TestLoadChunks:
     def test_loads_chunks_in_reading_order(self, tmp_path: Path) -> None:
         write_note(tmp_path / VAULT)
         chunks = load_chunks(tmp_path / VAULT)
-        assert [chunk.anchor for chunk in chunks] == ["page:1", "page:2"]
+        assert [chunk.citation.anchor for chunk in chunks] == ["page:1", "page:2"]
 
     def test_missing_notes_dir_raises_domain_error(self, tmp_path: Path) -> None:
         with pytest.raises(NotesDirMissingError):
@@ -79,14 +79,14 @@ class TestBuildGraph:
     def test_build_writes_artifacts_and_reports(self, tmp_path: Path) -> None:
         write_note(tmp_path / VAULT)
         result = build_graph(tmp_path / VAULT, tmp_path / "data", default_extractor())
-        assert result.report.llm_calls == 2
-        assert result.report.node_count == 3
-        assert result.report.edge_count == 1
-        assert result.report.community_count >= 1
+        assert result.report.calls.llm_calls == 2
+        assert result.report.counts.nodes == 3
+        assert result.report.counts.edges == 1
+        assert result.report.counts.communities >= 1
         entities, relations, communities = load_graph(tmp_path / "data")
         assert len(entities) == 3
         assert len(relations) == 1
-        assert len(communities) == result.report.community_count
+        assert len(communities) == result.report.counts.communities
         # 来源锚点完整落到实体与边上，图谱结论可回链原文
         assert entities[0].anchors
         assert relations[0].anchors
@@ -95,8 +95,8 @@ class TestBuildGraph:
         (tmp_path / VAULT / "notes").mkdir(parents=True)
         result = build_graph(tmp_path / VAULT, tmp_path / "data", FakeGraphExtractor())
         assert result.empty_corpus is True
-        assert result.report.node_count == 0
-        assert result.report.llm_calls == 0
+        assert result.report.counts.nodes == 0
+        assert result.report.calls.llm_calls == 0
         entities, relations, communities = load_graph(tmp_path / "data")
         assert (entities, relations, communities) == ((), (), ())
 
@@ -115,8 +115,8 @@ class TestBuildGraph:
         second = default_extractor()
         result = build_graph(tmp_path / VAULT, tmp_path / "data", second)
         assert second.calls == []
-        assert result.report.cache_hits == 2
-        assert result.report.llm_calls == 0
+        assert result.report.calls.cache_hits == 2
+        assert result.report.calls.llm_calls == 0
 
     def test_rebuild_ignores_cache_and_reextracts(self, tmp_path: Path) -> None:
         write_note(tmp_path / VAULT)
@@ -124,8 +124,8 @@ class TestBuildGraph:
         forced = default_extractor()
         result = build_graph(tmp_path / VAULT, tmp_path / "data", forced, rebuild=True)
         assert len(forced.calls) == 2
-        assert result.report.cache_hits == 0
-        assert result.report.llm_calls == 2
+        assert result.report.calls.cache_hits == 0
+        assert result.report.calls.llm_calls == 2
 
     def test_model_change_invalidates_cache(self, tmp_path: Path) -> None:
         write_note(tmp_path / VAULT)
@@ -133,7 +133,7 @@ class TestBuildGraph:
         changed = FakeGraphExtractor(model_id="another-model", respond=legal_extraction_for)
         result = build_graph(tmp_path / VAULT, tmp_path / "data", changed)
         assert len(changed.calls) == 2
-        assert result.report.model_id == "another-model"
+        assert result.report.identity.model_id == "another-model"
 
     def test_cache_key_uses_chunk_hash_and_extractor_identity(self, tmp_path: Path) -> None:
         write_note(tmp_path / VAULT)

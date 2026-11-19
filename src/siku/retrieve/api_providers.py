@@ -82,7 +82,6 @@ class ApiEmbeddingProvider:
             raise ProviderError(f"Embedding dimensions override must be positive: {dimensions}")
         # 公开只读属性：索引元数据据此记录端点通道标识（不含路径与凭证）
         self.base_url = base_url.rstrip("/")
-        self._base_url = self.base_url
         self._api_key = api_key
         self._api_key_env = api_key_env
         self._explicit_dimensions = dimensions
@@ -96,7 +95,7 @@ class ApiEmbeddingProvider:
         """向量输出维度：显式覆盖 > 进程内缓存 > 单条探针请求实测。"""
         if self._explicit_dimensions is not None:
             return self._explicit_dimensions
-        cached = _dimension_cache.get((self._base_url, self.model_id))
+        cached = _dimension_cache.get((self.base_url, self.model_id))
         if cached is not None:
             return cached
         vectors = self.embed([_DIMENSION_PROBE_TEXT])
@@ -105,10 +104,10 @@ class ApiEmbeddingProvider:
             raise ProviderError(
                 f"Embedding endpoint reported a non-positive dimension: {dimensions}"
             )
-        _dimension_cache[(self._base_url, self.model_id)] = dimensions
+        _dimension_cache[(self.base_url, self.model_id)] = dimensions
         logger.info(
             "embedding dimension probed: base_url_host=%s model=%s dimensions=%d",
-            httpx.URL(self._base_url).host,
+            httpx.URL(self.base_url).host,
             self.model_id,
             dimensions,
         )
@@ -140,7 +139,7 @@ class ApiEmbeddingProvider:
         payload = {"model": self.model_id, "input": batch}
         try:
             response = self._client.post(
-                f"{self._base_url}/embeddings",
+                f"{self.base_url}/embeddings",
                 headers=_auth_headers(self._resolve_api_key()),
                 json=payload,
             )

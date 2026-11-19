@@ -10,7 +10,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from graph_fakes import ScriptedLlmProvider, ScriptStep
+from tests.graph_fakes import ScriptedLlmProvider, ScriptStep
+
 from siku.graph.community import SUMMARIZER_ID, SUMMARY_PROMPT_VERSION
 from siku.graph.extractor import LlmGraphExtractor
 from siku.graph.providers import DEFAULT_MODEL_ID
@@ -127,7 +128,7 @@ def build_all(tmp_path: Path, *, empty_script: bool = False) -> BuildOutcome:
     return BuildOutcome(
         artifacts=snapshot_artifacts(tmp_path / "data"),
         report=result.report,
-        graph_llm_calls=result.report.llm_calls,
+        graph_llm_calls=result.report.calls.llm_calls,
         wiki_llm_calls=wiki_result.llm_calls,
         wiki_cache_hits=wiki_result.cache_hits,
         summary_llm_calls=summarizer.calls,
@@ -144,13 +145,13 @@ class TestIdempotenceGate:
         # 第二轮：剧本为空——任何多余 LLM 调用都会直接炸测试
         second = build_all(tmp_path, empty_script=True)
         assert second.graph_llm_calls == 0
-        assert second.report.cache_hits == 4
+        assert second.report.calls.cache_hits == 4
         assert second.wiki_llm_calls == 0
         assert second.wiki_cache_hits >= 1
         # 统计口径与首轮一致（spec：全部命中缓存时报告与上次一致）
-        assert second.report.node_count == first.report.node_count
-        assert second.report.edge_count == first.report.edge_count
-        assert second.report.community_count == first.report.community_count
+        assert second.report.counts.nodes == first.report.counts.nodes
+        assert second.report.counts.edges == first.report.counts.edges
+        assert second.report.counts.communities == first.report.counts.communities
 
     def test_gate_two_rebuild_from_cache_diff_is_empty(self, tmp_path: Path) -> None:
         write_corpus(tmp_path)

@@ -73,13 +73,13 @@ def _import_lancedb() -> Any:
 
 def _import_pyarrow() -> Any:
     try:
-        import pyarrow
+        import pyarrow as pa
     except ImportError as exc:
         raise ModelNotAvailableError(
             "Vector store requires pyarrow, which is a core dependency of siku. "
             "Reinstall the package (e.g. uv sync) to restore it."
         ) from exc
-    return pyarrow
+    return pa
 
 
 class LanceVectorStore:

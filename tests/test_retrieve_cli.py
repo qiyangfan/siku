@@ -10,9 +10,9 @@ import os
 from pathlib import Path
 
 import pytest
+from tests.fakes import FakeEmbeddingProvider, FakeRerankerProvider
 from typer.testing import CliRunner, Result
 
-from fakes import FakeEmbeddingProvider, FakeRerankerProvider
 from siku.cli import RerankerMode, app
 from siku.model_supply import ResolvedChannel
 
@@ -109,8 +109,9 @@ def patched_providers(
             return None, None
         return FAKE_RERANK_CHANNEL, reranker
 
-    monkeypatch.setattr("siku.cli._embedding_component", fake_embedding)
-    monkeypatch.setattr("siku.cli._reranker_component", fake_reranker)
+    for module in ("ingest", "retrieve"):
+        monkeypatch.setattr(f"siku.cli.commands.{module}.embedding_component", fake_embedding)
+    monkeypatch.setattr("siku.cli.commands.retrieve.reranker_component", fake_reranker)
     return embedding, reranker
 
 
@@ -223,7 +224,7 @@ class TestIndexCommand:
         # 通道缺失必须以配置指引报错
         embedding = FakeEmbeddingProvider()
         monkeypatch.setattr(
-            "siku.cli._embedding_component",
+            "siku.cli.commands.ingest.embedding_component",
             lambda _cli_values, _dimensions: (FAKE_EMBEDDING_CHANNEL, embedding),
         )
         write_corpus(tmp_path / VAULT)

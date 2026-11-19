@@ -49,6 +49,16 @@ class GoldenCase:
 
 
 @dataclass(frozen=True)
+class CaseMetrics:
+    """单题计分：首次命中位次与 Recall/MRR 及结果数。"""
+
+    first_rank: int | None
+    recall_at_5: float
+    mrr_at_10: float
+    result_count: int
+
+
+@dataclass(frozen=True)
 class CaseResult:
     id: str
     query: str
@@ -56,10 +66,7 @@ class CaseResult:
     note: str
     expected: tuple[ExpectedSource, ...]
     hit_sources: tuple[tuple[str, str], ...]
-    first_rank: int | None
-    recall_at_5: float
-    mrr_at_10: float
-    result_count: int
+    metrics: CaseMetrics
 
 
 @dataclass(frozen=True)
@@ -75,52 +82,66 @@ def load_golden_set(path: Path) -> list[GoldenCase]:
         raise GoldenSetError(f"Golden set file does not exist: {path}")
     cases: list[GoldenCase] = []
     seen_ids: set[str] = set()
+    for line_number, line in enumerate(_read_golden_lines(path), start=1):
+        if not line.strip():
+            continue
+        cases.append(_parse_golden_line(path, line_number, line, seen_ids))
+    if not cases:
+        raise GoldenSetError(f"Golden set {path.name} contains no cases")
+    return cases
+
+
+def _read_golden_lines(path: Path) -> list[str]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        return path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError as exc:
         raise GoldenSetError(f"Golden set {path.name} is not valid UTF-8: {exc}") from exc
     except OSError as exc:
         raise GoldenSetError(f"Failed to read golden set {path}: {exc}") from exc
-    for line_number, line in enumerate(lines, start=1):
-        if not line.strip():
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise GoldenSetError(
-                f"Golden set {path.name} line {line_number} is not valid JSON: {exc}"
-            ) from exc
-        if not isinstance(payload, dict):
-            raise GoldenSetError(f"Golden set {path.name} line {line_number} must be a JSON object")
-        case_id = payload.get("id")
-        query = payload.get("query")
-        if not isinstance(case_id, str) or not case_id.strip():
-            raise GoldenSetError(
-                f"Golden set {path.name} line {line_number} lacks a non-empty 'id'"
-            )
-        if case_id in seen_ids:
-            raise GoldenSetError(f"Golden set case id {case_id!r} is duplicated")
-        seen_ids.add(case_id)
-        if not isinstance(query, str) or not query.strip():
-            raise GoldenSetError(f"Golden set case {case_id!r} lacks a non-empty 'query'")
-        raw_expected = payload.get("expected", [])
-        if not isinstance(raw_expected, list):
-            raise GoldenSetError(f"Golden set case {case_id!r} field 'expected' must be a list")
-        expected = tuple(_parse_expected(case_id, entry) for entry in raw_expected)
-        note = payload.get("note", "")
-        if not isinstance(note, str):
-            raise GoldenSetError(f"Golden set case {case_id!r} field 'note' must be a string")
-        cases.append(
-            GoldenCase(
-                id=case_id,
-                query=query,
-                expected=expected,
-                note=note,
-            )
-        )
-    if not cases:
-        raise GoldenSetError(f"Golden set {path.name} contains no cases")
-    return cases
+
+
+def _parse_golden_line(
+    path: Path,
+    line_number: int,
+    line: str,
+    seen_ids: set[str],
+) -> GoldenCase:
+    """解析单行并登记 case id；id 重复判定依赖 seen_ids 的累积状态。"""
+    try:
+        payload = json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise GoldenSetError(
+            f"Golden set {path.name} line {line_number} is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise GoldenSetError(f"Golden set {path.name} line {line_number} must be a JSON object")
+    case_id = payload.get("id")
+    if not isinstance(case_id, str) or not case_id.strip():
+        raise GoldenSetError(f"Golden set {path.name} line {line_number} lacks a non-empty 'id'")
+    if case_id in seen_ids:
+        raise GoldenSetError(f"Golden set case id {case_id!r} is duplicated")
+    seen_ids.add(case_id)
+    query = payload.get("query")
+    if not isinstance(query, str) or not query.strip():
+        raise GoldenSetError(f"Golden set case {case_id!r} lacks a non-empty 'query'")
+    return GoldenCase(
+        id=case_id,
+        query=query,
+        expected=_parse_expected_list(case_id, payload.get("expected", [])),
+        note=_parse_note(case_id, payload.get("note", "")),
+    )
+
+
+def _parse_expected_list(case_id: str, raw_expected: object) -> tuple[ExpectedSource, ...]:
+    if not isinstance(raw_expected, list):
+        raise GoldenSetError(f"Golden set case {case_id!r} field 'expected' must be a list")
+    return tuple(_parse_expected(case_id, entry) for entry in raw_expected)
+
+
+def _parse_note(case_id: str, note: object) -> str:
+    if not isinstance(note, str):
+        raise GoldenSetError(f"Golden set case {case_id!r} field 'note' must be a string")
+    return note
 
 
 def _parse_expected(case_id: str, entry: object) -> ExpectedSource:
@@ -137,8 +158,8 @@ def _parse_expected(case_id: str, entry: object) -> ExpectedSource:
 
 
 def _matches_expectation(result: SearchResult, expectation: ExpectedSource) -> bool:
-    return result.source_name == expectation.source_name and (
-        expectation.anchor is None or result.anchor == expectation.anchor
+    return result.citation.source_name == expectation.source_name and (
+        expectation.anchor is None or result.citation.anchor == expectation.anchor
     )
 
 
@@ -170,7 +191,9 @@ def evaluate(
             first_rank = next((rank for rank in ranks if rank <= 10), None)
             mrr = 0.0 if first_rank is None else 1.0 / first_rank
             hit_sources = tuple(
-                (hits[rank - 1].source_name, hits[rank - 1].anchor) for rank in ranks if rank <= 10
+                (hits[rank - 1].citation.source_name, hits[rank - 1].citation.anchor)
+                for rank in ranks
+                if rank <= 10
             )
             kind = "hit"
         else:
@@ -198,15 +221,17 @@ def evaluate(
                 note=case.note,
                 expected=case.expected,
                 hit_sources=hit_sources,
-                first_rank=first_rank,
-                recall_at_5=recall,
-                mrr_at_10=mrr,
-                result_count=len(hits),
+                metrics=CaseMetrics(
+                    first_rank=first_rank,
+                    recall_at_5=recall,
+                    mrr_at_10=mrr,
+                    result_count=len(hits),
+                ),
             )
         )
     metrics = {
-        "recall_at_5": sum(item.recall_at_5 for item in results) / len(results),
-        "mrr_at_10": sum(item.mrr_at_10 for item in results) / len(results),
+        "recall_at_5": sum(item.metrics.recall_at_5 for item in results) / len(results),
+        "mrr_at_10": sum(item.metrics.mrr_at_10 for item in results) / len(results),
     }
     return EvaluationReport(metrics=metrics, cases=tuple(results), config={})
 

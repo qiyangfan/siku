@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+
 from conftest import (
     SEED_MARKER,
     SEED_MD_NAME,
@@ -31,11 +32,21 @@ def test_five_stage_pipeline_wiring(serve: ServeProcess, seed_files: dict[str, P
     """五段逐段断言；每段独立，失败即指明断在哪段。"""
     base = serve.base_url
 
+    _check_boot(base)
+    _check_ingest(base, seed_files)
+    _check_search(base)
+    _check_graph_wiki(base)
+    _check_ask(base)
+
+
+def _check_boot(base: str) -> None:
     # ---- 段 1 boot：健康面与就绪字段 ----
     health = httpx.get(f"{base}/api/health", timeout=10.0)
     assert health.status_code == 200, "段1 boot：/api/health 不可达"
     assert health.json()["status"] == "ok", "段1 boot：健康面状态异常"
 
+
+def _check_ingest(base: str, seed_files: dict[str, Path]) -> None:
     # ---- 段 2 ingest：上传 → 作业轮询 → 清单与索引状态 ----
     job = _start_ingest(base, seed_files)
     assert job["state"] in ("running", "succeeded"), "段2 ingest：作业未启动即异常"
@@ -59,6 +70,8 @@ def test_five_stage_pipeline_wiring(serve: ServeProcess, seed_files: dict[str, P
         "段2 幂等：同内容 source_hash 漂移"
     )
 
+
+def _check_search(base: str) -> None:
     # ---- 段 3 search：embedding + rerank 通道接线 ----
     search = httpx.post(
         f"{base}/api/search",
@@ -72,6 +85,8 @@ def test_five_stage_pipeline_wiring(serve: ServeProcess, seed_files: dict[str, P
         "段3 search：种子文档未命中（embedding/rerank 接线断裂）"
     )
 
+
+def _check_graph_wiki(base: str) -> None:
     # ---- 段 4 graph + wiki：摄取 → LLM 抽取 → parquet → serve 读回 ----
     graph = httpx.post(f"{base}/api/graph", json={"rebuild": True}, timeout=MODEL_CALL_TIMEOUT_SECS)
     assert graph.status_code == 200, f"段4 graph：构建失败（{graph.text[:200]}）"
@@ -94,6 +109,8 @@ def test_five_stage_pipeline_wiring(serve: ServeProcess, seed_files: dict[str, P
     assert entries.status_code == 200, "段4 wiki：条目清单不可读"
     assert entries.json()["entries"], "段4 wiki：条目清单为空"
 
+
+def _check_ask(base: str) -> None:
     # ---- 段 5 ask：检索 → 上下文 → LLM → 引用全链 ----
     ask = httpx.post(
         f"{base}/api/ask", json={"question": SEED_QUESTION}, timeout=MODEL_CALL_TIMEOUT_SECS

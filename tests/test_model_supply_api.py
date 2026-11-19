@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.fakes import FakeEmbeddingProvider, FakeRerankerProvider
 
-from fakes import FakeEmbeddingProvider, FakeRerankerProvider
 from siku.api.app import create_app
 from siku.model_supply import ChannelValues
 from siku.retrieve.indexer import sync_index

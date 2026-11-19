@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from siku.retrieve.errors import IndexCorruptError, IndexUnavailableError
-from siku.retrieve.models import ChunkRecord, DocumentRecord
+from siku.retrieve.models import ChunkRecord, Citation, DocumentRecord
 from siku.retrieve.store import SCHEMA_VERSION, SqliteIndex
 from siku.retrieve.tokenizer import tokenize
 
@@ -23,10 +23,12 @@ def make_chunk(chunk_id: str, text: str, ordinal: int = 0) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=chunk_id,
         source_id=DOC.source_id,
-        source_hash=DOC.source_hash,
-        source_name=DOC.source_name,
-        note_path=DOC.note_path,
-        anchor="page:1",
+        citation=Citation(
+            source_name=DOC.source_name,
+            note_path=DOC.note_path,
+            source_hash=DOC.source_hash,
+            anchor="page:1",
+        ),
         ordinal=ordinal,
         text=text,
     )
@@ -112,7 +114,7 @@ class TestDocumentsAndChunks:
         loaded = index.get_chunks([chunk.chunk_id])
         assert chunk.chunk_id in loaded
         assert loaded[chunk.chunk_id].text == "检索块正文"
-        assert loaded[chunk.chunk_id].anchor == "page:1"
+        assert loaded[chunk.chunk_id].citation.anchor == "page:1"
 
     def test_source_manifest_returns_mapping(self, index: SqliteIndex) -> None:
         assert index.source_manifest() == {DOC.source_id: (DOC.source_hash, DOC.note_path)}

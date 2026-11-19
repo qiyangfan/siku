@@ -12,9 +12,9 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from tests.fakes import FakeEmbeddingProvider
 from tests.test_api_reading import write_note
 
-from fakes import FakeEmbeddingProvider
 from siku.graph.models import Entity, SourceAnchor
 from siku.graph.store import save_graph
 from siku.retrieve.entity_join import entity_join_search
@@ -72,9 +72,9 @@ class _QAPair:
     label: str
 
 
-def _corpus_definition() -> list[tuple[str, list[tuple[str, str]], list[_QAPair]]]:
+def _corpus_definition() -> list[tuple[str, list[tuple[str, str]], tuple[_QAPair, ...]]]:
     """返回 (source_id, [(anchor, 正文)], QA 对) 的语料定义序列。"""
-    notes: list[tuple[str, list[tuple[str, str]], list[_QAPair]]] = []
+    notes: list[tuple[str, list[tuple[str, str]], tuple[_QAPair, ...]]] = []
     triples = zip(_BRIDGE_A, _BRIDGE_B, _BRIDGE_X, strict=True)
     for index, (name_a, name_b, org) in enumerate(triples):
         sid_a, sid_b, sid_c = f"b{index:03d}aaaa", f"b{index:03d}bbbb", f"b{index:03d}cccc"
@@ -177,11 +177,30 @@ def _chunks_by_anchor(data_dir: Path) -> dict[tuple[str, str], str]:
     try:
         source_ids = list(index.source_manifest())
         return {
-            (chunk.source_id, chunk.anchor): chunk.chunk_id
+            (chunk.source_id, chunk.citation.anchor): chunk.chunk_id
             for chunk in index.chunks_of_sources(source_ids)
         }
     finally:
         index.close()
+
+
+def _record_mentions(
+    mentions: dict[str, list[tuple[str, str]]],
+    source_id: str,
+    anchor: str,
+    text: str,
+) -> None:
+    for name in (*_BRIDGE_A, *_BRIDGE_B, *_BRIDGE_X):
+        if name in text:
+            mentions.setdefault(name, []).append((source_id, anchor))
+    for first, second, project in _COOCCUR:
+        for name in (first, second, project):
+            if name in text:
+                mentions.setdefault(name, []).append((source_id, anchor))
+    for canonical, domain_a, domain_b in _AMBIGUOUS:
+        for name in (canonical, domain_a, domain_b):
+            if name in text:
+                mentions.setdefault(name, []).append((source_id, anchor))
 
 
 def _entities_from_sections(key_map: dict[tuple[str, str], str]) -> list[Entity]:
@@ -189,17 +208,7 @@ def _entities_from_sections(key_map: dict[tuple[str, str], str]) -> list[Entity]
     mentions: dict[str, list[tuple[str, str]]] = {}
     for source_id, sections, _qa in _corpus_definition():
         for anchor, text in sections:
-            for name in (*_BRIDGE_A, *_BRIDGE_B, *_BRIDGE_X):
-                if name in text:
-                    mentions.setdefault(name, []).append((source_id, anchor))
-            for first, second, project in _COOCCUR:
-                for name in (first, second, project):
-                    if name in text:
-                        mentions.setdefault(name, []).append((source_id, anchor))
-            for canonical, domain_a, domain_b in _AMBIGUOUS:
-                for name in (canonical, domain_a, domain_b):
-                    if name in text:
-                        mentions.setdefault(name, []).append((source_id, anchor))
+            _record_mentions(mentions, source_id, anchor, text)
     entities = []
     for entity_id, (name, keys) in enumerate(sorted(mentions.items())):
         anchors = tuple(

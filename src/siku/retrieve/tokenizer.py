@@ -22,7 +22,7 @@ _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 
 _TOKEN_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/@-]*")
 # token 尾部允许出现的连接符，剥除避免把句尾标点吸进 token
-_TOKEN_TRAILING = "._/@-"
+_TOKEN_TRAILING = "._/@-"  # noqa: S105  # 名为 token 尾字符集合，与密码无关
 
 
 def normalize_text(text: str) -> str:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from siku.graph.errors import GraphExtractionError
 from siku.graph.models import (
@@ -31,39 +32,72 @@ def normalize_entity_name(name: str) -> str:
 
 def merge_extractions(pairs: Sequence[tuple[ChunkRecord, GraphExtraction]]) -> MergedGraph:
     """把 (chunk, 抽取) 序列合并为实体/边集合；输入顺序即处理顺序（稳定）。"""
-    entity_names: dict[str, str] = {}
-    entity_types: dict[str, str] = {}
-    entity_anchor_lists: dict[str, list[SourceAnchor]] = {}
-    surface_forms: dict[str, set[str]] = {}
-    edge_anchor_lists: dict[tuple[str, str, str], list[SourceAnchor]] = {}
-    edge_evidences: dict[tuple[str, str, str], str] = {}
-    # 展示方向保留首见提及方向，避免有向谓词因 id 排序被反转。
-    edge_direction: dict[tuple[str, str, str], tuple[str, str]] = {}
-    display_names: dict[str, str] = {}
-
+    acc = _MergeAccumulator()
     for chunk, extraction in pairs:
         chunk_anchor = _anchor_of(chunk)
+        entity_by_name = acc.add_mentions(chunk_anchor, extraction)
+        acc.add_relations(chunk.chunk_id, chunk_anchor, entity_by_name, extraction)
+    return MergedGraph(
+        entities=acc.entities(),
+        relations=acc.relations(),
+        ambiguous_entity_names=acc.ambiguous_names(),
+    )
+
+
+@dataclass
+class _EntitySeed:
+    name: str
+    type: str
+
+
+@dataclass
+class _EdgeSeed:
+    anchors: list[SourceAnchor]
+    evidence: str
+    direction: tuple[str, str]
+
+
+class _MergeAccumulator:
+    """逐 chunk 累积归一化实体与去重边；首见信息作为展示口径。"""
+
+    def __init__(self) -> None:
+        self.entity_seeds: dict[str, _EntitySeed] = {}
+        self.entity_anchor_lists: dict[str, list[SourceAnchor]] = {}
+        self.surface_forms: dict[str, set[str]] = {}
+        self.edge_seeds: dict[tuple[str, str, str], _EdgeSeed] = {}
+        self.display_names: dict[str, str] = {}
+
+    def add_mentions(
+        self, chunk_anchor: SourceAnchor, extraction: GraphExtraction
+    ) -> dict[str, str]:
         entity_by_name: dict[str, str] = {}
         for mention in extraction.entities:
             normalized = normalize_entity_name(mention.name)
             entity_id = entity_id_from_name(normalized)
             entity_by_name[mention.name] = entity_id
-            if normalized not in entity_names:
+            if normalized not in self.entity_seeds:
                 # 首见表面形态与类型作为展示口径，输入顺序稳定则结果确定。
-                entity_names[normalized] = mention.name
-                entity_types[normalized] = mention.type
-                display_names[entity_id] = mention.name
-            entity_anchor_lists.setdefault(entity_id, [])
-            surface_forms.setdefault(normalized, set()).add(mention.name)
-            if chunk_anchor not in entity_anchor_lists[entity_id]:
-                entity_anchor_lists[entity_id].append(chunk_anchor)
+                self.entity_seeds[normalized] = _EntitySeed(mention.name, mention.type)
+                self.display_names[entity_id] = mention.name
+            self.entity_anchor_lists.setdefault(entity_id, [])
+            self.surface_forms.setdefault(normalized, set()).add(mention.name)
+            if chunk_anchor not in self.entity_anchor_lists[entity_id]:
+                self.entity_anchor_lists[entity_id].append(chunk_anchor)
+        return entity_by_name
 
+    def add_relations(
+        self,
+        chunk_id: str,
+        chunk_anchor: SourceAnchor,
+        entity_by_name: dict[str, str],
+        extraction: GraphExtraction,
+    ) -> None:
         for relation_mention in extraction.relations:
             mention_source_id = _resolve_endpoint(
-                relation_mention.source_name, entity_by_name, chunk.chunk_id
+                relation_mention.source_name, entity_by_name, chunk_id
             )
             mention_target_id = _resolve_endpoint(
-                relation_mention.target_name, entity_by_name, chunk.chunk_id
+                relation_mention.target_name, entity_by_name, chunk_id
             )
             if mention_source_id == mention_target_id:
                 # 自环边无信息量，不进图谱。
@@ -71,62 +105,69 @@ def merge_extractions(pairs: Sequence[tuple[ChunkRecord, GraphExtraction]]) -> M
             # 无向图中同型互反边视为同一条，身份键按 id 排序；展示方向保留首见方向。
             first_id, second_id = sorted((mention_source_id, mention_target_id))
             edge_key = (first_id, second_id, relation_mention.type)
-            edge_anchor_lists.setdefault(edge_key, [])
-            edge_direction.setdefault(edge_key, (mention_source_id, mention_target_id))
-            # 首见证据作为展示证据。
-            edge_evidences.setdefault(edge_key, relation_mention.evidence)
-            if chunk_anchor not in edge_anchor_lists[edge_key]:
-                edge_anchor_lists[edge_key].append(chunk_anchor)
-
-    entities = tuple(
-        sorted(
-            (
-                Entity(
-                    entity_id=entity_id_from_name(normalized),
-                    name=entity_names[normalized],
-                    type=entity_types[normalized],
-                    anchors=tuple(entity_anchor_lists[entity_id_from_name(normalized)]),
+            seed = self.edge_seeds.get(edge_key)
+            if seed is None:
+                # 首见证据作为展示证据。
+                self.edge_seeds[edge_key] = _EdgeSeed(
+                    anchors=[chunk_anchor],
+                    evidence=relation_mention.evidence,
+                    direction=(mention_source_id, mention_target_id),
                 )
-                for normalized in entity_names
-            ),
-            key=lambda entity: entity.entity_id,
-        )
-    )
-    relation_items: list[Relation] = []
-    for edge_key, anchors in edge_anchor_lists.items():
-        _source_id, _target_id, edge_type = edge_key
-        direction = edge_direction[edge_key]
-        relation_items.append(
-            Relation(
-                source_entity_id=direction[0],
-                target_entity_id=direction[1],
-                source_name=display_names[direction[0]],
-                target_name=display_names[direction[1]],
-                type=edge_type,
-                evidence=edge_evidences[edge_key],
-                anchors=tuple(anchors),
+            elif chunk_anchor not in seed.anchors:
+                seed.anchors.append(chunk_anchor)
+
+    def entities(self) -> tuple[Entity, ...]:
+        return tuple(
+            sorted(
+                (
+                    Entity(
+                        entity_id=entity_id_from_name(normalized),
+                        name=seed.name,
+                        type=seed.type,
+                        anchors=tuple(self.entity_anchor_lists[entity_id_from_name(normalized)]),
+                    )
+                    for normalized, seed in self.entity_seeds.items()
+                ),
+                key=lambda entity: entity.entity_id,
             )
         )
-    relations = tuple(
-        sorted(
-            relation_items,
-            key=lambda relation: (
-                relation.source_entity_id,
-                relation.target_entity_id,
-                relation.type,
-            ),
+
+    def relations(self) -> tuple[Relation, ...]:
+        relation_items: list[Relation] = []
+        for edge_key, seed in self.edge_seeds.items():
+            _, _, edge_type = edge_key
+            relation_items.append(
+                Relation(
+                    source_entity_id=seed.direction[0],
+                    target_entity_id=seed.direction[1],
+                    source_name=self.display_names[seed.direction[0]],
+                    target_name=self.display_names[seed.direction[1]],
+                    type=edge_type,
+                    evidence=seed.evidence,
+                    anchors=tuple(seed.anchors),
+                )
+            )
+        return tuple(
+            sorted(
+                relation_items,
+                key=lambda relation: (
+                    relation.source_entity_id,
+                    relation.target_entity_id,
+                    relation.type,
+                ),
+            )
         )
-    )
-    ambiguous = tuple(sorted(name for name, forms in surface_forms.items() if len(forms) > 1))
-    return MergedGraph(entities=entities, relations=relations, ambiguous_entity_names=ambiguous)
+
+    def ambiguous_names(self) -> tuple[str, ...]:
+        return tuple(sorted(name for name, forms in self.surface_forms.items() if len(forms) > 1))
 
 
 def _anchor_of(chunk: ChunkRecord) -> SourceAnchor:
     return SourceAnchor(
         chunk_id=chunk.chunk_id,
-        source_hash=chunk.source_hash,
-        note_path=chunk.note_path,
-        anchor=chunk.anchor,
+        source_hash=chunk.citation.source_hash,
+        note_path=chunk.citation.note_path,
+        anchor=chunk.citation.anchor,
     )
 
 

@@ -75,7 +75,7 @@ def make_pptx(path: Path, slide_texts: Sequence[str]) -> Path:
         if text:
             box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(2))
             box.text_frame.text = text
-    presentation.save(path)
+    presentation.save(str(path))
     return path
 
 

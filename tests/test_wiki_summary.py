@@ -5,8 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-
-from graph_fakes import (
+from tests.graph_fakes import (
     DISCONNECTED,
     EMPTY_RESPONSE,
     OVERLONG,
@@ -15,6 +14,7 @@ from graph_fakes import (
     ScriptedLlmProvider,
     ScriptStep,
 )
+
 from siku.graph.cache import ExtractionCache
 from siku.graph.community import (
     SUMMARIZER_ID,

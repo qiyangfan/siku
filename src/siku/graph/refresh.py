@@ -133,12 +133,12 @@ def maybe_refresh_graph(
         refreshed=True,
         code="refreshed",
         message=(
-            f"图谱已增量更新：新增抽取 {result.report.llm_calls} 块，"
-            f"缓存命中 {result.report.cache_hits} 块。"
+            f"图谱已增量更新：新增抽取 {result.report.calls.llm_calls} 块，"
+            f"缓存命中 {result.report.calls.cache_hits} 块。"
         ),
-        llm_calls=result.report.llm_calls,
-        cache_hits=result.report.cache_hits,
-        chunk_count=result.report.chunk_count,
+        llm_calls=result.report.calls.llm_calls,
+        cache_hits=result.report.calls.cache_hits,
+        chunk_count=result.report.counts.chunks,
     )
 
 

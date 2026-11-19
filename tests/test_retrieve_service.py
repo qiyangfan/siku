@@ -3,8 +3,8 @@
 from pathlib import Path
 
 import pytest
+from tests.fakes import FakeEmbeddingProvider, FakeRerankerProvider
 
-from fakes import FakeEmbeddingProvider, FakeRerankerProvider
 from siku.retrieve.errors import (
     IndexCorruptError,
     InvalidQueryError,
@@ -102,10 +102,10 @@ class TestSearch:
         results = make_service(data_dir).search("检索增强生成")
         assert results
         top = results[0]
-        assert top.anchor == "page:1"
-        assert top.source_name == "a--aaaaaaaaaaaa.md"
-        assert top.note_path == "notes/a--aaaaaaaaaaaa.md"
-        assert top.source_hash == "1" * 64
+        assert top.citation.anchor == "page:1"
+        assert top.citation.source_name == "a--aaaaaaaaaaaa.md"
+        assert top.citation.note_path == "notes/a--aaaaaaaaaaaa.md"
+        assert top.citation.source_hash == "1" * 64
         assert "检索增强生成" in top.text
         assert top.bm25_score is not None and top.bm25_score > 0
         assert top.rerank_score > 0
@@ -114,7 +114,7 @@ class TestSearch:
         _, data_dir = corpus
         results = make_service(data_dir).search("RTX-4090")
         assert results
-        assert results[0].anchor == "sheet:预算"
+        assert results[0].citation.anchor == "sheet:预算"
         assert "RTX-4090" in results[0].text
 
     def test_hybrid_recall_covers_union(self, corpus: tuple[Path, Path]) -> None:

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- 主题初始化脚本与 @mantine/core 的 ColorSchemeScript 同源（design-system.test.ts
          防漂移守卫）：读库默认存储键算出目标态，先于首帧写 data-mantine-color-scheme -->
+    <!-- prettier-ignore -->
     <script>
 try {
   var _colorScheme = window.localStorage.getItem("mantine-color-scheme-value");
@@ -13,8 +14,16 @@ try {
   document.documentElement.setAttribute("data-mantine-color-scheme", computedColorScheme);
 } catch (e) {}
 </script>
-    <meta name="theme-color" content="#f6f8fb" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#10161d" media="(prefers-color-scheme: dark)" />
+    <meta
+      name="theme-color"
+      content="#f6f8fb"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#10161d"
+      media="(prefers-color-scheme: dark)"
+    />
     <title>siku · 本地问答</title>
   </head>
   <body>

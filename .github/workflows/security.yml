@@ -1,4 +1,4 @@
-# P0-1 Secret scanning 门禁：全历史扫描，push/PR 一律执行。
+# 安全与供应链门禁：secret 全历史扫描 + Python/Rust/JS 依赖漏洞。
 # 独立于 ci.yml 的路径门控——安全作业不允许被路径过滤跳过（跨仓质量门禁约定）。
 name: security
 
@@ -19,8 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           # 全历史扫描：只在增量提交里找密钥会漏掉历史遗留
           fetch-depth: 0
 
@@ -31,3 +32,116 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
             | tar -xz -C /usr/local/bin gitleaks
           gitleaks detect --source . --redact --verbose --exit-code 1
+
+  # 依赖漏洞按语言用原生工具扫锁定文件；不带 --ignore-vuln，有漏洞即阻断。
+  python-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3；与 ci.yml 同版本，钉精确版本
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 同步依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: pip-audit
+        run: uv run pip-audit
+
+  rust-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 Rust stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+
+      - name: 安装 cargo-audit
+        run: cargo install cargo-audit --locked --version 0.23.0
+
+      - name: cargo audit
+        run: cargo audit --file ui/src-tauri/Cargo.lock
+
+  sbom-license:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # 许可证元数据只存在于已安装包信息中，先还原 Python/Node 依赖再生成 SBOM。
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 同步 Python 依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+
+      - name: 安装前端依赖
+        working-directory: ui
+        run: npm ci
+
+      - name: 生成 SBOM（CycloneDX）
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom.cdx.json
+
+      - name: 安装 grant
+        run: |
+          set -euo pipefail
+          VERSION=0.8.0
+          curl -sSfL "https://github.com/anchore/grant/releases/download/v${VERSION}/grant_${VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin grant
+
+      - name: 许可证策略（allowlist；强 copyleft 即阻断）
+        run: grant check sbom.cdx.json
+
+  js-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # 优先扫锁定文件（osv-scanner），npm audit 仅作补充：
+      # 前者不依赖 registry 凭据，后者会受私有源 401 影响。
+      - name: osv-scanner
+        run: |
+          set -euo pipefail
+          VERSION=2.7.1
+          curl -sSfL "https://github.com/google/osv-scanner/releases/download/v${VERSION}/osv-scanner_linux_amd64" \
+            -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+          # 只扫前端锁定文件：Python/Rust 分别由 pip-audit / cargo-audit 负责，
+          # 全仓扫描会把 RustSec 的 unmaintained 告警当成漏洞误伤。
+          osv-scanner scan source -L ui/package-lock.json
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+
+      - name: npm audit（补充）
+        working-directory: ui
+        run: npm audit --audit-level=high

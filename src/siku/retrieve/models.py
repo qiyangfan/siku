@@ -39,19 +39,26 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True)
+class Citation:
+    """命中来源的定位信息：展示名、投影路径、原件哈希与结构锚点。"""
+
+    source_name: str
+    note_path: str
+    source_hash: str
+    anchor: str
+
+
+@dataclass(frozen=True)
 class ChunkRecord:
     """检索的最小结构单元：一个 `## <anchor>` 结构区块。
 
-    `note_path` 为相对 vault 根的路径（如 `notes/xxx.md`），
+    `citation.note_path` 为相对 vault 根的路径（如 `notes/xxx.md`），
     供调用者跳回 `vault/attachments/` 的原件定位。
     """
 
     chunk_id: str
     source_id: str
-    source_hash: str
-    source_name: str
-    note_path: str
-    anchor: str
+    citation: Citation
     ordinal: int
     text: str
 
@@ -91,10 +98,7 @@ class SearchResult:
     """
 
     chunk_id: str
-    source_name: str
-    note_path: str
-    source_hash: str
-    anchor: str
+    citation: Citation
     text: str
     bm25_score: float | None
     vector_score: float | None

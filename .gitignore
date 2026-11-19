@@ -18,6 +18,7 @@ htmlcov/
 # Node（ui/ 前端未来使用）
 node_modules/
 ui/dist/
+ui/coverage/
 
 # 本地数据：知识库数据目录与数据库文件不入库（vault/ = 默认运行时数据目录）
 data/

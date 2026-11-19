@@ -37,16 +37,21 @@ class SmokeFailureError(RuntimeError):
 
 def build_fixtures(fixtures_dir: Path) -> dict[str, Path]:
     """用开发环境生成四类结构真实文档（生成工具不进被测环境）。"""
-    from openpyxl import Workbook
-    from pptx import Presentation
-    from pptx.util import Inches
-    from pypdf import PdfReader, PdfWriter
+    fixtures_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "pdf": _build_pdf_fixture(fixtures_dir),
+        "scanned_pdf": _build_scanned_pdf_fixture(fixtures_dir),
+        "pptx": _build_pptx_fixture(fixtures_dir),
+        "xlsx": _build_xlsx_fixture(fixtures_dir),
+        "legacy_doc": _build_legacy_fixture(fixtures_dir),
+        "docx": _build_docx_fixture(fixtures_dir),
+    }
+
+
+def _build_pdf_fixture(fixtures_dir: Path) -> Path:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
     from reportlab.pdfgen import canvas
-
-    fixtures_dir.mkdir(parents=True, exist_ok=True)
-    fixtures: dict[str, Path] = {}
 
     pdf_buffer = io.BytesIO()
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
@@ -57,56 +62,77 @@ def build_fixtures(fixtures_dir: Path) -> dict[str, Path]:
             renderer.drawString(72, 720, text)
         renderer.showPage()
     renderer.save()
-    fixtures["pdf"] = fixtures_dir / "冒烟报告.pdf"
-    fixtures["pdf"].write_bytes(pdf_buffer.getvalue())
+    path = fixtures_dir / "冒烟报告.pdf"
+    path.write_bytes(pdf_buffer.getvalue())
+    return path
+
+
+def _build_scanned_pdf_fixture(fixtures_dir: Path) -> Path:
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.pdfgen import canvas
 
     scanned_buffer = io.BytesIO()
     scanned = canvas.Canvas(scanned_buffer)
     scanned.showPage()
     scanned.save()
-    scanned_pdf = fixtures_dir / "扫描件.pdf"
+    path = fixtures_dir / "扫描件.pdf"
     source = PdfReader(io.BytesIO(scanned_buffer.getvalue()))
     writer = PdfWriter()
     for page in source.pages:
         writer.add_page(page)
-    with scanned_pdf.open("wb") as handle:
+    with path.open("wb") as handle:
         writer.write(handle)
-    fixtures["scanned_pdf"] = scanned_pdf
+    return path
+
+
+def _build_pptx_fixture(fixtures_dir: Path) -> Path:
+    from pptx import Presentation
+    from pptx.util import Inches
 
     presentation = Presentation()
     slide = presentation.slides.add_slide(presentation.slide_layouts[6])
     box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(2))
     box.text_frame.text = "冒烟幻灯片要点"
-    fixtures["pptx"] = fixtures_dir / "冒烟演示.pptx"
-    presentation.save(fixtures["pptx"])
+    path = fixtures_dir / "冒烟演示.pptx"
+    presentation.save(str(path))
+    return path
+
+
+def _build_xlsx_fixture(fixtures_dir: Path) -> Path:
+    from openpyxl import Workbook
 
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "冒烟数据"
     worksheet.append(["列一", "列二"])
     worksheet.append(["值", 2])
-    fixtures["xlsx"] = fixtures_dir / "冒烟工作簿.xlsx"
-    workbook.save(fixtures["xlsx"])
+    path = fixtures_dir / "冒烟工作簿.xlsx"
+    workbook.save(path)
+    return path
 
-    legacy = fixtures_dir / "旧文档.doc"
-    legacy.write_bytes(b"legacy binary placeholder")
-    fixtures["legacy_doc"] = legacy
 
+def _build_legacy_fixture(fixtures_dir: Path) -> Path:
+    path = fixtures_dir / "旧文档.doc"
+    path.write_bytes(b"legacy binary placeholder")
+    return path
+
+
+def _build_docx_fixture(fixtures_dir: Path) -> Path:
     pandoc = shutil.which("pandoc")
     if pandoc is None:
         raise SmokeFailureError("dev environment needs pandoc to generate the DOCX fixture")
-    docx = fixtures_dir / "冒烟文档.docx"
-    result = subprocess.run(
-        [pandoc, "-f", "gfm", "-t", "docx", "-o", str(docx)],
+    path = fixtures_dir / "冒烟文档.docx"
+    # pandoc 为固定命令，参数为脚本自身生成的夹具路径；不启用 shell。
+    result = subprocess.run(  # noqa: S603
+        [pandoc, "-f", "gfm", "-t", "docx", "-o", str(path)],
         input="# 冒烟标题\n\n正文段落",
         text=True,
         capture_output=True,
         check=False,
     )
-    if result.returncode != 0 or not docx.exists():
+    if result.returncode != 0 or not path.exists():
         raise SmokeFailureError(f"failed to generate DOCX fixture: {result.stderr}")
-    fixtures["docx"] = docx
-    return fixtures
+    return path
 
 
 def request_json(
@@ -120,7 +146,8 @@ def request_json(
         method=method,
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        # 请求发往本机冒烟服务（http://127.0.0.1），URL 由脚本常量拼接。
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
             return response.status, json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read().decode("utf-8"))
@@ -138,95 +165,121 @@ def wait_for_health(deadline: float) -> None:
     raise SmokeFailureError("sidecar did not become healthy in time")
 
 
+def _prepare_workdir(work: Path) -> tuple[dict[str, Path], Path, Path, dict[str, str]]:
+    fixtures = build_fixtures(work / "fixtures")
+    vault = work / "vault"
+    data_dir = work / "data"
+    home = work / "home"
+    home.mkdir()
+    # 干净环境：PATH 只有系统底线（无 brew/无 pandoc），HOME 隔离配置文件，
+    # 代理指向黑洞使任何意外联网立即失败
+    environment = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(home),
+        "TMPDIR": tempfile.gettempdir(),
+        "HTTP_PROXY": BLACKHOLE_PROXY,
+        "HTTPS_PROXY": BLACKHOLE_PROXY,
+        "http_proxy": BLACKHOLE_PROXY,
+        "https_proxy": BLACKHOLE_PROXY,
+    }
+    return fixtures, vault, data_dir, environment
+
+
+def _run_smoke(
+    exe: Path,
+    fixtures: dict[str, Path],
+    vault: Path,
+    data_dir: Path,
+    environment: dict[str, str],
+) -> list[str]:
+    failures: list[str] = []
+    # exe 为构建产物路径，参数为固定 serve 命令；不启用 shell。
+    process = subprocess.Popen(  # noqa: S603
+        [
+            str(exe),
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(PORT),
+            "--vault",
+            str(vault),
+            "--data-dir",
+            str(data_dir),
+        ],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        wait_for_health(time.time() + HEALTH_TIMEOUT_SECS)
+        print("[smoke] sidecar healthy in clean environment (PATH=/usr/bin:/bin, no config)")
+        _verify_supported_formats(vault, fixtures, failures)
+        _verify_rejected_formats(fixtures, failures)
+    finally:
+        process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+    return failures
+
+
+def _verify_supported_formats(vault: Path, fixtures: dict[str, Path], failures: list[str]) -> None:
+    expected_anchors = {
+        "pdf": ("page:1", "page:3"),
+        "docx": ("content",),
+        "pptx": ("slide:1",),
+        "xlsx": ("sheet:冒烟数据",),
+    }
+    for kind in ("pdf", "docx", "pptx", "xlsx"):
+        _verify_one_format(kind, vault, fixtures, expected_anchors[kind], failures)
+
+
+def _verify_one_format(
+    kind: str,
+    vault: Path,
+    fixtures: dict[str, Path],
+    anchors: tuple[str, ...],
+    failures: list[str],
+) -> None:
+    status, payload = request_json("POST", "/api/ingest", {"source": str(fixtures[kind])})
+    if status != 200 or payload.get("created") != 1:
+        failures.append(f"{kind} ingest failed: {status} {payload}")
+        return
+    notes = sorted((vault / "notes").glob("*.md"))
+    note_text = "\n".join(path.read_text(encoding="utf-8") for path in notes)
+    # 每类单独核对：重置 notes 目录（冒烟逐类重建 vault）
+    if not all(anchor in note_text for anchor in anchors):
+        failures.append(f"{kind} projection missing anchors {anchors}")
+    shutil.rmtree(vault, ignore_errors=True)
+    print(f"[smoke] {kind}: ingested, projection anchors {anchors} verified")
+
+
+def _verify_rejected_formats(fixtures: dict[str, Path], failures: list[str]) -> None:
+    status, payload = request_json("POST", "/api/ingest", {"source": str(fixtures["scanned_pdf"])})
+    if status != 422 or payload.get("code") != "scanned_pdf_no_text":
+        failures.append(f"scanned pdf not rejected actionably: {status} {payload}")
+    else:
+        print("[smoke] scanned pdf rejected with scanned_pdf_no_text (actionable)")
+
+    status, payload = request_json("POST", "/api/ingest", {"source": str(fixtures["legacy_doc"])})
+    if status != 422 or payload.get("code") != "legacy_office_format":
+        failures.append(f"legacy .doc not rejected actionably: {status} {payload}")
+    else:
+        print("[smoke] legacy .doc rejected with legacy_office_format (actionable)")
+
+
 def main() -> None:
     sidecar_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SIDECAR
     exe = sidecar_dir / "siku-sidecar"
     if not exe.is_file():
         raise SystemExit(f"sidecar executable not found: {exe}")
-    failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="siku-clean-smoke-") as workdir_raw:
-        work = Path(workdir_raw)
-        fixtures = build_fixtures(work / "fixtures")
-        vault = work / "vault"
-        data_dir = work / "data"
-        home = work / "home"
-        home.mkdir()
-        # 干净环境：PATH 只有系统底线（无 brew/无 pandoc），HOME 隔离配置文件，
-        # 代理指向黑洞使任何意外联网立即失败
-        environment = {
-            "PATH": "/usr/bin:/bin",
-            "HOME": str(home),
-            "TMPDIR": tempfile.gettempdir(),
-            "HTTP_PROXY": BLACKHOLE_PROXY,
-            "HTTPS_PROXY": BLACKHOLE_PROXY,
-            "http_proxy": BLACKHOLE_PROXY,
-            "https_proxy": BLACKHOLE_PROXY,
-        }
-        process = subprocess.Popen(
-            [
-                str(exe),
-                "serve",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(PORT),
-                "--vault",
-                str(vault),
-                "--data-dir",
-                str(data_dir),
-            ],
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        try:
-            wait_for_health(time.time() + HEALTH_TIMEOUT_SECS)
-            print("[smoke] sidecar healthy in clean environment (PATH=/usr/bin:/bin, no config)")
-            expected_anchors = {
-                "pdf": ("page:1", "page:3"),
-                "docx": ("content",),
-                "pptx": ("slide:1",),
-                "xlsx": ("sheet:冒烟数据",),
-            }
-            for kind in ("pdf", "docx", "pptx", "xlsx"):
-                status, payload = request_json(
-                    "POST", "/api/ingest", {"source": str(fixtures[kind])}
-                )
-                if status != 200 or payload.get("created") != 1:
-                    failures.append(f"{kind} ingest failed: {status} {payload}")
-                    continue
-                notes = sorted((vault / "notes").glob("*.md"))
-                note_text = "\n".join(path.read_text(encoding="utf-8") for path in notes)
-                anchors = expected_anchors[kind]
-                # 每类单独核对：重置 notes 目录（冒烟逐类重建 vault）
-                if not all(anchor in note_text for anchor in anchors):
-                    failures.append(f"{kind} projection missing anchors {anchors}")
-                shutil.rmtree(vault, ignore_errors=True)
-                print(f"[smoke] {kind}: ingested, projection anchors {anchors} verified")
-
-            status, payload = request_json(
-                "POST", "/api/ingest", {"source": str(fixtures["scanned_pdf"])}
-            )
-            if status != 422 or payload.get("code") != "scanned_pdf_no_text":
-                failures.append(f"scanned pdf not rejected actionably: {status} {payload}")
-            else:
-                print("[smoke] scanned pdf rejected with scanned_pdf_no_text (actionable)")
-
-            status, payload = request_json(
-                "POST", "/api/ingest", {"source": str(fixtures["legacy_doc"])}
-            )
-            if status != 422 or payload.get("code") != "legacy_office_format":
-                failures.append(f"legacy .doc not rejected actionably: {status} {payload}")
-            else:
-                print("[smoke] legacy .doc rejected with legacy_office_format (actionable)")
-        finally:
-            process.send_signal(signal.SIGTERM)
-            try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        fixtures, vault, data_dir, environment = _prepare_workdir(Path(workdir_raw))
+        failures = _run_smoke(exe, fixtures, vault, data_dir, environment)
     if failures:
         for failure in failures:
             print(f"[smoke] FAIL: {failure}")

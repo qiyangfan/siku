@@ -57,8 +57,7 @@ def render_entry(
         lines.append(f"- {relation.source_name} —[{relation.type}]→ {relation.target_name}")
         if relation.evidence:
             lines.append(f"  - 证据：{relation.evidence}")
-        for anchor in relation.anchors:
-            lines.append(f"  - 来源：{_render_anchor(anchor)}")
+        lines.extend(f"  - 来源：{_render_anchor(anchor)}" for anchor in relation.anchors)
     lines.append("")
     return "\n".join(lines)
 

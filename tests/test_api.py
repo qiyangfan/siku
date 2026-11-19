@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.graph_fakes import FakeGraphExtractor
 
-from graph_fakes import FakeGraphExtractor
 from siku.api.app import create_app
 from siku.api.contract import DEFAULT_SNAPSHOT_PATH
 from siku.api.messages import map_domain_error, retrieval_error_message
@@ -30,7 +30,7 @@ from siku.graph.errors import (
     LlmProviderError,
     LlmRateLimitError,
 )
-from siku.graph.report import GraphHealthReport
+from siku.graph.report import GraphCallStats, GraphCounts, GraphHealthReport, GraphIdentity
 from siku.graph.service import GraphBuildResult
 from siku.ingest import IngestError
 from siku.model_supply import LLM_PROTOCOLS, ProtocolConfigError
@@ -55,7 +55,7 @@ from siku.retrieve.errors import (
     ProviderError,
     RetrievalError,
 )
-from siku.retrieve.models import SearchResult
+from siku.retrieve.models import Citation, SearchResult
 from siku.wiki.service import WikiResult
 
 
@@ -96,16 +96,11 @@ class FakeAnswerProvider:
 def fake_graph_result() -> GraphBuildResult:
     return GraphBuildResult(
         report=GraphHealthReport(
-            extractor_id="fake-extractor",
-            model_id="fake-model",
-            prompt_version="v1",
-            chunk_count=2,
-            node_count=3,
-            edge_count=1,
-            community_count=2,
-            ambiguous_entity_count=0,
-            cache_hits=1,
-            llm_calls=1,
+            identity=GraphIdentity(
+                extractor_id="fake-extractor", model_id="fake-model", prompt_version="v1"
+            ),
+            counts=GraphCounts(chunks=2, nodes=3, edges=1, communities=2, ambiguous_entities=0),
+            calls=GraphCallStats(cache_hits=1, llm_calls=1),
             warnings=(),
         ),
         empty_corpus=False,
@@ -193,10 +188,12 @@ def test_ingest_success_and_missing_source_error(tmp_path: Path) -> None:
 def test_search_success_and_error_contract(tmp_path: Path) -> None:
     result = SearchResult(
         chunk_id="chunk-1",
-        source_name="note.md",
-        note_path="notes/note.md",
-        source_hash="a" * 64,
-        anchor="content",
+        citation=Citation(
+            source_name="note.md",
+            note_path="notes/note.md",
+            source_hash="a" * 64,
+            anchor="content",
+        ),
         text="正文",
         bm25_score=1.0,
         vector_score=0.9,
@@ -229,10 +226,12 @@ def test_ask_success_returns_grounded_answer_and_request_id(tmp_path: Path) -> N
     )
     search_result = SearchResult(
         chunk_id="chunk-1",
-        source_name="architecture.md",
-        note_path="notes/architecture.md",
-        source_hash="a" * 64,
-        anchor="本地优先",
+        citation=Citation(
+            source_name="architecture.md",
+            note_path="notes/architecture.md",
+            source_hash="a" * 64,
+            anchor="本地优先",
+        ),
         text="服务只监听 localhost。",
         bm25_score=1.0,
         vector_score=0.9,
@@ -283,10 +282,12 @@ def test_ask_validation_and_provider_contract_errors(
             [
                 SearchResult(
                     chunk_id="chunk-1",
-                    source_name="note.md",
-                    note_path="notes/note.md",
-                    source_hash="a" * 64,
-                    anchor="正文",
+                    citation=Citation(
+                        source_name="note.md",
+                        note_path="notes/note.md",
+                        source_hash="a" * 64,
+                        anchor="正文",
+                    ),
                     text="证据",
                     bm25_score=1.0,
                     vector_score=0.9,

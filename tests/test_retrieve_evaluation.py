@@ -22,16 +22,18 @@ from siku.retrieve.evaluation import (
     load_golden_set,
     save_baseline,
 )
-from siku.retrieve.models import SearchResult
+from siku.retrieve.models import Citation, SearchResult
 
 
 def make_result(source: str, anchor: str, rank_hint: str = "", text: str = "正文") -> SearchResult:
     return SearchResult(
         chunk_id=f"{rank_hint}{source}{anchor}".ljust(64, "0")[:64],
-        source_name=source,
-        note_path=f"notes/{source}.md",
-        source_hash="0" * 64,
-        anchor=anchor,
+        citation=Citation(
+            source_name=source,
+            note_path=f"notes/{source}.md",
+            source_hash="0" * 64,
+            anchor=anchor,
+        ),
         text=text,
         bm25_score=1.0,
         vector_score=None,
@@ -109,7 +111,7 @@ class TestMetrics:
         report = evaluate(cases, lambda query: search_results[query])
         assert report.metrics["recall_at_5"] == pytest.approx(1.0)
         assert report.metrics["mrr_at_10"] == pytest.approx((1.0 + 1 / 3) / 2)
-        assert report.cases[1].first_rank == 3
+        assert report.cases[1].metrics.first_rank == 3
 
     def test_recall_same_expectation_multiple_hits_capped(self) -> None:
         # 单期望 + top5 内同源多 chunk 命中：recall 必须封顶为 1 而不是按命中条数膨胀
