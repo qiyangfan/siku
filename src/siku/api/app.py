@@ -393,7 +393,8 @@ def _register_error_handlers(application: FastAPI) -> None:
 
     @application.exception_handler(Exception)
     async def handle_unexpected_error(_request: Request, exc: Exception) -> JSONResponse:
-        logger.exception("unhandled API error: error_class=%s", type(exc).__name__)
+        # 框架回调不是 except 块，显式传异常对象才能保留堆栈
+        logger.error("unhandled API error: error_class=%s", type(exc).__name__, exc_info=exc)
         return _error_response(500, "internal_error", "服务内部错误，请重试；技术详情见日志。")
 
 

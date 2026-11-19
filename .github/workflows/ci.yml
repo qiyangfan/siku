@@ -178,6 +178,14 @@ jobs:
       - name: zizmor（工作流安全审计）
         run: uv run zizmor .github/workflows
 
+      - name: typos（拼写检查）
+        run: |
+          set -euo pipefail
+          VERSION=1.52.2
+          curl -sSfL "https://github.com/crate-ci/typos/releases/download/v${VERSION}/typos-v${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C /usr/local/bin typos
+          typos
+
   # 前端作业仅在 ui/package.json 存在时执行；hashFiles 只能用于 step 级 if。
   ui:
     name: 前端（Node 24）

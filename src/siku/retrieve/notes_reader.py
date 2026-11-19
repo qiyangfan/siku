@@ -161,7 +161,8 @@ def read_note(note_path: Path, vault_root: Path) -> tuple[DocumentRecord, tuple[
         return document, chunks
 
     parsed: list[ChunkRecord] = []
-    for anchor, section_lines in sections:
+    for anchor, lines in sections:
+        section_lines = lines
         while section_lines and _COMMENT_RE.match(section_lines[0]):
             section_lines = section_lines[1:]
         content = _normalize_body_text(section_lines)

@@ -60,7 +60,7 @@ function mockFetchByRoutes(
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       const route = routes[path];
       if (route === undefined) {
         throw new Error(`unexpected fetch: ${url}`);
@@ -268,7 +268,7 @@ describe("浏览视图", () => {
             : input instanceof URL
               ? input.href
               : input.url;
-        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
         if (path === "/api/notes") {
           return jsonResponse(twoNotes);
         }
@@ -312,7 +312,7 @@ describe("浏览视图", () => {
             : input instanceof URL
               ? input.href
               : input.url;
-        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
         if (path === "/api/notes" && url.includes("page=2")) {
           return jsonResponse(
             { code: "internal_error", message: "翻页失败。" },

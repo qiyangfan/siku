@@ -12,6 +12,8 @@
 | vulture | `uv run vulture` | 0 命中 |
 | deptry | `uv run deptry src` | 0 问题 |
 | zizmor | `uv run zizmor .github/workflows` | 0 发现 |
+| typos | `typos` | 0 命中 |
+| tsc | `npx tsc -b` | 0 error（含三个严格选项） |
 | pytest + 覆盖率 | `uv run pytest --cov=siku` | 全量通过，阈值 89 守住 |
 | ESLint | `npx eslint .` | 0 error / 0 warning（含类型感知） |
 | prettier | `npm run format:check` | 通过 |

@@ -119,7 +119,7 @@ function urlDispatch(
         : input instanceof URL
           ? input.href
           : input.url;
-    const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+    const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
     const defaults: Record<string, Promise<Response>> = {
       "/api/notes": emptyNotesResponse(),
       "/api/wiki/entries": emptyWikiResponse(),
@@ -148,7 +148,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health") {
         healthAttempts += 1;
         if (healthAttempts === 1) {
@@ -204,7 +204,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -282,7 +282,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -372,7 +372,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -415,7 +415,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -441,7 +441,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -475,7 +475,7 @@ describe("本地问答界面", () => {
             : input instanceof URL
               ? input.href
               : input.url;
-        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
         if (path === "/api/health") {
           return response({ status: "ok", version: "0.1.0" });
         }
@@ -556,7 +556,7 @@ describe("本地问答界面", () => {
             : input instanceof URL
               ? input.href
               : input.url;
-        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
         if (path === "/api/health") {
           return response({ status: "ok", version: "0.1.0" });
         }
@@ -644,7 +644,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -681,7 +681,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -718,7 +718,7 @@ describe("本地问答界面", () => {
           : input instanceof URL
             ? input.href
             : input.url;
-      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+      const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
       if (path === "/api/health")
         return response({ status: "ok", version: "0.1.0" });
       if (path === "/api/settings") return response(READY_SETTINGS);
@@ -750,7 +750,7 @@ describe("图谱实体联动问答", () => {
             : input instanceof URL
               ? input.href
               : input.url;
-        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
         expect(path).not.toBe("/api/ask");
         if (path === "/api/health") {
           return response({ status: "ok", version: "0.1.0" });
@@ -863,7 +863,7 @@ describe("问答就绪门控", () => {
             : input instanceof URL
               ? input.href
               : input.url;
-        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
         if (path === "/api/health") {
           return response({ status: "ok", version: "0.1.0" });
         }
@@ -913,7 +913,7 @@ describe("问答就绪门控", () => {
             : input instanceof URL
               ? input.href
               : input.url;
-        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const path = url.replace(/^https?:\/\/[^/]+/, "").split("?")[0] ?? "";
         if (path === "/api/health") {
           return response({ status: "ok", version: "0.1.0" });
         }

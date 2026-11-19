@@ -120,8 +120,8 @@ def build_test_app(
         "vault": tmp_path / "vault",
         "data_dir": tmp_path / "data",
         "search_service_factory": lambda _data_dir: result,
-        "graph_extractor_factory": lambda: FakeGraphExtractor(),
-        "summarizer_factory": lambda: FakeSummarizer(),
+        "graph_extractor_factory": FakeGraphExtractor,
+        "summarizer_factory": FakeSummarizer,
     }
     if answer_provider is not None:
         kwargs["answer_provider_factory"] = lambda: answer_provider

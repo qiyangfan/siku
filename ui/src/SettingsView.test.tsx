@@ -37,7 +37,15 @@ const savedSettings = {
   invalid_config_file_overwritten: false,
 };
 
-type Call = { url: string; init?: RequestInit };
+type Call = { url: string; init: RequestInit | undefined };
+
+function groupAt(groups: HTMLElement[], index: number): HTMLElement {
+  const group = groups[index];
+  if (group === undefined) {
+    throw new Error(`missing settings group ${index}`);
+  }
+  return group;
+}
 
 function mockFetch(
   calls: Call[],
@@ -107,26 +115,30 @@ describe("设置中心", () => {
 
     const groups = await screen.findAllByRole("group");
     expect(groups).toHaveLength(3);
-    expect(within(groups[0]).getByLabelText("base_url")).toHaveValue(
+    expect(within(groupAt(groups, 0)).getByLabelText("base_url")).toHaveValue(
       "https://api.deepseek.com",
     );
-    expect(within(groups[0]).getByLabelText("model")).toHaveValue(
+    expect(within(groupAt(groups, 0)).getByLabelText("model")).toHaveValue(
       "deepseek-chat",
     );
-    const keyInput = within(groups[0]).getByLabelText("api_key（只写不回显）");
+    const keyInput = within(groupAt(groups, 0)).getByLabelText(
+      "api_key（只写不回显）",
+    );
     expect(keyInput).toHaveValue("");
     expect(
-      within(groups[0]).getByPlaceholderText("已设置——留空保持不变"),
+      within(groupAt(groups, 0)).getByPlaceholderText("已设置——留空保持不变"),
     ).toBeInTheDocument();
     expect(
-      within(groups[0]).getByRole("radiogroup", { name: "凭证来源" }),
+      within(groupAt(groups, 0)).getByRole("radiogroup", { name: "凭证来源" }),
     ).toBeInTheDocument();
     // 已存明文 key 的通道默认停在「直接填写」
     expect(
-      within(groups[0]).getByRole("radio", { name: "直接填写 key" }),
+      within(groupAt(groups, 0)).getByRole("radio", { name: "直接填写 key" }),
     ).toBeChecked();
     expect(
-      within(groups[2]).getByText(/以下字段当前由环境变量层覆盖.*base_url/),
+      within(groupAt(groups, 2)).getByText(
+        /以下字段当前由环境变量层覆盖.*base_url/,
+      ),
     ).toBeInTheDocument();
   });
 
@@ -144,7 +156,7 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    const llm = within(groups[0]);
+    const llm = within(groupAt(groups, 0));
     expect(llm.getByRole("radio", { name: "引用环境变量" })).toBeChecked();
     expect(llm.getByLabelText("api_key_env（环境变量名）")).toHaveValue(
       "SIKU_LLM_API_KEY",
@@ -154,7 +166,7 @@ describe("设置中心", () => {
     ).not.toBeInTheDocument();
     // 未设置任何凭证的通道默认「直接填写」
     expect(
-      within(groups[1]).getByRole("radio", { name: "直接填写 key" }),
+      within(groupAt(groups, 1)).getByRole("radio", { name: "直接填写 key" }),
     ).toBeChecked();
   });
 
@@ -172,7 +184,7 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    const llm = within(groups[0]);
+    const llm = within(groupAt(groups, 0));
     await user.type(llm.getByLabelText("api_key（只写不回显）"), "sk-tmp");
     await user.click(llm.getByRole("radio", { name: "引用环境变量" }));
     await user.type(
@@ -314,7 +326,7 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    const llm = within(groups[0]);
+    const llm = within(groupAt(groups, 0));
     await user.click(llm.getByRole("radio", { name: "引用环境变量" }));
     expect(llm.getByText(/已保存的明文 key 优先生效/)).toBeInTheDocument();
     await user.click(llm.getByLabelText("清除已保存的 key（保存后生效）"));
@@ -337,7 +349,7 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    await user.type(within(groups[0]).getByLabelText("model"), "-new");
+    await user.type(within(groupAt(groups, 0)).getByLabelText("model"), "-new");
     await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(
@@ -357,7 +369,7 @@ describe("设置中心", () => {
     });
     // 保存后表单以服务端掩码视图为准：key 输入框仍为空
     expect(
-      within(groups[0]).getByLabelText("api_key（只写不回显）"),
+      within(groupAt(groups, 0)).getByLabelText("api_key（只写不回显）"),
     ).toHaveValue("");
   });
 
@@ -398,7 +410,9 @@ describe("设置中心", () => {
 
     const groups = await screen.findAllByRole("group");
     await user.click(
-      within(groups[0]).getByLabelText("清除已保存的 key（保存后生效）"),
+      within(groupAt(groups, 0)).getByLabelText(
+        "清除已保存的 key（保存后生效）",
+      ),
     );
     await user.click(screen.getByRole("button", { name: "保存设置" }));
 
@@ -425,14 +439,17 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    await user.clear(within(groups[0]).getByLabelText("base_url"));
-    await user.type(within(groups[0]).getByLabelText("base_url"), "not-a-url");
+    await user.clear(within(groupAt(groups, 0)).getByLabelText("base_url"));
+    await user.type(
+      within(groupAt(groups, 0)).getByLabelText("base_url"),
+      "not-a-url",
+    );
     await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(
       await screen.findByText("LLM 通道的 base_url 非法：请填写完整 URL。"),
     ).toBeInTheDocument();
-    expect(within(groups[0]).getByLabelText("base_url")).toHaveValue(
+    expect(within(groupAt(groups, 0)).getByLabelText("base_url")).toHaveValue(
       "not-a-url",
     );
   });
@@ -470,12 +487,12 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    const testButton = within(groups[0]).getByRole("button", {
+    const testButton = within(groupAt(groups, 0)).getByRole("button", {
       name: "测试连接",
     });
     await user.click(testButton);
     expect(
-      within(groups[0]).getByRole("button", { name: "测试中…" }),
+      within(groupAt(groups, 0)).getByRole("button", { name: "测试中…" }),
     ).toBeDisabled();
 
     resolveTest({
@@ -486,7 +503,7 @@ describe("设置中心", () => {
       await screen.findByText("连接成功，耗时 42 ms。"),
     ).toBeInTheDocument();
     expect(
-      within(groups[0]).getByRole("button", { name: "测试连接" }),
+      within(groupAt(groups, 0)).getByRole("button", { name: "测试连接" }),
     ).toBeEnabled();
   });
 
@@ -505,7 +522,7 @@ describe("设置中心", () => {
 
     const groups = await screen.findAllByRole("group");
     await user.click(
-      within(groups[0]).getByRole("button", { name: "测试连接" }),
+      within(groupAt(groups, 0)).getByRole("button", { name: "测试连接" }),
     );
 
     expect(
@@ -537,7 +554,7 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    const llm = groups[0];
+    const llm = groupAt(groups, 0);
     await user.selectOptions(
       within(llm).getByLabelText("LLM 通道厂商预设"),
       "通义千问（阿里云百炼）",
@@ -566,7 +583,7 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    const llm = groups[0];
+    const llm = groupAt(groups, 0);
     await user.selectOptions(
       within(llm).getByLabelText("LLM 通道厂商预设"),
       "Ollama 本地",
@@ -592,7 +609,7 @@ describe("设置中心", () => {
 
     const groups = await screen.findAllByRole("group");
     await user.selectOptions(
-      within(groups[0]).getByLabelText("LLM 通道接口协议"),
+      within(groupAt(groups, 0)).getByLabelText("LLM 通道接口协议"),
       "anthropic",
     );
     await user.click(screen.getByRole("button", { name: "保存设置" }));
@@ -615,11 +632,11 @@ describe("设置中心", () => {
 
     const groups = await screen.findAllByRole("group");
     await user.selectOptions(
-      within(groups[0]).getByLabelText("LLM 通道接口协议"),
+      within(groupAt(groups, 0)).getByLabelText("LLM 通道接口协议"),
       "anthropic",
     );
     await user.click(
-      within(groups[0]).getByRole("button", { name: "测试连接" }),
+      within(groupAt(groups, 0)).getByRole("button", { name: "测试连接" }),
     );
 
     await waitFor(() =>
@@ -639,7 +656,7 @@ describe("设置中心", () => {
     render(<SettingsView />);
 
     const groups = await screen.findAllByRole("group");
-    const llm = groups[0];
+    const llm = groupAt(groups, 0);
     await user.selectOptions(
       within(llm).getByLabelText("LLM 通道厂商预设"),
       "Kimi（Anthropic 分支）",
@@ -652,7 +669,7 @@ describe("设置中心", () => {
     );
     // embedding/rerank 通道不出现协议控件
     expect(
-      within(groups[1]).queryByLabelText(/接口协议/),
+      within(groupAt(groups, 1)).queryByLabelText(/接口协议/),
     ).not.toBeInTheDocument();
   });
 

@@ -485,7 +485,7 @@ class LibraryJobManager:
             path.name,
             type(exc).__name__,
             exc,
-            exc_info=True,
+            exc_info=exc,
         )
         self._append_item(
             job, _JobItem(name=path.name, path=path.name, status="failed", detail=detail)

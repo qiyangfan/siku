@@ -118,7 +118,7 @@ function mockFetchByRoutes(routes: RouteTable) {
             ? input.href
             : input.url;
       const path = url.replace(/^https?:\/\/[^/]+/, "");
-      const route = routes[path.split("?")[0]];
+      const route = routes[path.split("?")[0] ?? ""];
       if (route === undefined) {
         throw new Error(`unexpected fetch: ${url}`);
       }

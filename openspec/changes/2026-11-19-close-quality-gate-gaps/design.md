@@ -50,6 +50,21 @@ pytest 的 `pythonpath="."` 与 mypy 的 `explicit_package_bases` 口径一致�
 `filterwarnings = ["error"]` 开启后暴露一处 Popen stdout 未显式关闭、由 GC 关闭时
 抛出的 unraisable。修法是在 finally 显式 `close()`，不放宽过滤规则。
 
+### 函数长度规则：不照搬
+
+`max-lines-per-function` 默认 50 行。实测生产代码 20 个函数超限，前五为
+LibraryView(498)、SettingsView(434)、App(380)、GraphView(371)、WikiView(336)，
+全部是视图组件的 JSX 渲染函数。启用该阈值等价于把每个视图拆成 5–10 个子组件，
+属于架构重构而非门禁修复，且会产生大量无语义阈值。保持模块级 `max-lines` 1000 +
+`complexity` 20 作为结构门禁。
+
+### TS 严格档
+
+三个编译器选项是缺陷类而非风格类：`noUncheckedIndexedAccess` 暴露 56 处
+可能为 undefined 的索引、`exactOptionalPropertyTypes` 3 处可选属性赋值、
+`noImplicitOverride` 0 处。测试侧用 `groupAt`/`tokenValue` 等显式守卫替代
+非空断言，保持"找不到就抛错"的测试失败语义。
+
 ## 风险
 
 - 测试导入重写涉及 22 个文件，靠全量 pytest 375 秒回归兜底。

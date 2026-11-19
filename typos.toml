@@ -1,0 +1,8 @@
+# 拼写检查词表扩展：只收录标识符/包名/合法变体，不放宽行级忽略。
+[default.extend-words]
+# PyInstaller spec 的 Analysis.datas 属性，不是单词 data 的复数误写
+datas = "datas"
+# CA 证书包名
+certifi = "certifi"
+# 与 unparsable 并存的合法拼写，全仓统一沿用
+unparseable = "unparseable"

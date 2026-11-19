@@ -158,6 +158,6 @@ def config_file_error_message(exc: ModelConfigFileError) -> str:
 
 def fail(message: str, exc: Exception) -> NoReturn:
     # 技术细节只进 DEBUG 日志，用户面只输出中文文案。
-    logger.debug("command failed: error_class=%s", type(exc).__name__, exc_info=True)
+    logger.debug("command failed: error_class=%s", type(exc).__name__, exc_info=exc)
     typer.echo(message, err=True)
     raise typer.Exit(code=1) from exc

@@ -69,3 +69,8 @@ repos:
         language: system
         pass_filenames: false
         files: ^\.github/workflows/
+      - id: typos
+        name: typos（拼写）
+        entry: typos
+        language: system
+        pass_filenames: false

@@ -53,6 +53,7 @@ def test_core_import_never_touches_torch_stack(tmp_path: Path) -> None:
         text=True,
         cwd=Path(__file__).resolve().parent.parent,
         timeout=120,
+        check=False,
     )
     assert result.returncode == 0, f"stdout={result.stdout}\nstderr={result.stderr}"
     assert "ISOLATION-OK" in result.stdout

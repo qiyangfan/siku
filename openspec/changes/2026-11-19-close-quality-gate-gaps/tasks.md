@@ -48,3 +48,11 @@
 - [x] 7.4 `filterwarnings = ["error"]`；修 mutex 测试 Popen stdout 未关闭。
 - [x] 7.5 zizmor 0 发现：39 处 action 固定 SHA、按 job 最小权限、发布缓存关闭。
 - [x] 7.6 zizmor 进 CI governance + pre-commit（dev 依赖 `zizmor>=1.32`）。
+- [x] 7.7 typos 拼写门禁：8 条命中按词表扩展（PyInstaller `datas`、`certifi`、
+      `unparseable`）清零；pre-commit + CI governance 接入。
+- [x] 7.8 ruff 启 `LOG` + `PLW`：修 `exc_info=True`→显式异常对象 3 处、循环变量覆盖
+      1 处、测试 lambda/check 参数 4 处；`BLE` 经逐处核实全为边界捕获，不启用。
+- [x] 7.9 TS 三档收紧：`noUncheckedIndexedAccess` + `exactOptionalPropertyTypes` +
+      `noImplicitOverride`，87 处错误清零（生产 13 / 测试 74）。
+- [x] 7.10 `max-lines-per-function`（默认 50）：实测 20 个生产函数超限，前五为 292–498
+      行的视图组件；启用等价于重写全部视图，属结构重构而非门禁修复，明确不启用。

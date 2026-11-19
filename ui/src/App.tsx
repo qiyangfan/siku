@@ -192,16 +192,15 @@ async function loadQuestionSuggestions(
   if (!isCurrent()) {
     return null;
   }
+  const firstWikiEntry = wikiEntriesOf(wikiResult)[0];
   const [noteDetails, wikiDetails] = await Promise.all([
     Promise.allSettled(
       notesOf(notesResult)
         .slice(0, 2)
         .map((note) => getNote(note.source_id)),
     ),
-    wikiEntriesOf(wikiResult)[0]
-      ? Promise.allSettled([
-          getWikiEntry(wikiEntriesOf(wikiResult)[0].community_id),
-        ])
+    firstWikiEntry
+      ? Promise.allSettled([getWikiEntry(firstWikiEntry.community_id)])
       : [],
   ]);
   if (!isCurrent()) {

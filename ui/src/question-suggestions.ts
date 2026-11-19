@@ -122,11 +122,12 @@ function wikiMemberNames(content: string): string[] {
     if (/^##\s+/.test(line.trim())) {
       break;
     }
-    const match = line.match(/^\s*-\s+(.+?)\s*$/);
-    if (!match) {
+    const captured = line.match(/^\s*-\s+(.+?)\s*$/)?.[1];
+    if (captured === undefined) {
       continue;
     }
-    const name = match[1].split("（", 1)[0].split(" — ", 1)[0].trim();
+    const name =
+      (captured.split("（", 1)[0] ?? "").split(" — ", 1)[0]?.trim() ?? "";
     if (name && !names.includes(name)) {
       names.push(name);
     }
@@ -141,16 +142,17 @@ function wikiSuggestion(
     return null;
   }
   const members = wikiMemberNames(entry.content);
-  if (members.length >= 2) {
+  const [first, second] = members;
+  if (first !== undefined && second !== undefined) {
     return {
-      question: `知识图谱中「${members[0]}」和「${members[1]}」有哪些关联？`,
-      label: `知识图谱中「${shorten(members[0], MAX_TITLE_LENGTH)}」和「${shorten(members[1], MAX_TITLE_LENGTH)}」有哪些关联？`,
+      question: `知识图谱中「${first}」和「${second}」有哪些关联？`,
+      label: `知识图谱中「${shorten(first, MAX_TITLE_LENGTH)}」和「${shorten(second, MAX_TITLE_LENGTH)}」有哪些关联？`,
     };
   }
-  if (members.length === 1) {
+  if (first !== undefined) {
     return {
-      question: `知识图谱中「${members[0]}」与哪些内容有关联？`,
-      label: `知识图谱中「${shorten(members[0], MAX_TITLE_LENGTH)}」与哪些内容有关联？`,
+      question: `知识图谱中「${first}」与哪些内容有关联？`,
+      label: `知识图谱中「${shorten(first, MAX_TITLE_LENGTH)}」与哪些内容有关联？`,
     };
   }
   return null;

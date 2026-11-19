@@ -103,6 +103,9 @@ select = [
     "TID",
     "ICN",
     "PLR0402", # 子模块只用 from 导入，禁止 import x.y as y 形式的别名
+    # 日志调用正确性（exc_info 与异常上下文一致）与 pylint 警告子集
+    "LOG",
+    "PLW",
     "S",   # flake8-bandit 安全规则（P0-3 SAST 的 Python 侧）
 ]
 

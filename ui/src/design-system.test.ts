@@ -59,7 +59,7 @@ const borderProperties = new Set([
 
 function ungovernedBorderWidths(css: string): string[] {
   return [...css.matchAll(/^\s*([\w-]+)\s*:\s*([^;]+);/gm)]
-    .filter(([, property, value]) => {
+    .filter(([, property = "", value = ""]) => {
       if (!borderProperties.has(property)) {
         return false;
       }
@@ -69,12 +69,12 @@ function ungovernedBorderWidths(css: string): string[] {
         !/^(?:0|none)$/.test(normalizedValue)
       );
     })
-    .map(([, property, value]) => `${property}: ${value.trim()}`);
+    .map(([, property = "", value = ""]) => `${property}: ${value.trim()}`);
 }
 
 function ungovernedCornerRadii(css: string): string[] {
   return [...css.matchAll(/^\s*([\w-]+)\s*:\s*([^;]+);/gm)]
-    .filter(([, property, value]) => {
+    .filter(([, property = "", value = ""]) => {
       if (property !== "border-radius") {
         return false;
       }
@@ -84,7 +84,7 @@ function ungovernedCornerRadii(css: string): string[] {
         !/^(?:0|none)$/.test(normalizedValue)
       );
     })
-    .map(([, property, value]) => `${property}: ${value.trim()}`);
+    .map(([, property = "", value = ""]) => `${property}: ${value.trim()}`);
 }
 
 describe("首帧主题初始化脚本与库同源", () => {
@@ -112,7 +112,7 @@ describe("全局设计 token", () => {
   it("应用与静态启动页的间距、字号、行高和字重不使用未命名的数值", () => {
     const violations = [stylesheet, shellHtml].flatMap((source) =>
       [...source.matchAll(/^\s*([\w-]+)\s*:\s*([^;]+);/gm)]
-        .filter(([, property, value]) => {
+        .filter(([, property = "", value = ""]) => {
           if (!governedProperties.has(property)) {
             return false;
           }
@@ -147,7 +147,7 @@ describe("全局设计 token", () => {
           }
           return false;
         })
-        .map(([property, value]) => `${property}: ${value.trim()}`),
+        .map(([property = "", value = ""]) => `${property}: ${value.trim()}`),
     );
 
     expect(violations).toEqual([]);
@@ -173,7 +173,16 @@ function relativeLuminance(hex: string): number {
       ? channel / 12.92
       : ((channel + 0.055) / 1.055) ** 2.4;
   });
-  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  const [r = 0, g = 0, b = 0] = channels;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function tokenValue(tokens: Record<string, string>, name: string): string {
+  const value = tokens[name];
+  if (value === undefined) {
+    throw new Error(`missing token ${name}`);
+  }
+  return value;
 }
 
 function contrastRatio(foreground: string, background: string): number {
@@ -218,8 +227,8 @@ describe("暗色取值对比度守卫", () => {
     string
   >;
   const { red } = theme.colors as Record<"red", MantineColorsTuple>;
-  const darkCanvas = dark["--color-canvas"];
-  const darkSurface = dark["--color-surface"];
+  const darkCanvas = tokenValue(dark, "--color-canvas");
+  const darkSurface = tokenValue(dark, "--color-surface");
 
   it("正文/辅助字/强调与语义核心色对暗 canvas 与暗 surface 均 ≥4.5:1", () => {
     for (const token of [
@@ -231,41 +240,55 @@ describe("暗色取值对比度守卫", () => {
       "--color-warning",
       "--color-danger",
     ]) {
-      expect(contrastRatio(dark[token], darkCanvas)).toBeGreaterThanOrEqual(
-        4.5,
-      );
-      expect(contrastRatio(dark[token], darkSurface)).toBeGreaterThanOrEqual(
-        4.5,
-      );
+      expect(
+        contrastRatio(tokenValue(dark, token), darkCanvas),
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrastRatio(tokenValue(dark, token), darkSurface),
+      ).toBeGreaterThanOrEqual(4.5);
     }
   });
 
   it("暗 wash 上的文字 ≥4.5:1；红族钉 3 阶，4 阶不达标的差异用断言钉住", () => {
     // 红色浅底上的文字使用第 3 阶；第 4 阶对比度只有 3.84:1。
-    expect(dark["--color-danger"]).toBe(red[3]);
-    expect(dark["--color-danger-wash"]).toBe(red[9]);
+    expect(tokenValue(dark, "--color-danger")).toBe(red[3]);
+    expect(tokenValue(dark, "--color-danger-wash")).toBe(red[9]);
     expect(
-      contrastRatio(dark["--color-danger"], dark["--color-danger-wash"]),
+      contrastRatio(
+        tokenValue(dark, "--color-danger"),
+        tokenValue(dark, "--color-danger-wash"),
+      ),
     ).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(red[4], dark["--color-danger-wash"])).toBeLessThan(
-      4.5,
-    );
+    expect(
+      contrastRatio(red[4], tokenValue(dark, "--color-danger-wash")),
+    ).toBeLessThan(4.5);
 
     expect(
-      contrastRatio(dark["--color-warning"], dark["--color-warning-wash"]),
+      contrastRatio(
+        tokenValue(dark, "--color-warning"),
+        tokenValue(dark, "--color-warning-wash"),
+      ),
     ).toBeGreaterThanOrEqual(4.5);
     expect(
-      contrastRatio(dark["--color-accent"], dark["--color-accent-wash"]),
+      contrastRatio(
+        tokenValue(dark, "--color-accent"),
+        tokenValue(dark, "--color-accent-wash"),
+      ),
     ).toBeGreaterThanOrEqual(4.5);
     expect(
-      contrastRatio(dark["--color-accent-strong"], dark["--color-accent-wash"]),
+      contrastRatio(
+        tokenValue(dark, "--color-accent-strong"),
+        tokenValue(dark, "--color-accent-wash"),
+      ),
     ).toBeGreaterThanOrEqual(4.5);
   });
 
   it("暗色边线保持 hairline 分隔语义（低于文字阈值，刻意为之）", () => {
-    expect(contrastRatio(dark["--color-border"], darkCanvas)).toBeLessThan(4.5);
     expect(
-      contrastRatio(dark["--color-border-strong"], darkCanvas),
+      contrastRatio(tokenValue(dark, "--color-border"), darkCanvas),
+    ).toBeLessThan(4.5);
+    expect(
+      contrastRatio(tokenValue(dark, "--color-border-strong"), darkCanvas),
     ).toBeLessThan(4.5);
   });
 });

@@ -39,6 +39,12 @@
     2 cache-poisoning 全部清零——action 固定 commit SHA、按 job 最小权限
     （release 仅发布作业持写权限）、发布工作流关闭包管理器与 uv 缓存；zizmor 进
     CI governance 与 pre-commit，dev 依赖锁定版本。
+13. **typos 拼写门禁**：词表扩展 3 条（`datas`/`certifi`/`unparseable`）后 0 命中；
+    pre-commit 与 CI governance 执行。
+14. **ruff LOG + PLW**：3 处 `exc_info=True` 改为显式异常对象、1 处循环变量覆盖、
+    4 处测试 lambda / `check` 参数修正；`BLE` 逐处核实为边界捕获，未启用。
+15. **TS 三档收紧**：`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、
+    `noImplicitOverride` 开启，87 处错误清零。
 
 附带修复：`test_api_cli` 的图 JSON 对照用例显式使用 `tmp_path`，消除对本地
 `vault/`、`data/` 残留产物的隐式依赖。
@@ -57,6 +63,9 @@
   已有语法校验）。
 - 不引入 axe/Playwright 运行时无障碍断言（静态 jsx-a11y 已覆盖可判定面）。
 - 不启用 ruff `D` 全族（缺 152 条 docstring，且 D400/D415 与中文句号约定冲突）。
+- 不启用 `max-lines-per-function`（默认 50）：实测 20 个生产函数超限，前五为
+  292–498 行的视图组件；启用等价于重写全部视图，模块级 `max-lines`（1000）与
+  `complexity`（20）已覆盖结构风险。
 
 ## 受影响决策
 

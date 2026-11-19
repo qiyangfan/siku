@@ -127,7 +127,7 @@ def test_refresh_hits_cache_when_corpus_unchanged(tmp_path: Path) -> None:
     outcome = maybe_refresh_graph(
         vault=vault,
         data_dir=data_dir,
-        extractor_factory=lambda: default_extractor(),
+        extractor_factory=default_extractor,
         auto_refresh_enabled=True,
     )
     assert outcome.refreshed is True

@@ -79,9 +79,9 @@ describe("根据本地知识构造提问建议", () => {
         label: "《热力学基础》的核心内容是什么？",
       },
     ]);
-    expect(buildQuestionSuggestions([genericNotes[0]], [], undefined)).toEqual(
-      [],
-    );
+    expect(
+      buildQuestionSuggestions(genericNotes.slice(0, 1), [], undefined),
+    ).toEqual([]);
   });
 
   it("把已导入的 SKILL.md 当作笔记处理", () => {
@@ -129,10 +129,14 @@ describe("根据本地知识构造提问建议", () => {
       wikiEntry,
     );
     expect(suggestions).toHaveLength(3);
-    expect(suggestions[0].question).toContain(longTitle);
-    expect(suggestions[0].question).toContain(longSection);
-    expect([...suggestions[0].label].length).toBeLessThan(
-      [...suggestions[0].question].length,
+    const [firstSuggestion] = suggestions;
+    if (firstSuggestion === undefined) {
+      throw new Error("missing suggestion");
+    }
+    expect(firstSuggestion.question).toContain(longTitle);
+    expect(firstSuggestion.question).toContain(longSection);
+    expect([...firstSuggestion.label].length).toBeLessThan(
+      [...firstSuggestion.question].length,
     );
   });
 });
