@@ -14,7 +14,7 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 平台正确的应用数据目录（macOS Application Support / Windows Roaming / Linux XDG）
-dirs = "5"
+dirs = "7"
 # 健康检查仅打 loopback，用 rustls 避免 OpenSSL 交叉编译负担（ureq 3：rustls 为默认 TLS）
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
