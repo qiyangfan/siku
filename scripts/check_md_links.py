@@ -17,12 +17,12 @@ from urllib.parse import unquote
 
 # 扫描面：各类文档根。目录不存在时静默跳过（例如未检出 docs/ 的精简副本）。
 DEFAULT_ROOTS = ("docs", "openspec", "benchmarks", "ui", "src", "scripts")
-DEFAULT_FILES = ("README.md", "AGENTS.md")
+DEFAULT_FILES = ("README.md", "AGENTS.md", "CONSTITUTION.md", "SECURITY.md")
 # 本地维护、不入库的文档：扫它会让本机与 CI 口径不一致
 DEFAULT_EXCLUDES = ("docs/HANDOFF.md",)
 # 独立环境/构建缓存里的第三方文档不属于本仓
 SKIPPED_PARTS = {".git", ".venv", "node_modules", ".mypy_cache", ".ruff_cache", "target", "dist"}
-_FENCED_CODE = re.compile(r"^ {0,3}(```|~~~).*?^ {0,3}\1", re.MULTILINE | re.DOTALL)
+_FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _INLINE_CODE = re.compile(r"(`+)(?:(?!\1).)+?\1", re.DOTALL)
 _INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(<[^>]*>|(?:[^\s()]|\([^\s()]*\))*)")
 _REFERENCE_DEF = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(<[^>]+>|\S*)", re.MULTILINE)
@@ -49,12 +49,47 @@ class BrokenLink:
 
 
 def _strip_code(text: str) -> str:
-    """去掉围栏代码块与行内代码，行号保持不变。
+    """去掉围栏代码块、缩进代码块与行内代码，行号保持不变。
 
-    示例里的链接和 ``#标题`` 字样不是真链接，误判会制造假红。
+    围栏按 CommonMark 的「等长或更长闭合」处理；4 空格缩进仅在块起始（前一非空行
+    为空或仍处于缩进块）时剔除，避免误删列表项内的合法链接。
     """
-    text = _FENCED_CODE.sub(lambda match: _blank(match.group(0)), text)
-    return _INLINE_CODE.sub(lambda match: " " * len(match.group(0)), text)
+    out: list[str] = []
+    fence: tuple[str, int] | None = None
+    indented = False
+    previous_blank = True
+    for raw in text.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        if fence is not None:
+            out.append(_blank(raw))
+            match = _FENCE_OPEN.match(line)
+            if (
+                match is not None
+                and match.group(1)[0] == fence[0]
+                and len(match.group(1)) >= fence[1]
+                and not match.group(2).strip()
+            ):
+                fence = None
+            previous_blank = False
+            continue
+        match = _FENCE_OPEN.match(line)
+        if match is not None and not (match.group(1)[0] == "`" and "`" in match.group(2)):
+            fence = (match.group(1)[0], len(match.group(1)))
+            out.append(_blank(raw))
+            previous_blank = False
+            continue
+        blank = not line.strip()
+        current_indented = line.startswith("    ") or line.startswith("\t")
+        if current_indented and (previous_blank or indented):
+            indented = True
+            out.append(_blank(raw))
+            previous_blank = False
+            continue
+        if not blank:
+            indented = False
+        out.append(raw)
+        previous_blank = blank
+    return _INLINE_CODE.sub(lambda match: " " * len(match.group(0)), "".join(out))
 
 
 def _blank(segment: str) -> str:
@@ -182,6 +217,10 @@ def discover(root: Path, roots: tuple[str, ...], files: tuple[str, ...]) -> list
         candidate = root / name
         if candidate.is_file():
             found.add(candidate)
+    # 根目录文档不止 README/AGENTS(如 CONSTITUTION/CHANGELOG),统一纳入;
+    # HANDOFF 等本地维护文件由 DEFAULT_EXCLUDES 排除。
+    for pattern in ("*.md", "*.MD"):
+        found.update(path for path in root.glob(pattern) if path.is_file())
     for directory in roots:
         base = root / directory
         if base.is_dir():

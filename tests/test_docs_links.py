@@ -31,6 +31,18 @@ def test_targets_cover_inline_reference_and_parenthesized() -> None:
     ]
 
 
+def test_code_blocks_with_nested_fences_are_ignored() -> None:
+    # 4 反引号围栏内允许出现 3 反引号;内部链接仍是示例,不是真链接
+    text = "````md\n```\n[fenced](docs/never.md)\n```\n````\n"
+    assert links.link_targets(text) == []
+
+
+def test_indented_code_link_is_ignored_but_nested_list_link_is_kept() -> None:
+    # 块起始的 4 空格缩进是代码;列表项内的 4 空格续行仍是正文链接
+    text = "\n    [code](docs/never.md)\n\n- 列表项\n    [list](docs/keep.md)\n"
+    assert [target for _, target in links.link_targets(text)] == ["docs/keep.md"]
+
+
 def test_anchors_follow_github_slug_rules() -> None:
     text = (
         "# 标题 Title\n"
