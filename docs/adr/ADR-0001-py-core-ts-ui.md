@@ -5,7 +5,9 @@
 
 ## 背景
 
-图谱/RAG 管线的全部现成轮子——GraphRAG、LightRAG、graphify、Docling、sentence-transformers、本地 embedding——都在 Python 生态；owner 的既有能力栈是 Java（平台团队，阿里规范 + MyBatis），界面必然是 Web 技术。争议：要不要顺手用 Java 统一栈，或追新用 Go/Rust。
+图谱/RAG 管线的全部现成轮子——GraphRAG、LightRAG、graphify、Docling、sentence-transformers、
+本地 embedding——都在 Python 生态；owner 的既有能力栈是 Java（平台团队，阿里规范 + MyBatis），
+界面必然是 Web 技术。争议：要不要顺手用 Java 统一栈，或追新用 Go/Rust。
 
 ## 决策
 

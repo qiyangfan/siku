@@ -92,6 +92,13 @@ jobs:
       - name: Ruff Format 检查
         run: uv run ruff format --check .
 
+      # 契约快照单源:生成器输出必须与入库 contracts/openapi.json 一致。
+      - name: 契约快照无漂移
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run python -m siku.api.contract --refresh
+          git diff --exit-code contracts/openapi.json
+
       # 结构门禁只跑一次（矩阵两版本只取 3.12 桶），阈值全部为工具默认值。
       # 扫描面覆盖全部 Python 代码（生产、测试、脚本），避免测试/脚本成为体积黑洞。
       - name: Pylint 模块体积
@@ -154,10 +161,10 @@ jobs:
       - name: E2E 冒烟（真实 serve 进程 + fake 三通道端点）
         run: uv run pytest -m e2e
 
-  # 治理文件自检：OpenSpec 严格校验 + 工作流语法与安全审计。
+  # 治理文件自检：OpenSpec 严格校验 + 文档 lint/链接 + 工作流语法与安全审计。
   # 独立 job，不受路径门控影响（与 security workflow 同一原则）。
   governance:
-    name: OpenSpec + actionlint + zizmor
+    name: OpenSpec + docs + actionlint + zizmor
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -181,6 +188,14 @@ jobs:
 
       - name: OpenSpec 严格校验
         run: npx --yes @fission-ai/openspec@1.17.0 validate --all --strict
+
+      # 文档门禁：markdownlint 只查人写文档（globs 见 .markdownlint-cli2.jsonc）；
+      # 链接检查零网络，同时校验相对路径与标题锚点。与 pre-commit 同命令。
+      - name: markdownlint（人写文档）
+        run: npx --yes markdownlint-cli2@0.24.1
+
+      - name: markdown 相对链接与锚点
+        run: uv run python scripts/check_md_links.py
 
       - name: actionlint
         run: |

@@ -1,0 +1,15 @@
+{
+  // 只守护人写文档：README/AGENTS、docs/、benchmarks、ui 说明。
+  // openspec/ 的 change/spec 结构由 openspec validate --strict 负责；归档件保留
+  // 当时的书写形态，不随新规则回溯整改。
+  "globs": ["README.md", "AGENTS.md", "docs/**/*.md", "benchmarks/README.md", "ui/README.md"],
+  "ignores": ["**/node_modules/**", "**/.venv/**", "docs/HANDOFF.md"],
+  "config": {
+    // 中文按 120 列断行：一行 ≈360 字节，常见编辑器仍可读；代码块与表格行天然超宽，豁免
+    "MD013": { "line_length": 120, "code_blocks": false, "tables": false },
+    // 表格对齐（MD060）要求竖线按显示宽度逐列对齐；CJK 列与 ASCII 列混排时
+    // 需按宽度补空格，既有 40+ 张表全部重排只为对齐美观，收益不抵 churn。
+    // 列式由各表表头自行保证，渲染结果与对齐无关。
+    "MD060": false
+  }
+}

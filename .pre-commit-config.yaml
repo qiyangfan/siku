@@ -72,6 +72,20 @@ repos:
         entry: actionlint
         language: system
         files: ^\.github/workflows/
+      # 文档门禁：markdownlint 只守护人写文档（globs 见 .markdownlint-cli2.jsonc）；
+      # 链接检查零网络，同时校验相对路径与标题锚点。两者与 CI governance job 同命令。
+      - id: markdownlint
+        name: markdownlint（人写文档）
+        entry: npx --yes markdownlint-cli2@0.24.1
+        language: system
+        pass_filenames: false
+        files: \.md$
+      - id: markdown-links
+        name: markdown 相对链接与锚点
+        entry: uv run python scripts/check_md_links.py
+        language: system
+        pass_filenames: false
+        files: \.md$
       - id: zizmor
         name: zizmor（工作流安全审计）
         entry: uv run zizmor .github/workflows

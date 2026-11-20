@@ -35,7 +35,9 @@
 
 ## 3. 数据主权（最重要的一条）
 
-**自持 schema**：chunk / entity / edge / community 的持久化格式由本项目定义（SQLite + parquet）。GraphRAG、LightRAG、graphify 等一律实现统一 Extractor 接口，作为**可插拔抽取后端**接入——研究引擎版本间 API 与存储漂移剧烈，产品数据层绝不绑定。
+**自持 schema**：chunk / entity / edge / community 的持久化格式由本项目定义（SQLite + parquet）。
+GraphRAG、LightRAG、graphify 等一律实现统一 Extractor 接口，作为**可插拔抽取后端**接入——
+研究引擎版本间 API 与存储漂移剧烈，产品数据层绝不绑定。
 
 **红线：抽取管线幂等**。语料是唯一事实源；图谱/wiki/索引皆为派生物，按 `source_hash` 单文件重抽、支持全量重建。做不到幂等的产品一年后会被自己的旧图谱锁死。
 
@@ -55,7 +57,7 @@
 
 **格式放开，存储不变**：一切格式 → Markdown 投影（唯一事实层），原件拷贝进 `vault/attachments/` 溯源。
 
-```
+```text
 vault/
   attachments/   ← 原件（单文件夹可备份可迁移，默认拷贝不外链）
   notes/         ← Markdown 投影（frontmatter 记 source_hash / 页码锚点）
@@ -87,4 +89,5 @@ bge-m3 向量化 → BM25 混合召回 → bge-reranker 重排 → **golden set 
 
 ## 8. 命名
 
-**siku（四库）**：《四库全书》= 历史上最大规模的"汇总文献 → 自动编目（总目提要）→ 结构化检索"工程，与产品同构。实测 pypi / npm / Homebrew 全空闲（summa、mycelium、rhizome、engram、trove 均被占，已淘汰）。
+**siku（四库）**：《四库全书》= 历史上最大规模的"汇总文献 → 自动编目（总目提要）→ 结构化检索"工程，
+与产品同构。实测 pypi / npm / Homebrew 全空闲（summa、mycelium、rhizome、engram、trove 均被占，已淘汰）。

@@ -11,7 +11,7 @@
 
 **摄取格式全部放开，存储定稿不变：万能摄取 → Markdown 事实层 → 原件留存溯源。**
 
-```
+```text
 vault/
   attachments/   ← 原件拷贝（本地优先要求单文件夹可备份可迁移，默认拷贝不外链）
   notes/         ← Markdown 投影（frontmatter 记 source_hash / 页码锚点）

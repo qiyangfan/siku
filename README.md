@@ -2,10 +2,18 @@
 
 > 把你所有的文档丢进来：自动摄取、自动织成知识图谱、自动编成 wiki，然后用自然语言向它提问。
 
-siku 取意《四库全书》——历史上最大规模的"汇总天下文献 → 自动编目（总目提要）→ 结构化检索"工程。本项目是它的个人本地版：**本地优先**，语料与索引永不离开你的磁盘；模型一律 BYOK 端点供给（ADR-0009）——图谱抽取、问答走你的 LLM 端点，向量检索/重排走你的 embedding/rerank 端点（本地 Ollama 或云端 API）。
+siku 取意《四库全书》——历史上最大规模的"汇总天下文献 → 自动编目（总目提要）→ 结构化检索"工程。
+本项目是它的个人本地版：**本地优先**，语料与索引永不离开你的磁盘；模型一律 BYOK 端点供给
+（ADR-0009）——图谱抽取、问答走你的 LLM 端点，向量检索/重排走你的 embedding/rerank 端点
+（本地 Ollama 或云端 API）。
 
-🚧 当前处于 **alpha**:核心链路(摄取 → 检索 → 图谱 → wiki → 问答)与桌面上手闭环已完成,由 CI 五段接线门禁护航(`tests/e2e/`,真实 serve 进程);桌面发布物准备中(unsigned 包已可构建,Release 解禁待定)。架构定稿(北极星)见 [docs/architecture.md](docs/architecture.md),
+🚧 当前处于 **alpha**:核心链路(摄取 → 检索 → 图谱 → wiki → 问答)与桌面上手闭环已完成,
+由 CI 五段接线门禁护航(`tests/e2e/`,真实 serve 进程);桌面发布物准备中
+(unsigned 包已可构建,Release 解禁待定)。架构定稿(北极星)见
+[docs/architecture.md](docs/architecture.md),
 不可协商红线见 [openspec/project.md](openspec/project.md)(宪法)。
+
+<!-- markdownlint-disable MD060 -- 文档地图表以 ASCII 分隔、按列式阅读；MD060 要求按显示宽度补齐竖线，中文列宽会迫使整表重排。 -->
 
 ## 文档地图
 
