@@ -1,7 +1,10 @@
+import eslintReact from "@eslint-react/eslint-plugin";
 import eslint from "@eslint/js";
+import vitest from "@vitest/eslint-plugin";
 import jsxA11y from "eslint-plugin-jsx-a11y";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
+import testingLibrary from "eslint-plugin-testing-library";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
@@ -20,7 +23,10 @@ export default tseslint.config(
   {
     files: ["**/*.{ts,tsx}"],
     // 类型感知规则：只用 TS 项目做语义检查，JS/CJS 配置文件不纳入 project service
-    extends: [tseslint.configs.recommendedTypeChecked],
+    extends: [
+      tseslint.configs.recommendedTypeChecked,
+      eslintReact.configs["recommended-typescript"],
+    ],
     languageOptions: {
       ecmaVersion: 2022,
       globals: globals.browser,
@@ -48,5 +54,10 @@ export default tseslint.config(
         { allowConstantExport: true },
       ],
     },
+  },
+  {
+    // 测试侧门禁：Testing Library 查询/断言惯用法 + Vitest 用例卫生
+    files: ["**/*.test.{ts,tsx}"],
+    extends: [testingLibrary.configs["flat/react"], vitest.configs.recommended],
   },
 );

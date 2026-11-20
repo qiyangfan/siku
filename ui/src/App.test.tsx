@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -134,7 +134,6 @@ function urlDispatch(
 }
 
 afterEach(() => {
-  cleanup();
   vi.restoreAllMocks();
 });
 
@@ -172,8 +171,15 @@ describe("本地问答界面", () => {
     render(<App />);
     const offlineMessage =
       await screen.findByText(/浏览器页面无法启动本地进程/);
-    const offlineStatus = offlineMessage.closest('[role="status"]');
-    expect(offlineStatus).not.toBeNull();
+    const offlineStatus = screen
+      .getAllByRole("status")
+      .find((status) =>
+        status.textContent?.includes("浏览器页面无法启动本地进程"),
+      );
+    if (offlineStatus === undefined) {
+      throw new Error("offline status region not found");
+    }
+    expect(offlineMessage).toBeInTheDocument();
     expect(offlineStatus).toHaveTextContent("siku serve --with-ui");
     expect(screen.getByText("服务未连接")).toBeInTheDocument();
     expect(
@@ -183,7 +189,7 @@ describe("本地问答界面", () => {
     expect(screen.getByText("服务未连接")).toBeInTheDocument();
     expect(screen.getByText(/浏览器页面无法启动本地进程/)).toBeInTheDocument();
     await user.click(
-      within(offlineStatus as HTMLElement).getByRole("button", {
+      within(offlineStatus).getByRole("button", {
         name: "检查连接",
       }),
     );
@@ -532,9 +538,7 @@ describe("本地问答界面", () => {
 
     // 走图谱联动真实路径：选中实体 → 在问答中查询
     await user.click(viewTab("图谱"));
-    await waitFor(() =>
-      expect(screen.getByTestId("graph-canvas-stub")).toBeInTheDocument(),
-    );
+    await screen.findByTestId("graph-canvas-stub");
     await user.click(screen.getByTestId("graph-canvas-stub"));
     await user.click(screen.getByRole("button", { name: "在问答中查询" }));
 
@@ -615,9 +619,7 @@ describe("本地问答界面", () => {
 
     // 联动预填：作废在途请求并切回问答视图
     await user.click(viewTab("图谱"));
-    await waitFor(() =>
-      expect(screen.getByTestId("graph-canvas-stub")).toBeInTheDocument(),
-    );
+    await screen.findByTestId("graph-canvas-stub");
     await user.click(screen.getByTestId("graph-canvas-stub"));
     await user.click(screen.getByRole("button", { name: "在问答中查询" }));
 
@@ -796,9 +798,7 @@ describe("图谱实体联动问答", () => {
 
     render(<App />);
     await user.click(viewTab("图谱"));
-    await waitFor(() =>
-      expect(screen.getByTestId("graph-canvas-stub")).toBeInTheDocument(),
-    );
+    await screen.findByTestId("graph-canvas-stub");
 
     await user.click(screen.getByTestId("graph-canvas-stub"));
     expect(

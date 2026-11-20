@@ -1,10 +1,4 @@
-import {
-  cleanup,
-  fireEvent,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { render, requestBody, requestUrl } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -34,7 +28,6 @@ function mockRouter(handlers: Handler[]) {
 }
 
 afterEach(() => {
-  cleanup();
   vi.restoreAllMocks();
 });
 
@@ -282,9 +275,9 @@ function initBodyHasFile(init?: RequestInit): boolean {
 }
 
 function withinDialog(dialog: HTMLElement, name: string): HTMLElement {
-  const button = Array.from(dialog.querySelectorAll("button")).find(
-    (candidate) => candidate.textContent === name,
-  );
+  const button = within(dialog)
+    .getAllByRole("button")
+    .find((candidate) => candidate.textContent === name);
   if (button === undefined) {
     throw new Error(`button ${name} not found in dialog`);
   }
@@ -376,11 +369,12 @@ describe("来源目录同步", () => {
       screen.getByLabelText("来源目录路径"),
       "/Users/you/Documents/notes",
     );
+    let postedBody = "";
     fetchSpy.mockImplementation(async (input, init) => {
       const url = requestUrl(input);
       const method = init?.method ?? "GET";
       if (url === "/api/library/sources" && method === "POST") {
-        expect(requestBody(init)).toContain("/Users/you/Documents/notes");
+        postedBody = requestBody(init);
         return Promise.resolve({
           ok: true,
           json: () => Promise.resolve(oneSyncSource.sources[0]),
@@ -399,6 +393,7 @@ describe("来源目录同步", () => {
     });
     await user.click(screen.getByRole("button", { name: "添加来源" }));
 
+    expect(postedBody).toContain("/Users/you/Documents/notes");
     expect(
       await screen.findByText("/Users/you/Documents/notes"),
     ).toBeInTheDocument();
@@ -532,7 +527,7 @@ describe("来源目录同步", () => {
 
   it("清理失效文档按钮带危险配色，可清零时禁用并有释义 tooltip", async () => {
     mockRoutes({ "/api/library": () => listingWithMarked });
-    render(<LibraryView />);
+    const view = render(<LibraryView />);
 
     const button = await screen.findByRole("button", {
       name: "清理失效文档（2）",
@@ -541,7 +536,7 @@ describe("来源目录同步", () => {
     expect(button).toHaveAccessibleDescription(/来源缺失/);
 
     mockRoutes({ "/api/library": () => emptyListing });
-    cleanup();
+    view.unmount();
     render(<LibraryView />);
     const idleButton = await screen.findByRole("button", {
       name: "清理失效文档",
@@ -575,7 +570,7 @@ describe("来源目录同步", () => {
 
     await screen.findByText("资料库还是空的");
     const dropzone = screen.getByRole("button", {
-      name: /导入文件：点击选择或拖入文档/,
+      name: /点击选择文件，或把文档拖到这里/,
     });
     const file = new File(["pdf-bytes"], "拖入.pdf", {
       type: "application/pdf",
@@ -590,7 +585,7 @@ describe("来源目录同步", () => {
     render(<LibraryView />);
 
     const dropzone = await screen.findByRole("button", {
-      name: /导入文件：点击选择或拖入文档/,
+      name: /点击选择文件，或把文档拖到这里/,
     });
     expect(dropzone).not.toHaveClass("library-dropzone-active");
     fireEvent.dragOver(dropzone);
@@ -823,11 +818,9 @@ describe("单项移除", () => {
     expect(
       await screen.findByText(/索引消减未完成，移除标记已保留/),
     ).toBeInTheDocument();
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "重试移除" }),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("button", { name: "重试移除" }),
+    ).toBeInTheDocument();
   });
 });
 

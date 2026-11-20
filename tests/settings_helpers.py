@@ -8,7 +8,9 @@ from typing import Any
 import httpx
 import pytest
 
+from siku.graph.providers import HttpxLlmProvider
 from siku.model_supply import ChannelValues
+from siku.retrieve.api_providers import ApiEmbeddingProvider, ApiRerankerProvider
 
 SECRET = "sk-test-secret-12345"
 EMBED_CHANNEL_A = ChannelValues(base_url="http://127.0.0.1:11434/v1", model="model-a")
@@ -31,10 +33,10 @@ def write_note(vault: Path) -> None:
     )
 
 
-def _wrap_provider(base: type, transport: httpx.BaseTransport) -> type:
+def _wrap_provider(base: type[Any], transport: httpx.BaseTransport) -> type[Any]:
     """给 provider 构造器强制注入 MockTransport 的动态子类（探测测试专用）。"""
 
-    class TransportPatched(base):  # type: ignore[misc, valid-type]
+    class TransportPatched(base):  # type: ignore[misc]
         def __init__(self, **kwargs: Any) -> None:
             kwargs["transport"] = transport
             super().__init__(**kwargs)
@@ -43,22 +45,17 @@ def _wrap_provider(base: type, transport: httpx.BaseTransport) -> type:
 
 
 def inject_transport(monkeypatch: pytest.MonkeyPatch, transport: httpx.BaseTransport) -> None:
-    from siku.api import settings as settings_module
-
     monkeypatch.setattr(
-        settings_module,
-        "HttpxLlmProvider",
-        _wrap_provider(settings_module.HttpxLlmProvider, transport),
+        "siku.api.settings.HttpxLlmProvider",
+        _wrap_provider(HttpxLlmProvider, transport),
     )
     monkeypatch.setattr(
-        settings_module,
-        "ApiEmbeddingProvider",
-        _wrap_provider(settings_module.ApiEmbeddingProvider, transport),
+        "siku.api.settings.ApiEmbeddingProvider",
+        _wrap_provider(ApiEmbeddingProvider, transport),
     )
     monkeypatch.setattr(
-        settings_module,
-        "ApiRerankerProvider",
-        _wrap_provider(settings_module.ApiRerankerProvider, transport),
+        "siku.api.settings.ApiRerankerProvider",
+        _wrap_provider(ApiRerankerProvider, transport),
     )
 
 

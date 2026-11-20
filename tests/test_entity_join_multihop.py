@@ -231,14 +231,18 @@ def _entities_from_sections(key_map: dict[tuple[str, str], str]) -> list[Entity]
 # ---------------------------------------------------------------------------
 
 
-def _join_bridge_hit(data_dir: Path, pair: _QAPair, key_map: dict) -> tuple[bool, bool]:
+def _join_bridge_hit(
+    data_dir: Path, pair: _QAPair, key_map: dict[tuple[str, str], str]
+) -> tuple[bool, bool]:
     result = entity_join_search(data_dir, pair.question)
     hit_ids = {hit.result.chunk_id for hit in result.hits}
     expected = {key_map[key] for key in pair.evidence_keys}
     return expected <= hit_ids, bool(result.empty_reason)
 
 
-def _hybrid_bridge_hit(service: SearchService, pair: _QAPair, key_map: dict) -> bool:
+def _hybrid_bridge_hit(
+    service: SearchService, pair: _QAPair, key_map: dict[tuple[str, str], str]
+) -> bool:
     results = service.search(pair.question, SearchOptions(top_k=_TOP_K, candidate_k=50))
     expected = {key_map[key] for key in pair.evidence_keys}
     return expected <= {result.chunk_id for result in results}

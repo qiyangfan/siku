@@ -706,7 +706,6 @@ def test_job_recovers_from_crashing_recovery_step(tmp_path: Path) -> None:
         ),
         api_key_env="SIKU_LLM_API_KEY",
     )
-    original = library_module.ensure_library_writable
 
     def boom(data_dir_arg: Path, registry_arg: SyncRegistry) -> None:
         raise RuntimeError("simulated recovery crash")
@@ -734,7 +733,6 @@ def test_job_recovers_from_crashing_recovery_step(tmp_path: Path) -> None:
             _time.sleep(0.02)
     finally:
         monkeypatch.undo()
-    del original
 
 
 def test_purge_of_only_user_removed_survives_missing_provider(tmp_path: Path) -> None:
@@ -756,7 +754,7 @@ def test_purge_of_only_user_removed_survives_missing_provider(tmp_path: Path) ->
     app = create_app(
         vault=vault,
         data_dir=data_dir,
-        index_runner=broken_index_runner,  # type: ignore[arg-type]
+        index_runner=broken_index_runner,
     )
     client = TestClient(app)
     response = client.post("/api/library/purge", json={"confirm": True})

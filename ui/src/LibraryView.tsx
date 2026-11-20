@@ -439,7 +439,6 @@ export function LibraryView({ onKnowledgeInvalidated }: LibraryViewProps) {
             className={`library-dropzone${dragActive ? " library-dropzone-active" : ""}`}
             role="button"
             tabIndex={0}
-            aria-label="导入文件：点击选择或拖入文档"
             aria-disabled={running}
             onClick={() => {
               if (!running) {

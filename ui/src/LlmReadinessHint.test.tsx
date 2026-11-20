@@ -1,4 +1,4 @@
-import { cleanup, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { render, requestUrl } from "./test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LlmReadinessHint } from "./LlmReadinessHint";
@@ -24,7 +24,6 @@ function mockSettings(askReadiness: unknown) {
 }
 
 afterEach(() => {
-  cleanup();
   vi.restoreAllMocks();
 });
 

@@ -181,7 +181,7 @@ class TestMetrics:
 
 
 class TestBaselineGate:
-    def payload(self, recall: float, mrr: float) -> dict:
+    def payload(self, recall: float, mrr: float) -> dict[str, object]:
         return {"metrics": {"recall_at_5": recall, "mrr_at_10": mrr}}
 
     def test_scores_at_or_above_baseline_pass(self) -> None:

@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -71,7 +71,6 @@ function mockFetchByRoutes(
 }
 
 afterEach(() => {
-  cleanup();
   vi.restoreAllMocks();
 });
 
@@ -139,17 +138,16 @@ describe("浏览视图", () => {
     });
     const user = userEvent.setup();
 
-    render(<BrowseView />);
+    const { container } = render(<BrowseView />);
     await user.click(
       await screen.findByRole("button", { name: /architecture\.md/ }),
     );
     await screen.findByRole("heading", { name: "architecture.md" });
 
     // 脚本被剥除、事件处理器被剥除（DOMPurify），正文文本保留
-    expect(document.querySelector("script")).not.toBeInTheDocument();
-    const image = document.querySelector("img");
-    expect(image).not.toBeNull();
-    expect(image).not.toHaveAttribute("onerror");
+    expect(container.innerHTML).not.toContain("<script");
+    expect(container.innerHTML).not.toContain("onerror");
+    expect(container).toHaveTextContent("结尾");
   });
 
   it("分页：第二页数据经 page 参数加载", async () => {
@@ -169,16 +167,12 @@ describe("浏览视图", () => {
     const user = userEvent.setup();
 
     render(<BrowseView />);
-    await waitFor(() =>
-      expect(screen.getByText("第 1 / 2 页")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("第 1 / 2 页")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "下一页" }));
 
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /glossary\.md/ }),
-      ).toBeInTheDocument(),
-    );
+    expect(
+      await screen.findByRole("button", { name: /glossary\.md/ }),
+    ).toBeInTheDocument();
     expect(screen.getByText("第 2 / 2 页")).toBeInTheDocument();
     expect(fetchSpy).toHaveBeenCalled();
   });

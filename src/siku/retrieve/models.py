@@ -5,11 +5,14 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-# chunk_id 派生算法版本：字段拼接格式变化时递增，避免新旧索引混用
-CHUNK_ID_VERSION = "v1"
+# chunk_id 派生算法版本：字段编码格式变化时递增，避免新旧索引混用
+CHUNK_ID_VERSION = "v2"
 
-# 字段分隔符使用控制字符，杜绝正文内容拼接歧义
-_FIELD_SEPARATOR = "\x1f"
+
+def _encode_field(value: str) -> bytes:
+    """UTF-8 字节前加 8 字节长度前缀，字段内容含任何字符都不会跨越边界。"""
+    raw = value.encode("utf-8")
+    return len(raw).to_bytes(8, "big") + raw
 
 
 def derive_chunk_id(
@@ -23,8 +26,10 @@ def derive_chunk_id(
     同一来源重新投影后，只要 anchor、ordinal 与正文未变，chunk_id 就保持稳定，
     索引同步据此复用已有向量。
     """
-    payload = _FIELD_SEPARATOR.join((CHUNK_ID_VERSION, source_id, str(ordinal), anchor, text))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    payload = b"".join(
+        _encode_field(field) for field in (CHUNK_ID_VERSION, source_id, str(ordinal), anchor, text)
+    )
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True)

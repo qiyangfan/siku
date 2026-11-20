@@ -1,6 +1,6 @@
-import { cleanup, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { ThemeToggle } from "./ThemeToggle";
 import { renderAuto, renderInColorScheme } from "./test-utils";
 
@@ -31,10 +31,6 @@ beforeEach(() => {
   window.localStorage.clear();
   document.documentElement.removeAttribute("data-mantine-color-scheme");
   mockSystemPreference("light");
-});
-
-afterEach(() => {
-  cleanup();
 });
 
 describe("主题切换入口", () => {

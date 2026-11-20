@@ -109,7 +109,7 @@ export function GraphView({
   const [searching, setSearching] = useState(false);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [expanding, setExpanding] = useState(false);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [building, setBuilding] = useState(false);
   const [buildNote, setBuildNote] = useState<string | null>(null);
   // 各异步操作独立序号：慢响应不得覆盖新操作，也避免 loading 旗标互相卡死。

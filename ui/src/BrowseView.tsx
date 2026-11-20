@@ -298,6 +298,7 @@ export function BrowseView() {
                   onClick={handleMarkdownClick}
                   // 内容经 renderMarkdown（DOMPurify 清洗）产出安全只读 HTML，
                   // 链接导航经 handleMarkdownClick 拦截（只读视图不跳转）
+                  // eslint-disable-next-line @eslint-react/dom-no-dangerously-set-innerhtml -- 上游 DOMPurify 已清洗
                   dangerouslySetInnerHTML={{
                     __html: renderMarkdown(selected.content),
                   }}

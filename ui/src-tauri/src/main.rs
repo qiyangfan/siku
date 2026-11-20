@@ -36,11 +36,11 @@ enum StartupEvent {
     Failed { message: String },
 }
 
-/// 运行中的 sidecar 进程；关闭 `_stdin` 即向 sidecar 发出优雅退出信号。
+/// 运行中的 sidecar 进程；关闭 `stdin` 即向 sidecar 发出优雅退出信号。
 struct SidecarProcess {
     generation: u64,
     child: Child,
-    _stdin: Option<ChildStdin>,
+    stdin: Option<ChildStdin>,
     #[cfg(windows)]
     _job: std::os::windows::io::OwnedHandle,
 }
@@ -161,11 +161,11 @@ impl SidecarRegistry {
     }
 
     fn take_previous(&mut self, generation: u64) -> Option<SidecarProcess> {
-        if !self.is_current(generation)
-            || !self
+        if !(self.is_current(generation)
+            && self
                 .process
                 .as_ref()
-                .is_some_and(|process| process.generation < generation)
+                .is_some_and(|process| process.generation < generation))
         {
             return None;
         }
@@ -231,7 +231,7 @@ fn main() {
             };
             thread::spawn(move || {
                 let _worker = worker;
-                run_startup(app, generation, shell_page_url);
+                run_startup(&app, generation, shell_page_url);
             });
         })
         .on_window_event(|window, event| {
@@ -334,7 +334,7 @@ fn spawn_sidecar(
 
     let log_path = data_dir
         .parent()
-        .map(|p| p.to_path_buf())
+        .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
     let log_path = log_path.join("sidecar.log");
     let log_file = if LOG_TRUNCATED.swap(true, Ordering::SeqCst) {
@@ -421,7 +421,7 @@ fn spawn_sidecar(
     Ok(SidecarProcess {
         generation,
         child,
-        _stdin: stdin,
+        stdin,
         #[cfg(windows)]
         _job: job,
     })
@@ -601,7 +601,7 @@ fn stop_sidecar(app: &tauri::AppHandle) {
 }
 
 fn terminate_sidecar(mut process: SidecarProcess) {
-    process._stdin.take(); // EOF → uvicorn 受控关停
+    process.stdin.take(); // EOF → uvicorn 受控关停
     terminate(process.child);
     // Windows 的 Job Object 在此作用域结束时关闭；kill-on-close 会收回全部后代进程。
 }
@@ -613,7 +613,7 @@ fn terminate(child: Child) {
 fn terminate_with_grace(mut child: Child, graceful_shutdown: Duration) {
     #[cfg(unix)]
     {
-        let pgid = child.id() as i32;
+        let pgid = child.id().cast_signed();
         unsafe {
             libc::kill(-pgid, libc::SIGTERM);
         }
@@ -626,7 +626,7 @@ fn terminate_with_grace(mut child: Child, graceful_shutdown: Duration) {
             }
             thread::sleep(Duration::from_millis(100));
         }
-        kill_process_tree(pgid as u32);
+        kill_process_tree(pgid.cast_unsigned());
         let _ = child.wait();
     }
     #[cfg(windows)]
@@ -664,7 +664,7 @@ fn process_group_exists(process_group_id: i32) -> bool {
 #[cfg(unix)]
 fn kill_process_tree(process_id: u32) {
     unsafe {
-        libc::kill(-(process_id as i32), libc::SIGKILL);
+        libc::kill(-process_id.cast_signed(), libc::SIGKILL);
     }
 }
 
@@ -682,68 +682,63 @@ fn kill_process_tree(process_id: u32) {
 }
 
 /// 启动编排：选端口 → 启 sidecar → 轮询健康 → 通知状态页导航或报错
-fn run_startup(app: tauri::AppHandle, generation: u64, shell_page_url: String) {
-    let emit = |event: StartupEvent| emit_startup_event(&app, generation, event);
+fn run_startup(app: &tauri::AppHandle, generation: u64, shell_page_url: String) {
+    let emit = |event: StartupEvent| emit_startup_event(app, generation, event);
     if !emit(StartupEvent::Starting) {
         return;
     }
 
     // 重试场景：先回收上一轮可能残留的 sidecar
-    if !stop_previous_sidecar(&app, generation) {
+    if !stop_previous_sidecar(app, generation) {
         return;
     }
 
-    let (sidecar_exe, ui_dir) = match resolve_sidecar(&app) {
-        Ok(paths) => paths,
-        Err(_) => {
-            emit(StartupEvent::Failed {
-                message: "应用资源不完整：本地服务或界面文件缺失，请重新安装。".to_string(),
-            });
-            return;
-        }
+    let Ok((sidecar_exe, ui_dir)) = resolve_sidecar(app) else {
+        emit(StartupEvent::Failed {
+            message: "应用资源不完整：本地服务或界面文件缺失，请重新安装。".to_string(),
+        });
+        return;
     };
-    let root = match data_root() {
-        Some(root) => root,
-        None => {
-            emit(StartupEvent::Failed {
-                message: "无法定位系统应用数据目录，请重新启动或重新安装。".to_string(),
-            });
-            return;
-        }
+    let Some(root) = data_root() else {
+        emit(StartupEvent::Failed {
+            message: "无法定位系统应用数据目录，请重新启动或重新安装。".to_string(),
+        });
+        return;
     };
     let vault = root.join("vault");
     let data_dir = root.join("data");
-    let port = match pick_free_loopback_port() {
-        Ok(port) => port,
-        Err(_) => {
-            emit(StartupEvent::Failed {
-                message: "无法分配本地服务端口，请重新启动。".to_string(),
-            });
-            return;
-        }
+    let Ok(port) = pick_free_loopback_port() else {
+        emit(StartupEvent::Failed {
+            message: "无法分配本地服务端口，请重新启动。".to_string(),
+        });
+        return;
     };
 
-    let process = match spawn_sidecar(&sidecar_exe, &ui_dir, &vault, &data_dir, port, generation) {
-        Ok(process) => process,
-        Err(_) => {
-            emit(StartupEvent::Failed {
-                message: "无法启动本地服务，请重试；若反复失败请重新安装应用。".to_string(),
-            });
-            return;
-        }
+    let Ok(process) = spawn_sidecar(&sidecar_exe, &ui_dir, &vault, &data_dir, port, generation)
+    else {
+        emit(StartupEvent::Failed {
+            message: "无法启动本地服务，请重试；若反复失败请重新安装应用。".to_string(),
+        });
+        return;
     };
     // 只有当前代际能登记进程；过期线程只回收自己刚启动的进程。
-    if !install_sidecar(&app, generation, process) {
+    if !install_sidecar(app, generation, process) {
         return;
     }
 
+    wait_for_health(app, generation, port, shell_page_url);
+}
+
+/// 轮询本地健康接口直到成功、进程退出或超时；成功后移交监视线程。
+fn wait_for_health(app: &tauri::AppHandle, generation: u64, port: u16, shell_page_url: String) {
+    let emit = |event: StartupEvent| emit_startup_event(app, generation, event);
     let health_url = format!("http://127.0.0.1:{port}/api/health");
     let app_url = format!("http://127.0.0.1:{port}/");
     let agent = health_check_agent();
     let deadline = Instant::now() + Duration::from_secs(HEALTH_TIMEOUT_SECS);
 
     loop {
-        if !is_current_generation(&app, generation) {
+        if !is_current_generation(app, generation) {
             // 新一轮启动已接管，本轮立即退役
             return;
         }
@@ -791,18 +786,18 @@ fn run_startup(app: tauri::AppHandle, generation: u64, shell_page_url: String) {
             if !emit(StartupEvent::Succeeded { url: app_url }) {
                 return;
             }
-            let Some(worker) = register_monitor_worker(&app, generation) else {
+            let Some(worker) = register_monitor_worker(app, generation) else {
                 return;
             };
             let app = app.clone();
             thread::spawn(move || {
                 let _worker = worker;
-                monitor_sidecar(app, generation, shell_page_url, health_url);
+                monitor_sidecar(&app, generation, &shell_page_url, &health_url);
             });
             return;
         }
         if Instant::now() >= deadline {
-            if stop_sidecar_generation(&app, generation) {
+            if stop_sidecar_generation(app, generation) {
                 emit(StartupEvent::Failed {
                     message:
                         "本地服务健康检查超时，请重新启动；若反复失败请查看数据目录中的 sidecar 日志。"
@@ -817,16 +812,16 @@ fn run_startup(app: tauri::AppHandle, generation: u64, shell_page_url: String) {
 
 /// 在健康检查通过后持续监视壳启动的 sidecar，故障时返回壳内置恢复页。
 fn monitor_sidecar(
-    app: tauri::AppHandle,
+    app: &tauri::AppHandle,
     generation: u64,
-    shell_page_url: String,
-    health_url: String,
+    shell_page_url: &str,
+    health_url: &str,
 ) {
     let agent = health_check_agent();
     let mut consecutive_failures = 0_u8;
 
     loop {
-        if !is_current_generation(&app, generation) {
+        if !is_current_generation(app, generation) {
             return;
         }
 
@@ -855,20 +850,20 @@ fn monitor_sidecar(
         if let Some(process) = process_status {
             // 已退出和状态不明都需释放持有的进程树句柄，避免遗留启动器或子进程。
             terminate_sidecar(process);
-            if is_current_generation(&app, generation) {
-                show_recovery_page(&app, generation, &shell_page_url);
+            if is_current_generation(app, generation) {
+                show_recovery_page(app, generation, shell_page_url);
             }
             return;
         }
 
-        if health_is_ok(&agent, &health_url) {
+        if health_is_ok(&agent, health_url) {
             consecutive_failures = 0;
         } else {
             consecutive_failures = consecutive_failures.saturating_add(1);
             if consecutive_failures >= HEALTH_FAILURE_LIMIT {
-                let stopped = stop_sidecar_generation(&app, generation);
+                let stopped = stop_sidecar_generation(app, generation);
                 if stopped {
-                    show_recovery_page(&app, generation, &shell_page_url);
+                    show_recovery_page(app, generation, shell_page_url);
                 }
                 return;
             }
@@ -893,8 +888,7 @@ fn health_is_ok(agent: &ureq::Agent, health_url: &str) -> bool {
         .ok()
         .filter(|response| response.status() == 200)
         .and_then(|response| response.into_body().read_to_string().ok())
-        .map(|body| health_body_is_ok(&body))
-        .unwrap_or(false)
+        .is_some_and(|body| health_body_is_ok(&body))
 }
 
 fn health_body_is_ok(body: &str) -> bool {
@@ -912,8 +906,7 @@ fn strip_shell_page_query(url: &str) -> String {
 /// 运行期恢复标记下的壳页只显示恢复操作，不会自动再启动一个 sidecar。
 fn is_recovery_url(url: &str) -> bool {
     url.split_once('?')
-        .map(|(_, query)| query.split('&').any(|field| field == "recovery=1"))
-        .unwrap_or(false)
+        .is_some_and(|(_, query)| query.split('&').any(|field| field == "recovery=1"))
 }
 
 fn recovery_page_url(shell_page_url: &str) -> String {
@@ -1011,7 +1004,7 @@ mod tests {
         SidecarProcess {
             generation,
             child,
-            _stdin: None,
+            stdin: None,
             #[cfg(windows)]
             _job: job,
         }
@@ -1037,9 +1030,9 @@ mod tests {
         assert!(previous.is_none());
 
         let stale_process = test_sidecar_process(stale_generation);
-        let stale_process = match registry.install_if_current(stale_generation, stale_process) {
-            Err(process) => process,
-            Ok(_) => panic!("stale startup replaced the current sidecar"),
+        let Err(stale_process) = registry.install_if_current(stale_generation, stale_process)
+        else {
+            panic!("stale startup replaced the current sidecar");
         };
         terminate_sidecar(stale_process);
 
@@ -1063,9 +1056,8 @@ mod tests {
         assert!(registry.try_begin_shutdown().is_some());
 
         let process = test_sidecar_process(generation);
-        let process = match registry.install_if_current(generation, process) {
-            Err(process) => process,
-            Ok(_) => panic!("shutdown accepted a pending sidecar"),
+        let Err(process) = registry.install_if_current(generation, process) else {
+            panic!("shutdown accepted a pending sidecar");
         };
         terminate_sidecar(process);
         assert!(registry.next_generation().is_none());
@@ -1142,7 +1134,7 @@ mod tests {
         terminate(child);
         // 组内任意成员存活即失败：轮询组内代表性 PID（子 shell 与其 sleep 孩子）
         thread::sleep(Duration::from_millis(200));
-        let alive = unsafe { libc::kill(shell_pid as i32, 0) } == 0;
+        let alive = unsafe { libc::kill(shell_pid.cast_signed(), 0) } == 0;
         assert!(!alive, "process group member survived termination");
     }
 
@@ -1162,7 +1154,7 @@ mod tests {
             });
         }
         let mut child = command.spawn().expect("failed to spawn test launcher");
-        let process_group_id = child.id() as i32;
+        let process_group_id = child.id().cast_signed();
         child.wait().expect("test launcher failed to exit");
         assert!(
             process_group_exists(process_group_id),

@@ -56,12 +56,18 @@ jobs:
         include:
           - os: macos-14
             target: aarch64-apple-darwin
+            probe: "--probe"
           - os: macos-14
             target: x86_64-apple-darwin
+            probe: "--probe"
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            probe: "--probe"
+          # Windows 冻结进程以空 PATH 探针的 DLL 解析行为不做假设，仅结构检查
+          # （与 ci.yml sidecar-artifacts 同口径）
           - os: windows-2022
             target: x86_64-pc-windows-msvc
+            probe: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -125,7 +131,11 @@ jobs:
       - name: sidecar 产物清单与二进制检查
         run: >
           uv run python scripts/check_sidecar_artifacts.py
-          ui/src-tauri/binaries/siku-sidecar --target ${{ matrix.target }} --probe
+          ui/src-tauri/binaries/siku-sidecar --target ${{ matrix.target }} ${{ matrix.probe }}
+
+      # 工具链版本由 rust-toolchain.toml 唯一决定，避免 release 与 CI 漂移
+      - name: 安装 Rust（按 rust-toolchain.toml）
+        run: rustup install
 
       - name: 安装 Rust target
         if: matrix.target == 'x86_64-apple-darwin'

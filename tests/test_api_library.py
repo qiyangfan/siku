@@ -64,7 +64,7 @@ def build_library_app(
         kwargs["ingest_handler"] = ingest_handler
     if graph_refresh_runner is not None:
         kwargs["graph_refresh_runner"] = graph_refresh_runner
-    return TestClient(create_app(**kwargs))  # type: ignore[arg-type]
+    return TestClient(create_app(**kwargs))
 
 
 def make_graph_refresh_runner(

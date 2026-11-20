@@ -1,0 +1,5 @@
+[toolchain]
+# 与 CI 共用同一份版本源；升级时改这里并在本地重跑 fmt/clippy/test
+channel = "1.98.1"
+components = ["rustfmt", "clippy", "llvm-tools-preview"]
+profile = "minimal"

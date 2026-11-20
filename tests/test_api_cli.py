@@ -81,8 +81,8 @@ def test_serve_tolerates_env_layer_protocol_violation_and_disables_llm(
         captured.update(kwargs)
         return object()
 
-    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)  # type: ignore[attr-defined]
-    monkeypatch.setattr(  # type: ignore[attr-defined]
+    monkeypatch.setattr("siku.cli.commands.serve.create_app", fake_create_app)
+    monkeypatch.setattr(
         "siku.cli.commands.serve.uvicorn.run",
         lambda *_args, **_kwargs: None,
     )

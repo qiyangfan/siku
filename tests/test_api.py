@@ -30,10 +30,11 @@ from siku.graph.errors import (
     LlmProviderError,
     LlmRateLimitError,
 )
+from siku.graph.providers import LLM_PROTOCOLS
 from siku.graph.report import GraphCallStats, GraphCounts, GraphHealthReport, GraphIdentity
 from siku.graph.service import GraphBuildResult
 from siku.ingest import IngestError
-from siku.model_supply import LLM_PROTOCOLS, ProtocolConfigError
+from siku.model_supply import ProtocolConfigError
 from siku.qa.models import MAX_CANDIDATE_K, MAX_QUESTION_CHARS, MAX_TOP_K
 from siku.retrieve.errors import (
     BaselineExistsError,

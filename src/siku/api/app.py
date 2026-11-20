@@ -78,7 +78,6 @@ from siku.graph.service import GraphBuildResult, build_graph
 from siku.ingest import IngestReport, ingest_path
 from siku.model_supply import (
     ChannelValues,
-    ModelConfigFileError,
     ModelSupplyConfig,
     build_embedding_provider,
     build_reranker_provider,
@@ -91,7 +90,11 @@ from siku.model_supply import (
 )
 from siku.qa.providers import AnswerProvider
 from siku.qa.service import AnswerService
-from siku.retrieve.errors import InvalidQueryError, ModelNotAvailableError
+from siku.retrieve.errors import (
+    InvalidQueryError,
+    ModelConfigFileError,
+    ModelNotAvailableError,
+)
 from siku.retrieve.indexer import sync_index
 from siku.retrieve.models import IndexReport, SearchOptions, SearchResult
 from siku.retrieve.service import SearchService

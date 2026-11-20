@@ -9,15 +9,14 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from siku.graph.providers import LLM_PROTOCOLS
 from siku.model_supply import (
     DASHSCOPE_BASE_URL,
     DASHSCOPE_MODEL_ID,
-    LLM_PROTOCOLS,
     ChannelValues,
     ModelSupplyConfig,
     ProtocolConfigError,
     ask_readiness,
-    base_url_host,
     channel_slug,
     llm_env_fallback_channel,
     load_config,
@@ -31,6 +30,7 @@ from siku.retrieve.errors import (
     ModelConfigFileUnreadableError,
     ModelNotAvailableError,
 )
+from siku.retrieve.providers import base_url_host
 
 SECRET = "super-secret-key"
 
@@ -418,7 +418,7 @@ class TestCredentialProtection:
         def broken_replace(src: object, dst: object) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr("siku.model_supply.os.replace", broken_replace)  # type: ignore[attr-defined]
+        monkeypatch.setattr("siku.model_supply.os.replace", broken_replace)
         with pytest.raises(OSError, match="disk full"):
             save_config(ModelSupplyConfig(embedding=ChannelValues(model="other")), path)
         monkeypatch.undo()

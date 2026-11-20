@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from siku.retrieve.errors import IndexCorruptError, IndexUnavailableError
-from siku.retrieve.models import ChunkRecord, Citation, DocumentRecord
+from siku.retrieve.models import CHUNK_ID_VERSION, ChunkRecord, Citation, DocumentRecord
 from siku.retrieve.tokenizer import ensure_fts5_available
 
 SCHEMA_VERSION = 1
@@ -61,7 +61,7 @@ _INSERT_CHUNK_SQL = (
 _BATCH_SIZE = 500
 
 
-def _chunk_from_row(row: tuple) -> ChunkRecord:
+def _chunk_from_row(row: tuple[str, str, str, str, str, str, int, str]) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=row[0],
         source_id=row[1],
@@ -82,13 +82,20 @@ class SqliteIndex:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """底层连接句柄：跨索引增量复制需读取另一实例的数据。"""
+        return self._connection
+
     # ---------- 生命周期 ----------
 
     @classmethod
     def create(cls, path: Path) -> SqliteIndex:
-        """新建（或覆盖已有文件的）空索引，写入当前 schema 版本。"""
+        """新建空索引：同名旧索引及其 WAL 旁文件一并清除，避免旧数据混入。"""
         ensure_fts5_available()
         path.parent.mkdir(parents=True, exist_ok=True)
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{path}{suffix}").unlink(missing_ok=True)
         connection = sqlite3.connect(path)
         try:
             connection.execute("PRAGMA journal_mode=WAL")
@@ -98,6 +105,10 @@ class SqliteIndex:
             connection.execute(
                 "INSERT OR REPLACE INTO index_meta(key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO index_meta(key, value) VALUES ('chunk_id_version', ?)",
+                (CHUNK_ID_VERSION,),
             )
             connection.commit()
         except Exception:
@@ -165,6 +176,17 @@ class SqliteIndex:
             raise IndexUnavailableError(
                 f"Index schema version {stored_version} is incompatible with "
                 f"application schema version {SCHEMA_VERSION}; "
+                "run 'siku index --rebuild' to regenerate the index"
+            )
+        chunk_row = connection.execute(
+            "SELECT value FROM index_meta WHERE key = 'chunk_id_version'"
+        ).fetchone()
+        stored_chunk_version = chunk_row[0] if chunk_row is not None else None
+        if stored_chunk_version != CHUNK_ID_VERSION:
+            connection.close()
+            raise IndexUnavailableError(
+                f"Index chunk_id version {stored_chunk_version!r} is incompatible with "
+                f"application version {CHUNK_ID_VERSION!r}; "
                 "run 'siku index --rebuild' to regenerate the index"
             )
         return cls(connection)
@@ -260,7 +282,7 @@ class SqliteIndex:
             batch = source_ids[start : start + _BATCH_SIZE]
             placeholders = ", ".join("?" for _ in batch)
             # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
-            documents = source._connection.execute(
+            documents = source.connection.execute(
                 "SELECT source_id, source_hash, source_name, note_path, extractor "  # noqa: S608
                 f"FROM documents WHERE source_id IN ({placeholders})",
                 batch,
@@ -271,7 +293,7 @@ class SqliteIndex:
                 "VALUES (?, ?, ?, ?, ?)",
                 documents,
             )
-            chunks = source._connection.execute(
+            chunks = source.connection.execute(
                 "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE source_id IN ({placeholders})",  # noqa: S608
                 batch,
             ).fetchall()
@@ -281,7 +303,7 @@ class SqliteIndex:
                 chunks,
             )
             # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
-            fts_rows = source._connection.execute(
+            fts_rows = source.connection.execute(
                 "SELECT f.chunk_id, f.tokens FROM chunks_fts AS f "  # noqa: S608
                 "WHERE f.chunk_id IN "
                 f"(SELECT chunk_id FROM chunks WHERE source_id IN ({placeholders}))",

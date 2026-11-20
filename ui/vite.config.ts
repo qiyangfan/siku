@@ -9,7 +9,11 @@ export default defineConfig({
     },
   },
   test: {
+    // e2e/ 归 Playwright 管，vitest 只收 src 下的单测
+    include: ["src/**/*.test.{ts,tsx}"],
     environment: "jsdom",
+    // 全局 afterEach 让 Testing Library 自动卸载上一个用例的 DOM
+    globals: true,
     setupFiles: "./src/test-setup.ts",
     coverage: {
       provider: "v8",

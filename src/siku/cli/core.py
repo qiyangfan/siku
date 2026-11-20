@@ -19,18 +19,19 @@ from siku.graph.providers import (
 )
 from siku.model_supply import (
     ChannelValues,
-    ModelConfigFileError,
-    ModelConfigFileUnreadableError,
-    ModelNotAvailableError,
     ProtocolConfigError,
     ResolvedChannel,
-    base_url_host,
     build_embedding_provider,
     build_reranker_provider,
     resolve_embedding_channel,
     resolve_rerank_channel,
 )
-from siku.retrieve.providers import EmbeddingProvider, RerankerProvider
+from siku.retrieve.errors import (
+    ModelConfigFileError,
+    ModelConfigFileUnreadableError,
+    ModelNotAvailableError,
+)
+from siku.retrieve.providers import EmbeddingProvider, RerankerProvider, base_url_host
 from siku.sync.locking import LibraryWriteBusyError, library_write_lock
 from siku.sync.registry import SyncRegistry, library_db_path
 from siku.sync.removal import ensure_library_writable

@@ -155,7 +155,7 @@ class TestWriteFailureCleanup:
             raise OSError("disk full")
 
         monkeypatch.setattr(pq, "write_table", broken_write)
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match="disk full"):
             save_graph(tmp_path, ENTITIES, RELATIONS, COMMUNITIES)
         leftovers = [p.name for p in (tmp_path / "graph").iterdir()]
         assert not any(name.endswith(".tmp") for name in leftovers)

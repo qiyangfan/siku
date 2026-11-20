@@ -7,7 +7,8 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -112,7 +113,7 @@ class SyncRegistry:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.executescript(_SCHEMA)
 
     def _connect(self) -> sqlite3.Connection:
@@ -121,12 +122,22 @@ class SyncRegistry:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    @contextmanager
+    def _transaction(self) -> Iterator[sqlite3.Connection]:
+        """短连接事务：正常退出提交，异常回滚，最终关闭连接。"""
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     # 连接用法：先提交或回滚，再显式关闭。
 
     # ---- 来源注册表 ----
 
     def list_sources(self) -> list[SyncSource]:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             rows = connection.execute(
                 "SELECT id, path, enabled, created_at, last_scan_at FROM sync_sources ORDER BY path"
             ).fetchall()
@@ -138,7 +149,7 @@ class SyncRegistry:
         ]
 
     def get_source(self, source_id: str) -> SyncSource | None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT id, path, enabled, created_at, last_scan_at FROM sync_sources WHERE id = ?",
                 (source_id,),
@@ -150,7 +161,7 @@ class SyncRegistry:
         )
 
     def find_source_by_path(self, resolved_path: str) -> SyncSource | None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT id, path, enabled, created_at, last_scan_at FROM sync_sources"
                 " WHERE path = ?",
@@ -163,7 +174,7 @@ class SyncRegistry:
         )
 
     def add_source(self, resolved_path: str, *, enabled: bool = True) -> SyncSource:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             existing = connection.execute(
                 "SELECT id FROM sync_sources WHERE path = ?", (resolved_path,)
             ).fetchone()
@@ -179,7 +190,7 @@ class SyncRegistry:
         return self.get_source(source_id)  # type: ignore[return-value]
 
     def set_source_enabled(self, source_id: str, enabled: bool) -> SyncSource | None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             cursor = connection.execute(
                 "UPDATE sync_sources SET enabled = ? WHERE id = ?",
                 (int(enabled), source_id),
@@ -190,7 +201,7 @@ class SyncRegistry:
 
     def remove_source(self, source_id: str) -> bool:
         """移除登记与该目录的全部检测缓存；已入库文档与 tombstone 不受影响。"""
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             deleted = connection.execute(
                 "DELETE FROM sync_sources WHERE id = ?", (source_id,)
             ).rowcount
@@ -198,7 +209,7 @@ class SyncRegistry:
         return deleted > 0
 
     def record_scan(self, source_id: str) -> None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute(
                 "UPDATE sync_sources SET last_scan_at = ? WHERE id = ?", (_now(), source_id)
             )
@@ -207,7 +218,7 @@ class SyncRegistry:
 
     def list_entries(self, dir_id: str) -> dict[str, SyncEntry]:
         """某来源目录的登记条目，按上游路径索引。"""
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             rows = connection.execute(
                 "SELECT dir_id, upstream_path, doc_source_id, content_hash, size, mtime_ns,"
                 " state FROM sync_entries WHERE dir_id = ?",
@@ -227,7 +238,7 @@ class SyncRegistry:
         }
 
     def all_entries(self) -> list[SyncEntry]:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             rows = connection.execute(
                 "SELECT dir_id, upstream_path, doc_source_id, content_hash, size, mtime_ns,"
                 " state FROM sync_entries"
@@ -246,7 +257,7 @@ class SyncRegistry:
         ]
 
     def upsert_entry(self, entry: SyncEntry) -> None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO sync_entries (dir_id, upstream_path, doc_source_id, content_hash,"
                 " size, mtime_ns, state) VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -266,14 +277,14 @@ class SyncRegistry:
 
     def rename_entry(self, dir_id: str, old_path: str, new_path: str) -> None:
         """改名识别：仅更新登记的上游路径，文档身份与缓存统计不变。"""
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute(
                 "UPDATE sync_entries SET upstream_path = ? WHERE dir_id = ? AND upstream_path = ?",
                 (new_path, dir_id, old_path),
             )
 
     def remove_entry(self, dir_id: str, upstream_path: str) -> None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute(
                 "DELETE FROM sync_entries WHERE dir_id = ? AND upstream_path = ?",
                 (dir_id, upstream_path),
@@ -281,7 +292,7 @@ class SyncRegistry:
 
     def remove_entries_for_doc(self, doc_source_id: str) -> None:
         """清理指向某受管文档的全部登记（purge 时调用；文档已物理删除）。"""
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute("DELETE FROM sync_entries WHERE doc_source_id = ?", (doc_source_id,))
 
     # ---- tombstone ----
@@ -294,7 +305,7 @@ class SyncRegistry:
         superseded_by: str | None = None,
         origin_path: str | None = None,
     ) -> None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO sync_tombstones (doc_source_id, reason, superseded_by,"
                 " origin_path, marked_at) VALUES (?, ?, ?, ?, ?)"
@@ -304,7 +315,7 @@ class SyncRegistry:
             )
 
     def list_tombstones(self) -> dict[str, SyncTombstone]:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             rows = connection.execute(
                 "SELECT doc_source_id, reason, superseded_by, origin_path, marked_at"
                 " FROM sync_tombstones"
@@ -323,7 +334,7 @@ class SyncRegistry:
     def delete_tombstones(self, doc_source_ids: list[str]) -> None:
         if not doc_source_ids:
             return
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             placeholders = ",".join("?" for _ in doc_source_ids)
             # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
             connection.execute(
@@ -334,7 +345,7 @@ class SyncRegistry:
     # ---- 库域设置 ----
 
     def get_scan_interval(self) -> int:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT value FROM sync_settings WHERE key = ?", (INTERVAL_KEY,)
             ).fetchone()
@@ -346,7 +357,7 @@ class SyncRegistry:
             return DEFAULT_SCAN_INTERVAL_SECS
 
     def set_scan_interval(self, seconds: int) -> None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO sync_settings (key, value) VALUES (?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -354,7 +365,7 @@ class SyncRegistry:
             )
 
     def get_graph_auto_refresh(self) -> bool:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             row = connection.execute(
                 "SELECT value FROM sync_settings WHERE key = ?",
                 (GRAPH_AUTO_REFRESH_KEY,),
@@ -367,7 +378,7 @@ class SyncRegistry:
             return DEFAULT_GRAPH_AUTO_REFRESH
 
     def set_graph_auto_refresh(self, enabled: bool) -> None:
-        with closing(self._connect()) as connection, connection:
+        with self._transaction() as connection:
             connection.execute(
                 "INSERT INTO sync_settings (key, value) VALUES (?, ?)"
                 " ON CONFLICT(key) DO UPDATE SET value=excluded.value",

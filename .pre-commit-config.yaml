@@ -14,6 +14,9 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-toml
+      - id: check-json
+      # macOS 大小写不敏感、CI 大小写敏感：同名仅大小写不同的文件必须提前拦下
+      - id: check-case-conflict
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ["--maxkb=1024"]
@@ -49,6 +52,12 @@ repos:
         entry: uv run deptry src
         language: system
         pass_filenames: false
+      # benchmarks 的 PEP 723 内联依赖不在 env 中，pylint 会误报 import-error
+      - id: pylint-src
+        name: pylint W/E（src + scripts）
+        entry: uv run pylint --jobs=0 src/siku scripts
+        language: system
+        pass_filenames: false
       # 治理：与 CI governance job 同命令，本地即拦（无需 GitHub）
       - id: openspec-validate
         name: openspec validate --all --strict
@@ -73,4 +82,81 @@ repos:
         name: typos（拼写）
         entry: typos
         language: system
+        pass_filenames: false
+      # 依赖 Homebrew（brew install shellcheck）；CI 用 runner 预装版本
+      - id: shellcheck
+        name: shellcheck（shell 脚本）
+        entry: shellcheck
+        language: system
+        files: \.(sh|bash)$
+      # 依赖 Homebrew（brew install editorconfig-checker）；CI 侧下载固定版本兜底。
+      # 缩进/行长由 ruff/prettier 等 formatter 负责，ec 只查编码、换行与末尾换行。
+      - id: editorconfig-checker
+        name: editorconfig-checker（编码/换行）
+        entry: editorconfig-checker -disable-indent-size -disable-max-line-length
+        language: system
+        pass_filenames: false
+        always_run: true
+      # Rust 桌面壳：与 CI desktop-shell job 同命令，pedantic 全量
+      - id: rustfmt
+        name: rustfmt（桌面壳）
+        entry: cargo fmt --manifest-path ui/src-tauri/Cargo.toml --check
+        language: system
+        files: ^ui/src-tauri/.*\.rs$
+        pass_filenames: false
+      - id: rustdoc
+        name: rustdoc（桌面壳文档告警）
+        entry: bash -c 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --manifest-path ui/src-tauri/Cargo.toml'
+        language: system
+        files: ^ui/src-tauri/.*\.rs$
+        pass_filenames: false
+      - id: clippy
+        name: clippy（桌面壳 pedantic）
+        entry: cargo clippy --manifest-path ui/src-tauri/Cargo.toml --all-targets -- -D warnings -W clippy::pedantic
+        language: system
+        files: ^ui/src-tauri/
+        pass_filenames: false
+      - id: cargo-deny
+        name: cargo-deny（桌面壳依赖策略）
+        entry: cargo deny --manifest-path ui/src-tauri/Cargo.toml check
+        language: system
+        files: ^ui/src-tauri/(Cargo\.(toml|lock)|deny\.toml)$
+        pass_filenames: false
+      - id: cargo-machete
+        name: cargo-machete（桌面壳未使用依赖）
+        entry: cargo machete ui/src-tauri/Cargo.toml
+        language: system
+        files: ^ui/src-tauri/Cargo\.(toml|lock)$
+        pass_filenames: false
+      # 前端：与 CI ui job 同命令，全量跑而非只查暂存文件
+      - id: ui-format
+        name: prettier（前端）
+        entry: bash -c 'cd ui && npm run format:check'
+        language: system
+        files: ^ui/
+        pass_filenames: false
+      - id: ui-lint
+        name: eslint（前端）
+        entry: bash -c 'cd ui && npm run lint'
+        language: system
+        files: ^ui/.*\.(ts|tsx|js|cjs|mjs)$
+        pass_filenames: false
+      - id: ui-stylelint
+        name: stylelint（前端）
+        entry: bash -c 'cd ui && npm run lint:css'
+        language: system
+        files: ^ui/.*\.css$
+        pass_filenames: false
+      - id: ui-size
+        name: 产物体积预算（前端 size-limit）
+        entry: bash -c 'cd ui && npm run build && npm run size'
+        language: system
+        files: ^ui/
+        pass_filenames: false
+      # 需本机已装 Chromium（npx playwright install chromium）
+      - id: ui-e2e
+        name: 浏览器 E2E + axe（前端）
+        entry: bash -c 'cd ui && npm run build && npm run test:e2e'
+        language: system
+        files: ^ui/
         pass_filenames: false

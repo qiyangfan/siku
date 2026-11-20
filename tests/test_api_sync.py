@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from siku.retrieve.models import IndexReport
 from siku.sync.registry import DEFAULT_SCAN_INTERVAL_SECS, SyncRegistry, library_db_path
+from siku.sync.scanner import SourcePlan
 from siku.sync.service import ScanObserver, ScanOpResult
 from test_api_library import build_library_app, listing, poll_until_finished
 
@@ -225,7 +226,7 @@ def test_scan_returns_409_when_slot_busy(tmp_path: Path) -> None:
     assert purge_busy.status_code == 409
 
     # 自动调度入口：槽忙静默顺延返回 False，不产生用户可见错误
-    manager = client.app.state.library_jobs  # type: ignore[attr-defined]
+    manager = client.app.state.library_jobs
     assert manager.try_start_scan(full=False) is False
 
     release.set()
@@ -244,7 +245,7 @@ def test_scan_runner_crash_fails_job_and_releases_slot(tmp_path: Path) -> None:
         ingest_handler=lambda source, vault: None,  # type: ignore[arg-type,return-value]
         index_runner=noop_runner,
         api_key_env="SIKU_LLM_API_KEY",
-        scan_runner=exploding_runner,  # type: ignore[arg-type]
+        scan_runner=exploding_runner,
     )
     job = manager.start_scan(full=False)
     assert job.state == "running"
@@ -301,7 +302,7 @@ def test_scheduler_restart_does_not_resurrect_old_thread(tmp_path: Path) -> None
     release = threading.Event()
     first_started = threading.Event()
 
-    def blocking_provider(full: bool) -> list:
+    def blocking_provider(full: bool) -> list[SourcePlan]:
         idents.append(threading.get_ident())
         if len(idents) == 1:
             first_started.set()
@@ -340,7 +341,7 @@ def test_cancelled_scan_still_publishes_committed_changes(tmp_path: Path) -> Non
     runner, calls = make_index_runner()
     started = threading.Event()
 
-    def scan_runner(full: bool, plans: list | None, observer: ScanObserver) -> None:
+    def scan_runner(full: bool, plans: list[SourcePlan] | None, observer: ScanObserver) -> None:
         started.set()
         observer.op_finished(
             ScanOpResult(name="a.md", path="attachments/a--x.md", status="created", detail=None)

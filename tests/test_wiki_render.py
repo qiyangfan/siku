@@ -1,5 +1,6 @@
 """wiki 条目与 index 渲染的行为测试：确定性、无时间戳、锚点回链完整、原子写。"""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -128,14 +129,12 @@ class TestWriteFailureCleanup:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # index.md 写失败：.tmp 残渣必须被清理后重抛
-        import siku.wiki.render as render_module
-
         def broken_replace(src: object, dst: object) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(render_module.os, "replace", broken_replace)
+        monkeypatch.setattr(os, "replace", broken_replace)
         content = render_entry(community_id=0, summary="摘要", members=MEMBERS, relations=RELATIONS)
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match="disk full"):
             write_wiki(tmp_path, {entry_file_name(0): content}, "# 总目\n")
         assert not any(path.name.endswith(".tmp") for path in (tmp_path / "wiki").iterdir())
 
@@ -143,17 +142,15 @@ class TestWriteFailureCleanup:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # 条目目录换装失败：staging 目录必须被清理，旧条目保持可用
-        import siku.wiki.render as render_module
-
         write_wiki(tmp_path, {}, "# 旧总目\n")
         old_entries = sorted(p.name for p in (tmp_path / "wiki" / ENTRIES_DIR_NAME).iterdir())
 
         def broken_replace(src: object, dst: object) -> None:
             raise OSError("disk full")
 
-        monkeypatch.setattr(render_module.os, "replace", broken_replace)
+        monkeypatch.setattr(os, "replace", broken_replace)
         content = render_entry(community_id=0, summary="摘要", members=MEMBERS, relations=RELATIONS)
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match="disk full"):
             write_wiki(tmp_path, {entry_file_name(0): content}, "# 新总目\n")
         assert not (tmp_path / "wiki" / "entries.tmp").exists()
         # 旧条目未被破坏

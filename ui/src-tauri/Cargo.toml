@@ -3,7 +3,8 @@ name = "siku-desktop"
 version = "0.1.0"
 description = "siku 桌面壳：窗口与内核 sidecar 生命周期，业务数据一律经 localhost HTTP API"
 edition = "2024"
-# tauri 2.12.x MSRV = 1.90（NSIS 安装器降级修复所在线）；本机与 CI 均为 stable 1.99
+license = "MIT"
+# tauri 2.12.x MSRV = 1.90；本仓工具链固定在 rust-toolchain.toml（1.98.1）
 rust-version = "1.90"
 
 # 桌面壳为 Rust 业务零逻辑的适配层（ADR-0001）：crate 只做进程/窗口编排

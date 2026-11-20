@@ -42,10 +42,10 @@ from siku.graph.report import SCALE_WARN_EDGES
 from siku.graph.service import build_graph
 from siku.model_supply import (
     ChannelValues,
-    ModelNotAvailableError,
     resolve_llm_channel,
 )
 from siku.retrieve.errors import (
+    ModelNotAvailableError,
     RetrievalError,
 )
 from siku.wiki.service import generate_wiki

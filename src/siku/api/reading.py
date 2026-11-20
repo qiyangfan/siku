@@ -16,7 +16,8 @@ from pathlib import Path
 from siku.graph.models import Community, Entity, Relation
 from siku.graph.store import load_graph
 from siku.retrieve.errors import NoteParseError
-from siku.retrieve.notes_reader import DocumentRecord, read_frontmatter
+from siku.retrieve.models import DocumentRecord
+from siku.retrieve.notes_reader import read_frontmatter
 from siku.wiki.render import ENTRIES_DIR_NAME, WIKI_DIR_NAME, entry_file_name
 
 logger = logging.getLogger(__name__)

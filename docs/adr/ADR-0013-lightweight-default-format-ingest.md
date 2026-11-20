@@ -4,7 +4,7 @@
   `openspec/changes/archive/2026-10-02-complete-desktop-format-ingest/review.md`）
 - **日期**：2026-10-02
 - **关联**：修订 ADR-0004 的默认 PDF 方案；遵守 ADR-0005 的 Extractor 边界与 ADR-0009 的无内置模型原则。
-- **提案**：[complete-desktop-format-ingest](../../openspec/changes/complete-desktop-format-ingest/proposal.md)
+- **提案**：[complete-desktop-format-ingest](../../openspec/changes/archive/2026-10-02-complete-desktop-format-ingest/proposal.md)
 
 ## 问题
 

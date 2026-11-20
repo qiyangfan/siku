@@ -23,16 +23,23 @@ jobs:
       sidecar: ${{ steps.filter.outputs.sidecar }}
       rust: ${{ steps.filter.outputs.rust }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      pages: ${{ steps.filter.outputs.pages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           fetch-depth: 0
       - id: filter
+        env:
+          # push 事件用本次推送前的提交作为基线；HEAD~1 会在一次推多个提交时漏掉早期改动
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           if [ -n "${GITHUB_BASE_REF:-}" ]; then
             BASE="origin/${GITHUB_BASE_REF}"
+          elif [ -n "${BEFORE_SHA:-}" ] \
+            && [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]; then
+            BASE="${BEFORE_SHA}"
           else
             BASE="HEAD~1"
           fi
@@ -42,6 +49,7 @@ jobs:
               echo "sidecar=true"
               echo "rust=true"
               echo "e2e=true"
+              echo "pages=true"
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -50,8 +58,9 @@ jobs:
           match() { echo "$FILES" | grep -Eq "$1" && echo true || echo false; }
           {
             echo "sidecar=$(match '(^src/|^scripts/|^pyproject\.toml$|^uv\.lock$)')"
-            echo "rust=$(match '(^ui/src-tauri/)')"
-            echo "e2e=$(match '(^src/|^tests/e2e/|^pyproject\.toml$|^uv\.lock$)')"
+            echo "rust=$(match '(^ui/src-tauri/|^rust-toolchain\.toml$)')"
+            echo "e2e=$(match '(^src/|^tests/|^pyproject\.toml$|^uv\.lock$)')"
+            echo "pages=$(match '(^ui/|^src/|^pyproject\.toml$|^uv\.lock$)')"
           } >> "$GITHUB_OUTPUT"
 
   test:
@@ -91,6 +100,12 @@ jobs:
           uv run pylint --disable=all
           --enable=too-many-lines,too-many-public-methods,too-many-return-statements,too-many-instance-attributes
           --jobs=0 src/siku tests scripts benchmarks
+
+      # src 的 W/E 全族（排除项见 pyproject 的 messages_control 注释）；
+      # benchmarks 的 PEP 723 内联依赖不在 env 中，pylint 会误报 import-error，故不纳入
+      - name: Pylint 警告/错误（src + scripts）
+        if: matrix.python-version == '3.12'
+        run: uv run pylint --jobs=0 src/siku scripts
 
       - name: 依赖边界（import-linter）
         if: matrix.python-version == '3.12'
@@ -171,8 +186,13 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=1.7.12
-          curl -sSfL "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C /usr/local/bin actionlint
+          ASSET="actionlint_${VERSION}_linux_amd64.tar.gz"
+          BASE="https://github.com/rhysd/actionlint/releases/download/v${VERSION}"
+          curl -sSfL "${BASE}/${ASSET}" -o "/tmp/${ASSET}"
+          curl -sSfL "${BASE}/actionlint_${VERSION}_checksums.txt" -o /tmp/actionlint.sha256
+          # 校验和与产物同源发布：拦下载损坏与发布元数据不一致，不覆盖上游被攻破
+          (cd /tmp && sha256sum -c <(grep "  ${ASSET}\$" actionlint.sha256))
+          tar -xz -C /usr/local/bin -f "/tmp/${ASSET}" actionlint
           actionlint -color
 
       - name: zizmor（工作流安全审计）
@@ -182,9 +202,31 @@ jobs:
         run: |
           set -euo pipefail
           VERSION=1.52.2
-          curl -sSfL "https://github.com/crate-ci/typos/releases/download/v${VERSION}/typos-v${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xz -C /usr/local/bin typos
+          ASSET="typos-v${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          # 上游 release 不提供校验和文件，固定已核实的产物 SHA256 作完整性锚点
+          SHA256=3b13d1291281d39d01822e54035636487a7a0f228e70097899b1e33aeb0e7e93
+          curl -sSfL "https://github.com/crate-ci/typos/releases/download/v${VERSION}/${ASSET}" \
+            -o "/tmp/${ASSET}"
+          echo "${SHA256}  /tmp/${ASSET}" | sha256sum -c -
+          tar -xz -C /usr/local/bin -f "/tmp/${ASSET}" typos
           typos
+
+      - name: shellcheck（shell 脚本）
+        run: shellcheck ui/e2e/*.sh
+
+      # 缩进与行长由各语言 formatter 负责；ec 的缩进检查会误伤 Python 续行对齐
+      - name: editorconfig-checker（编码/换行/末尾换行）
+        run: |
+          set -euo pipefail
+          VERSION=4.0.2
+          ASSET="editorconfig-checker-linux-amd64.tar.gz"
+          BASE="https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v${VERSION}"
+          curl -sSfL "${BASE}/${ASSET}" -o "/tmp/${ASSET}"
+          curl -sSfL "${BASE}/checksums.txt" -o /tmp/ec.sha256
+          # 校验和与产物同源发布：拦下载损坏与发布元数据不一致，不覆盖上游被攻破
+          (cd /tmp && sha256sum -c <(grep "  ${ASSET}\$" ec.sha256))
+          tar -xz -C /usr/local/bin -f "/tmp/${ASSET}" editorconfig-checker
+          editorconfig-checker -disable-indent-size -disable-max-line-length
 
   # 前端作业仅在 ui/package.json 存在时执行；hashFiles 只能用于 step 级 if。
   ui:
@@ -220,6 +262,65 @@ jobs:
           npm run test:cov --if-present &&
           npm run build --if-present
 
+      - name: 产物体积预算（size-limit）
+        working-directory: ui
+        if: ${{ hashFiles('ui/package.json') != '' }}
+        run: npm run size
+
+  # 浏览器 E2E：真实 Chromium 打开 serve --with-ui 的页面，逐视图跑 axe。
+  # UI 或后端路径变化时执行；与其他作业相互独立。
+  ui-e2e:
+    name: 浏览器 E2E + axe
+    needs: changes
+    if: needs.changes.outputs.pages == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 同步 Python 依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "24"
+
+      - name: 安装前端依赖
+        working-directory: ui
+        run: npm ci
+
+      # 桌面壳覆盖 WebView2/WebKitGTK（Windows/Linux）与 WKWebView（macOS）
+      - name: 安装 Chromium + WebKit
+        working-directory: ui
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: 构建前端
+        working-directory: ui
+        run: npm run build
+
+      - name: 浏览器 E2E + axe
+        working-directory: ui
+        run: npm run test:e2e
+
+      # 失败现场（trace/截图）默认落在 ui/test-results/；只在失败时上传，避免无谓占用额度
+      - name: 上传 E2E 失败现场
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ui-e2e-failure
+          path: ui/test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
   # 桌面壳 Rust 检查：fmt、clippy 和测试。
   # 仅当 ui/src-tauri 路径变化时执行（changes 门控）。
   desktop-shell:
@@ -233,10 +334,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: 安装 Rust stable
-        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
-        with:
-          components: rustfmt, clippy
+      # 工具链版本由 rust-toolchain.toml 唯一决定（含组件），避免 stable 漂移
+      - name: 安装 Rust（按 rust-toolchain.toml）
+        run: rustup install
 
       - name: Rust 编译缓存
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
@@ -260,11 +360,32 @@ jobs:
       - name: Rust 格式检查
         run: cargo fmt --manifest-path ui/src-tauri/Cargo.toml --check
 
-      - name: Clippy
-        run: cargo clippy --manifest-path ui/src-tauri/Cargo.toml -- -D warnings
+      - name: Clippy（pedantic）
+        run: cargo clippy --manifest-path ui/src-tauri/Cargo.toml --all-targets -- -D warnings -W clippy::pedantic
+
+      - name: Rustdoc（文档链接与无效项告警即失败）
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --manifest-path ui/src-tauri/Cargo.toml
 
       - name: Rust 测试（含无孤儿进程组回收测试）
         run: cargo test --manifest-path ui/src-tauri/Cargo.toml
+
+      # 覆盖率只设回归下限（当前实测 36.35%），不当作质量目标
+      - name: Rust 覆盖率（llvm-cov）
+        run: |
+          cargo install cargo-llvm-cov --locked --version 0.9.1
+          cargo llvm-cov --manifest-path ui/src-tauri/Cargo.toml --fail-under-lines 36
+
+      # 依赖策略：漏洞公告、许可证 allowlist、来源白名单（重复版本仅告警，见 deny.toml）
+      - name: 依赖策略（cargo-deny）
+        run: |
+          cargo install cargo-deny --locked --version 0.21.0
+          cargo deny --manifest-path ui/src-tauri/Cargo.toml check
+
+      # 未使用依赖（deptry 的 Rust 对应物）；cargo-deny 不覆盖这一面
+      - name: 未使用依赖（cargo-machete）
+        run: |
+          cargo install cargo-machete --locked --version 0.9.1
+          cargo machete ui/src-tauri/Cargo.toml
 
   # 桌面 sidecar 产物检查（ADR-0013）：三平台真实构建 + 资源/架构/无 torch 门禁。
   # 本作业只验证产物形态，不发布工件。

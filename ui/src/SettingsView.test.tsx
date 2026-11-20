@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { parseSettingsBody, render } from "./test-utils";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -104,7 +104,6 @@ function mockFetch(
 }
 
 afterEach(() => {
-  cleanup();
   vi.restoreAllMocks();
 });
 

@@ -36,7 +36,6 @@ from siku.cli.core import (
     reranker_component,
 )
 from siku.model_supply import (
-    base_url_host,
     channel_slug,
 )
 from siku.retrieve.errors import (
@@ -45,7 +44,7 @@ from siku.retrieve.errors import (
 )
 from siku.retrieve.evaluation import CaseResult, EvaluationReport
 from siku.retrieve.models import SearchOptions, SearchResult
-from siku.retrieve.providers import EmbeddingProvider, RerankerProvider
+from siku.retrieve.providers import EmbeddingProvider, RerankerProvider, base_url_host
 from siku.retrieve.service import SearchService
 
 

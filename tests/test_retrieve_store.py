@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from siku.retrieve.errors import IndexCorruptError, IndexUnavailableError
-from siku.retrieve.models import ChunkRecord, Citation, DocumentRecord
+from siku.retrieve.models import CHUNK_ID_VERSION, ChunkRecord, Citation, DocumentRecord
 from siku.retrieve.store import SCHEMA_VERSION, SqliteIndex
 from siku.retrieve.tokenizer import tokenize
 
@@ -59,6 +59,49 @@ class TestLifecycle:
         reopened = SqliteIndex.open(path)
         assert reopened.get_meta("schema_version") == str(SCHEMA_VERSION)
         reopened.close()
+
+    def test_chunk_id_version_persisted_and_reopen_validates(self, tmp_path: Path) -> None:
+        path = tmp_path / "retrieval.sqlite3"
+        store = SqliteIndex.create(path)
+        store.close()
+        reopened = SqliteIndex.open(path)
+        assert reopened.get_meta("chunk_id_version") == CHUNK_ID_VERSION
+        reopened.close()
+
+    def test_stale_chunk_id_version_rejected_with_rebuild_hint(self, tmp_path: Path) -> None:
+        # 旧算法生成的 chunk_id 与新派生规则不一致，混用会导致重推导失配
+        path = tmp_path / "retrieval.sqlite3"
+        store = SqliteIndex.create(path)
+        store.set_meta("chunk_id_version", "v1")
+        store.checkpoint_and_close()
+        with pytest.raises(IndexUnavailableError) as excinfo:
+            SqliteIndex.open(path)
+        assert "--rebuild" in str(excinfo.value)
+
+    def test_missing_chunk_id_version_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "retrieval.sqlite3"
+        store = SqliteIndex.create(path)
+        store._connection.execute("DELETE FROM index_meta WHERE key = 'chunk_id_version'")
+        store.checkpoint_and_close()
+        with pytest.raises(IndexUnavailableError) as excinfo:
+            SqliteIndex.open(path)
+        assert "--rebuild" in str(excinfo.value)
+
+    def test_create_overwrites_existing_index(self, tmp_path: Path) -> None:
+        # 覆盖契约：旧 chunks 与新 chunk_id 版本混用会让增量复用取到错身份
+        path = tmp_path / "retrieval.sqlite3"
+        stale = SqliteIndex.create(path)
+        stale.upsert_document(DOC)
+        stale.insert_chunk(make_chunk("a" * 64, "旧正文"), tokenize("旧正文"))
+        stale.checkpoint_and_close()
+
+        fresh = SqliteIndex.create(path)
+        try:
+            assert fresh.document_count() == 0
+            assert fresh.chunk_count() == 0
+            assert fresh.fts_count() == 0
+        finally:
+            fresh.close()
 
     def test_open_missing_index_raises(self, tmp_path: Path) -> None:
         with pytest.raises(IndexUnavailableError):

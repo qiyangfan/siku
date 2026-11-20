@@ -392,6 +392,34 @@ class LibraryJobManager:
         with self._lock:
             job.items.append(item)
 
+    # ---- 扫描观察者回调（_JobObserver 的唯一写入口） ----
+
+    def record_total(self, job: _Job, total: int) -> None:
+        with self._lock:
+            job.progress.total = total
+
+    def record_op_started(self, job: _Job, label: str) -> None:
+        with self._lock:
+            job.progress.current = label
+
+    def record_op_finished(self, job: _Job, result: ScanOpResult) -> None:
+        with self._lock:
+            job.items.append(
+                _JobItem(
+                    name=result.name,
+                    path=result.path,
+                    status=result.status,  # type: ignore[arg-type]
+                    detail=result.detail,
+                )
+            )
+            job.progress.done += 1
+            if result.status == "failed":
+                job.progress.failed += 1
+            job.progress.current = None
+
+    def cancelled(self) -> bool:
+        return self._cancel.is_set()
+
     def _finish_with_index(self, job: _Job, *, rebuild: bool, cancelled: bool = False) -> None:
         """任务收尾：按需衔接索引并落终态；索引失败时任务失败。
 
@@ -630,30 +658,16 @@ class _JobObserver:
         self._job = job
 
     def set_total(self, total: int) -> None:
-        with self._manager._lock:
-            self._job.progress.total = total
+        self._manager.record_total(self._job, total)
 
     def op_started(self, label: str) -> None:
-        with self._manager._lock:
-            self._job.progress.current = label
+        self._manager.record_op_started(self._job, label)
 
     def op_finished(self, result: ScanOpResult) -> None:
-        with self._manager._lock:
-            self._job.items.append(
-                _JobItem(
-                    name=result.name,
-                    path=result.path,
-                    status=result.status,  # type: ignore[arg-type]
-                    detail=result.detail,
-                )
-            )
-            self._job.progress.done += 1
-            if result.status == "failed":
-                self._job.progress.failed += 1
-            self._job.progress.current = None
+        self._manager.record_op_finished(self._job, result)
 
     def is_cancelled(self) -> bool:
-        return self._manager._cancel.is_set()
+        return self._manager.cancelled()
 
 
 class SyncScheduler:

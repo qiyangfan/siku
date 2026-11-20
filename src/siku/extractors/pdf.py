@@ -45,8 +45,6 @@ class PdfExtractor:
                     "remove the password before importing it."
                 )
             pages = list(reader.pages)
-        except EncryptedDocumentError:
-            raise
         except PdfReadError as exc:
             if "not been decrypted" in str(exc):
                 raise EncryptedDocumentError(

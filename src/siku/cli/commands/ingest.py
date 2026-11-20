@@ -32,14 +32,13 @@ from siku.cli.core import (
 )
 from siku.ingest import IngestError, ingest_path
 from siku.model_supply import (
-    base_url_host,
     channel_slug,
 )
 from siku.retrieve.errors import (
     RetrievalError,
 )
 from siku.retrieve.indexer import sync_index
-from siku.retrieve.providers import EmbeddingProvider
+from siku.retrieve.providers import EmbeddingProvider, base_url_host
 
 
 @app.command()

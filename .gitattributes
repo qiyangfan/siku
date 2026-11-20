@@ -1,0 +1,10 @@
+# 跨平台（macOS 开发 / Linux CI / Windows 发布）统一 LF，二进制文件不做行尾转换
+* text=auto eol=lf
+
+*.docx binary
+*.icns binary
+*.ico binary
+*.pdf binary
+*.png binary
+*.pptx binary
+*.xlsx binary

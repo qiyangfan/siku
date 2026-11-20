@@ -22,13 +22,10 @@ describe("健康检查 API", () => {
     );
     vi.stubGlobal("fetch", fetchStub);
 
-    const request = checkHealth();
-    const rejection = expect(request).rejects.toMatchObject({
-      name: "AbortError",
-    });
+    const request = checkHealth().catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(3_000);
 
-    await rejection;
+    expect(await request).toMatchObject({ name: "AbortError" });
     expect(fetchStub).toHaveBeenCalledWith(
       "/api/health",
       expect.objectContaining({

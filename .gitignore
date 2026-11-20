@@ -30,6 +30,12 @@ vault/
 benchmarks/vault/
 benchmarks/data/
 
+# 工具缓存
+.hypothesis/
+mutants/
+ui/test-results/
+ui/playwright-report/
+
 # macOS / IDE
 .DS_Store
 .idea/

@@ -1,5 +1,8 @@
 """检索领域模型的契约测试。"""
 
+import hashlib
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from siku.retrieve.errors import RetrievalError
@@ -53,16 +56,23 @@ class TestDeriveChunkId:
         right = derive_chunk_id("a", "b\x1fc\x1f0\x1fd", 0, "")
         assert left != right
 
+    def test_length_prefix_prevents_boundary_ambiguity(self) -> None:
+        # 分隔符方案下这两个元组拼接后相同（anchor 吃掉 text 的前半段），长度前缀必须区分
+        left = derive_chunk_id("abc", "b\x1fc", 0, "")
+        right = derive_chunk_id("abc", "b", 0, "c\x1f")
+        assert left != right
+
     def test_output_is_hex_sha256_length(self) -> None:
         chunk_id = derive_chunk_id("abc123", "content", 0, "text")
         assert len(chunk_id) == 64
         int(chunk_id, 16)
 
     def test_version_participates_in_derivation(self) -> None:
-        payload = f"{CHUNK_ID_VERSION}\x1fabc123\x1f0\x1fcontent\x1ftext"
-        import hashlib
-
-        expected = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        fields = (CHUNK_ID_VERSION, "abc123", "0", "content", "text")
+        payload = b"".join(
+            len(field.encode()).to_bytes(8, "big") + field.encode() for field in fields
+        )
+        expected = hashlib.sha256(payload).hexdigest()
         assert derive_chunk_id("abc123", "content", 0, "text") == expected
 
 
@@ -75,7 +85,7 @@ class TestRecords:
             note_path="notes/report--abc123.md",
             extractor="PdfExtractor",
         )
-        with pytest.raises(Exception):  # noqa: B017 - frozen dataclass 禁止赋值
+        with pytest.raises(FrozenInstanceError):
             record.source_id = "changed"  # type: ignore[misc]
 
     def test_chunk_record_carries_provenance(self) -> None:

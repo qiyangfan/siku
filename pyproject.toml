@@ -45,6 +45,8 @@ ingest-pdf = ["docling>=2.0"]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=5.0",
+    # 单测硬超时：防止外部通道或子进程卡死拖住 CI（默认 300s/用例）
+    "pytest-timeout>=2.4",
     "ruff>=0.8",
     "mypy>=1.13",
     "pre-commit>=4.0",
@@ -61,6 +63,9 @@ dev = [
     # 依赖审计的漏洞扫描件与工作流安全审计（P0-2 / P0-5）
     "pip-audit>=2.9",
     "zizmor>=1.32",
+    "pytest-randomly>=5.1.0",
+    "hypothesis>=6.170.15",
+    "mutmut>=3.8.1",
 ]
 
 [build-system]
@@ -106,6 +111,13 @@ select = [
     # 日志调用正确性（exc_info 与异常上下文一致）与 pylint 警告子集
     "LOG",
     "PLW",
+    # 禁止 print 调试输出（AGENTS.md 条款；src 当前 0 命中）
+    "T20",
+    # 异步正确性（阻塞调用进事件循环）与时区感知
+    "ASYNC",
+    "DTZ",
+    # 过宽的 pytest.raises 会掩盖失败原因，要求 match 或更具体异常
+    "PT011",
     "S",   # flake8-bandit 安全规则（P0-3 SAST 的 Python 侧）
 ]
 
@@ -113,14 +125,30 @@ select = [
 # 测试代码只处理本地夹具：断言是测试惯用法，临时目录/pickle/子进程启动
 # 均不接收不受信输入。生产代码不放行任何 S 规则。
 "tests/**" = ["S101", "S104", "S105", "S106", "S107", "S108", "S301", "S603", "S607"]
+# 构建/基准脚本的 stdout 就是命令行接口（CI 与人工读取），不是调试输出
+"scripts/**" = ["T201"]
+"benchmarks/**" = ["T201"]
+
+# 变异测试只覆盖纯逻辑模块，且只跑对应测试文件；全仓变异在 CI 时间上不可行。
+# 非 PR 阻塞：由 .github/workflows/mutation.yml 每周跑一次。
+[tool.mutmut]
+# 复制整个 src 让包结构完整；只对目标模块生成变异体
+source_paths = ["src"]
+only_mutate = ["src/siku/retrieve/tokenizer.py"]
+pytest_add_cli_args_test_selection = ["tests/test_retrieve_tokenizer.py"]
+# mutants/ 下没有安装包，把 pythonpath 指到复制后的 src
+pytest_add_cli_args = ["-o", "pythonpath=src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# 单用例硬超时（秒）：正常用例远低于该值，仅用于拦截挂死
+timeout = 300
 # 告警即失败：全量实测零告警；防止新依赖/新代码把弃用警告带进 CI。
 filterwarnings = ["error"]
 # e2e（真实 serve 进程接线冒烟）默认排除，由 CI 独立 job 经 `pytest -m e2e` 运行。
-addopts = "-q -m 'not e2e'"
+# 严格档：未注册 marker、未知配置键直接报错，避免拼写错误静默放过
+addopts = "-q -m 'not e2e' --strict-markers --strict-config"
 markers = [
     "e2e: 真实 serve 进程五段接线回归冒烟（独立 CI job 运行；fake 三通道端点，无网络无密钥）",
 ]
@@ -133,9 +161,16 @@ python_version = "3.12"
 files = ["src", "tests", "scripts", "benchmarks"]
 mypy_path = ["src"]
 explicit_package_bases = true
-disallow_untyped_defs = true
-warn_return_any = true
+strict = true
+# strict 不含该项；实测 154 files 零命中，启用可拦住恒真/恒假分支后的死代码
+warn_unreachable = true
 ignore_missing_imports = true
+
+[tool.pylint.messages_control]
+# src 的 W/E 全族门禁；三类排除均已裁决：
+# - W0718 与 ruff BLE001 同义（HTTP/CLI/任务边界统一归一化捕获，已否决）；
+# - W0613/W0621 来自 MCP 工具的统一签名（vault/data_dir 占位）与注册名遮蔽。
+disable = ["C", "R", "W0718", "W0613", "W0621"]
 
 [tool.coverage.run]
 source = ["siku"]

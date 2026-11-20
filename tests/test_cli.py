@@ -8,7 +8,8 @@ from typer.testing import CliRunner
 
 from siku import __version__
 from siku.cli import LlmProtocol, _announce_supply_channels, app
-from siku.model_supply import LLM_PROTOCOLS, ChannelValues, ResolvedChannel
+from siku.graph.providers import LLM_PROTOCOLS
+from siku.model_supply import ChannelValues, ResolvedChannel
 from siku.retrieve.errors import ModelConfigFileError
 
 runner = CliRunner()

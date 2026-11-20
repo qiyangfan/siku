@@ -181,8 +181,6 @@ def tool_search(
             results = service.search(query, SearchOptions(top_k=top_k, candidate_k=candidate_k))
         finally:
             service.close()
-    except McpToolError:
-        raise
     except RetrievalError as exc:
         raise _mapped(exc) from exc
     return {
@@ -337,8 +335,6 @@ def tool_ingest(source: str, *, vault: Path, data_dir: Path) -> dict[str, Any]:
     try:
         with _library_write_guard(vault, data_dir):
             report = ingest_path(path, vault)
-    except McpToolError:
-        raise
     except IngestError as exc:
         raise _mapped(exc) from exc
     except (OSError, ValueError) as exc:

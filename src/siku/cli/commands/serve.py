@@ -39,13 +39,12 @@ from siku.graph.providers import (
 )
 from siku.model_supply import (
     ChannelValues,
-    ModelConfigFileError,
-    ModelNotAvailableError,
     ModelSupplyConfig,
     ProtocolConfigError,
     ResolvedChannel,
     resolve_llm_channel,
 )
+from siku.retrieve.errors import ModelConfigFileError, ModelNotAvailableError
 
 logger = logging.getLogger(__name__)
 

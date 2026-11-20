@@ -1,0 +1,42 @@
+# 变异测试：只覆盖纯逻辑模块（tokenizer），非 PR 阻塞，每周一次。
+# 阈值口径见 scripts/check_mutation_score.py（timeout 计为捕获，避免慢机抖动）。
+name: mutation
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: 同步依赖（锁定 uv.lock）
+        run: uv sync --locked
+
+      - name: 变异测试（tokenizer）
+        run: uv run mutmut run --max-children 2
+
+      - name: 导出统计
+        run: uv run mutmut export-cicd-stats
+
+      - name: 分数门禁
+        run: uv run python scripts/check_mutation_score.py --min 75
