@@ -97,6 +97,27 @@
 
 ## 归档前清单
 
-- [ ] 独立评审
-- [ ] 提交/推送后 CI 全绿（含 pylint / lint-imports 两步）
-- [ ] `security / secrets` 与测试 job 设为 required
+- [x] 独立评审（2026-11-21，本地复核，发现并修复 1 处回归，见文末）
+- [ ] 提交/推送后 CI 全绿（含 pylint / lint-imports 两步）——阻塞于账号级 Actions 锁定
+- [ ] `security / secrets` 与测试 job 设为 required——同上
+
+## 独立评审（2026-11-21）
+
+按 CI 同命令本地实跑结构门禁与依赖边界：
+
+| 检查 | 结果 |
+|---|---|
+| `pylint --disable=all --enable=too-many-lines,too-many-public-methods,too-many-return-statements,too-many-instance-attributes src/siku tests scripts benchmarks` | 修复后 0 条、退出 0 |
+| `pylint --jobs=0 src/siku scripts`（W/E） | 10.00/10 |
+| `lint-imports` | 3 contracts kept |
+| `ruff check .` / `mypy` | 0 / 156 文件 0 issue |
+
+**发现并已修复**：`67d052c`（本 change 之后）为 `SqliteIndex` 追加了公开
+`connection` property，使 `src/siku/retrieve/store.py` 的公开方法数升到 21/20，
+本 change 声称的「too-many-public-methods 0（src）」在 HEAD 上不再成立。因 CI 未跑，
+该回归此前无人发现。
+
+修复方式取最小面：删除该 property，`copy_sources_from` 在类内直接用
+`source._connection`；基准脚本改为在计时段内 `checkpoint_and_close()`
+（提交与 WAL 截断本就属写入成本）。修复后上述门禁全绿，`test_retrieve_store.py`
+等 8 个相关套件通过。CI 全绿与 required 仍待外部条件。

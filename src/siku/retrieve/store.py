@@ -82,11 +82,6 @@ class SqliteIndex:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
-    @property
-    def connection(self) -> sqlite3.Connection:
-        """底层连接句柄：跨索引增量复制需读取另一实例的数据。"""
-        return self._connection
-
     # ---------- 生命周期 ----------
 
     @classmethod
@@ -278,11 +273,13 @@ class SqliteIndex:
 
     def copy_sources_from(self, source: SqliteIndex, source_ids: list[str]) -> None:
         """把另一索引中指定来源的文档/块/全文条目原样复制过来（增量复用路径）。"""
+        # 同类实例：读另一索引必须拿它的连接；暴露公开句柄会把方法数推过 20/20 门禁
+        source_connection = source._connection  # pylint: disable=protected-access
         for start in range(0, len(source_ids), _BATCH_SIZE):
             batch = source_ids[start : start + _BATCH_SIZE]
             placeholders = ", ".join("?" for _ in batch)
             # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
-            documents = source.connection.execute(
+            documents = source_connection.execute(
                 "SELECT source_id, source_hash, source_name, note_path, extractor "  # noqa: S608
                 f"FROM documents WHERE source_id IN ({placeholders})",
                 batch,
@@ -293,7 +290,7 @@ class SqliteIndex:
                 "VALUES (?, ?, ?, ?, ?)",
                 documents,
             )
-            chunks = source.connection.execute(
+            chunks = source_connection.execute(
                 "SELECT " + _CHUNK_COLUMNS + f" FROM chunks WHERE source_id IN ({placeholders})",  # noqa: S608
                 batch,
             ).fetchall()
@@ -303,7 +300,7 @@ class SqliteIndex:
                 chunks,
             )
             # placeholders 仅由 "?" 组成，值经参数化传入；S608 误报。
-            fts_rows = source.connection.execute(
+            fts_rows = source_connection.execute(
                 "SELECT f.chunk_id, f.tokens FROM chunks_fts AS f "  # noqa: S608
                 "WHERE f.chunk_id IN "
                 f"(SELECT chunk_id FROM chunks WHERE source_id IN ({placeholders}))",
