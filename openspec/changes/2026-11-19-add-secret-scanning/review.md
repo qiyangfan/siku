@@ -1,6 +1,7 @@
 # 评审记录：2026-11-19-add-secret-scanning
 
-> apply 阶段实现证据（2026-11-19）；独立评审与归档待 PR 合并后执行。
+> apply 阶段实现证据（2026-11-19）；独立评审已于 2026-11-21 本地完成（见文末），
+> 归档仍待 PR 合并。
 
 ## 实现证据
 
@@ -60,6 +61,22 @@
 
 ## 归档前清单
 
-- [ ] 独立评审
-- [ ] `security / secrets` 首跑绿、设为 required
-- [ ] 门禁矩阵回填 `docs/HANDOFF.md`
+- [x] 独立评审（2026-11-21，本地复核，结论见文末）
+- [ ] `security / secrets` 首跑绿、设为 required——阻塞：账号级 Actions 锁定未解除
+- [ ] 门禁矩阵回填 `docs/HANDOFF.md`——依赖上一条的首跑结果
+
+## 独立评审（2026-11-21）
+
+本地可验证部分逐项复核，未发现需要返工的缺陷：
+
+- `.gitleaks.toml` 与本文描述一致：`extend.useDefault`、3 条路径豁免、2 条 stopword，
+  无按规则名全局放行；
+- `.github/workflows/security.yml` 的 `secrets` job：`fetch-depth: 0`、
+  `persist-credentials: false`、版本 8.30.1、下载后 checksums 校验、无
+  `continue-on-error`/`|| true`；
+- pre-commit 首位 hook 为 `gitleaks v8.30.1`，与 CI 共用同一配置文件；
+- 实测 `gitleaks detect --source src --no-git --config .gitleaks.toml` → no leaks
+  （不显式给 `--config` 时子目录扫描会漏掉 stopword，出现 1 条
+  `cjk-uni-bigram` 假命中——这正是配置文件按仓库根注入的预期行为）。
+
+仍待外部条件：首跑绿、required、HANDOFF 回填（同上清单）。
