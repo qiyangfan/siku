@@ -1,0 +1,234 @@
+{
+  "schema": "siku-tokenizer-bench-v2",
+  "generated_at": "2026-11-21T04:33:08+00:00",
+  "machine": {
+    "label": "darwin-arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "cpu_count": 10,
+    "python": "3.12.13",
+    "unicode": "15.0.0",
+    "sqlite": "3.53.1",
+    "tokenizer_version": "cjk-uni-bigram-v1"
+  },
+  "config": {
+    "size_mb": 10.0,
+    "notes": 120,
+    "sections": 8,
+    "section_chars": 500,
+    "repeat": 7,
+    "notes_dir": "synthetic",
+    "compare_legacy": true
+  },
+  "micro": {
+    "size_mb": 10.0,
+    "repeat": 7,
+    "chars": 4131903,
+    "token_count": 5244566,
+    "normalize_seconds": [
+      0.2603519167751074,
+      0.25514112412929535,
+      0.26214287523180246,
+      0.25171870924532413,
+      0.25049616768956184,
+      0.2664310000836849,
+      0.2529952498152852
+    ],
+    "normalize_cpu_seconds": [
+      0.258521,
+      0.253575,
+      0.260443,
+      0.2513239999999999,
+      0.2500800000000001,
+      0.26141799999999993,
+      0.2521300000000002
+    ],
+    "tokenize_seconds": [
+      0.4096526661887765,
+      0.3999374592676759,
+      0.4233407499268651,
+      0.37923241686075926,
+      0.38140295818448067,
+      0.3945169588550925,
+      0.3805695837363601
+    ],
+    "tokenize_cpu_seconds": [
+      0.4022160000000001,
+      0.3943319999999999,
+      0.4003399999999999,
+      0.378603,
+      0.38018699999999983,
+      0.39044000000000034,
+      0.3794450000000005
+    ],
+    "p50_tokenize_seconds": 0.3945169588550925,
+    "p95_tokenize_seconds": 0.4233407499268651,
+    "throughput_mb_s": [
+      24.410984781414264,
+      25.00397191678672,
+      23.6216924586815,
+      26.369119714973248,
+      26.21905463869814,
+      25.347516185414595,
+      26.276469343192513
+    ],
+    "median_throughput_mb_s": 25.347516185414595,
+    "cpu_throughput_mb_s": [
+      24.862325218290668,
+      25.35940527271437,
+      24.97883049408004,
+      26.412957636363156,
+      26.302911461991087,
+      25.612193935047618,
+      26.35434647972694
+    ],
+    "median_cpu_throughput_mb_s": 25.612193935047618,
+    "tokens_per_s": [
+      12802470.07493708,
+      13113465.31431016,
+      12388521.541821886,
+      13829424.297147095,
+      13750721.874221168,
+      13293638.922950199,
+      13780833.319651678
+    ],
+    "stability_ratio": 0.11630950073105395,
+    "cpu_stability_ratio": 0.062368760944842006
+  },
+  "segments": {
+    "repeat": 7,
+    "samples": [
+      {
+        "parse_seconds": 0.018607166595757008,
+        "parse_cpu_seconds": 0.018463999999999814,
+        "tokenize_seconds": 0.04975820891559124,
+        "tokenize_cpu_seconds": 0.04962700000000009,
+        "insert_seconds": 0.05921745765954256,
+        "insert_cpu_seconds": 0.057477999999999696,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.018538749776780605,
+        "parse_cpu_seconds": 0.01840799999999998,
+        "tokenize_seconds": 0.05399941559880972,
+        "tokenize_cpu_seconds": 0.05352299999999932,
+        "insert_seconds": 0.06259000021964312,
+        "insert_cpu_seconds": 0.059165999999999386,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.019242124632000923,
+        "parse_cpu_seconds": 0.01900199999999952,
+        "tokenize_seconds": 0.05486862454563379,
+        "tokenize_cpu_seconds": 0.05395699999999959,
+        "insert_seconds": 0.058347499929368496,
+        "insert_cpu_seconds": 0.056256000000000306,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.018499583937227726,
+        "parse_cpu_seconds": 0.01827700000000032,
+        "tokenize_seconds": 0.05415187496691942,
+        "tokenize_cpu_seconds": 0.053489000000000786,
+        "insert_seconds": 0.06271000020205975,
+        "insert_cpu_seconds": 0.06058399999999953,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.026083417236804962,
+        "parse_cpu_seconds": 0.02522800000000025,
+        "tokenize_seconds": 0.06432237476110458,
+        "tokenize_cpu_seconds": 0.06282299999999985,
+        "insert_seconds": 0.07784483302384615,
+        "insert_cpu_seconds": 0.060723999999999556,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.017684124410152435,
+        "parse_cpu_seconds": 0.017597000000000307,
+        "tokenize_seconds": 0.05205699987709522,
+        "tokenize_cpu_seconds": 0.05154399999999981,
+        "insert_seconds": 0.08479837514460087,
+        "insert_cpu_seconds": 0.05982999999999983,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.017862875014543533,
+        "parse_cpu_seconds": 0.01778200000000041,
+        "tokenize_seconds": 0.05173870828002691,
+        "tokenize_cpu_seconds": 0.05136200000000013,
+        "insert_seconds": 0.06652137544006109,
+        "insert_cpu_seconds": 0.06362999999999985,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      }
+    ],
+    "medians": {
+      "parse_seconds": 0.018538749776780605,
+      "tokenize_seconds": 0.05399941559880972,
+      "insert_seconds": 0.06271000020205975
+    },
+    "cpu_medians": {
+      "parse_cpu_seconds": 0.01840799999999998,
+      "tokenize_cpu_seconds": 0.053489000000000786,
+      "insert_cpu_seconds": 0.05982999999999983
+    },
+    "total_seconds": 0.13524816557765007,
+    "cpu_total_seconds": 0.1317270000000006,
+    "integrated_seconds": 0.15595458447933197,
+    "integrated_cpu_seconds": 0.14599299999999982,
+    "segment_sum_deviation": 0.13277210779543347,
+    "tokenize_share": 0.39926172283502814,
+    "tokenize_cpu_share": 0.4060595018485242,
+    "chars": 479943,
+    "chunks": 960,
+    "tokens": 614428,
+    "stability_ratio": 0.29269875590216055,
+    "cpu_stability_ratio": 0.2659036411630713
+  },
+  "g1": {
+    "basis": "process_cpu",
+    "min_tokenize_share": 0.2,
+    "max_throughput_mb_s": 15.0,
+    "share_ok": true,
+    "throughput_ok": false,
+    "bottleneck": false
+  },
+  "legacy_comparison": {
+    "legacy_cpu_seconds": [
+      0.7961369999999999,
+      0.7759230000000006,
+      0.7848269999999999,
+      0.8321210000000008,
+      0.8125640000000001,
+      0.8406500000000001,
+      0.9671310000000002
+    ],
+    "current_cpu_seconds": [
+      0.3734219999999997,
+      0.37855100000000164,
+      0.37632200000000005,
+      0.3825870000000009,
+      0.4389250000000011,
+      0.4562559999999998,
+      0.485576
+    ],
+    "median_legacy_cpu_seconds": 0.8125640000000001,
+    "median_current_cpu_seconds": 0.3825870000000009,
+    "cpu_speedup": 2.1238672511088934
+  }
+}

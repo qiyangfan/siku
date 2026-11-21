@@ -103,6 +103,14 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 阶段依赖：1→2→3→4 严格串行（2 依赖 1 的投影，3 依赖 2 的元数据）；Phase 4 的 UI
 骨架可与 3 后半并行（契约先行）；5、6 按 ADR-0002 触发，不抢先。
 
+### 2026-11-21 新增（用户点名，测量门禁先行）
+
++ ~~add-tokenizer-perf-gate~~ ✅（2026-11-21，归档 `2026-11-21-add-tokenizer-perf-gate`，
+  skip_specs）：把触发器「中文分词成为检索瓶颈」落成可执行门禁——基线 tokenize
+  12.77 MB/s、占非 embedding 索引 CPU 56.47%（G1 成立）；纯 Python 批量扫描优化到
+  23.58 MB/s（1.97×）；编译型 Python 2.06–2.12× 未达 3×，owner 裁决停在 M1、
+  不采纳 Rust/PyO3 与 M3 集成。口径与阈值见归档的 review/design。
+
 ## 各阶段一句话目标
 
 + **Phase 1**：让语料"进得来"——任何格式丢进 `vault/`，投影与锚点自动落位，重跑无害。
@@ -126,7 +134,7 @@ Phase 5 = 发布阶段二（Tauri 无签名），Phase 6 = 发布阶段三（签
 | 出现 Excel 深度查询需求 | 加 DuckDB 直查通道，不塞检索层 | ADR-0004 |
 | 出现超大原件（百 MB 级） | 附件"链接模式"例外 | ADR-0004 |
 | 回归分数不降但满意度降 | 扩 golden set 标注，而非调参 | ADR-0006 |
-| 中文分词成为检索瓶颈 | 重开 FTS5 分词器选型 | ADR-0006 / ADR-0003 |
+| 中文分词成为检索瓶颈 | 重开 FTS5 分词器选型 → 2026-11-21 实测瓶颈成立，以纯 Python 优化收口（1.97×）；换 FTS5 分词器会改 token 语义，若要做另立 change 并重跑 golden set | ADR-0006 / ADR-0003；归档 `2026-11-21-add-tokenizer-perf-gate` |
 | 强多人协作需求 | 独立产品线评估，不改单机内核契约 | ADR-0002 |
 | 商业化决策 | 商标全类目清查（SIKU 玩具品牌） | ADR-0007 |
 | 发布解禁（Release 重启 / Phase 6 启动） | 执行 Windows/Linux 实机安装冒烟并回填（清单见 docs/desktop.md） | 用户裁决 2026-09-19，归档 `2026-09-19-add-tauri-desktop-shell` |

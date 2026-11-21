@@ -1,0 +1,126 @@
+{
+  "schema": "siku-tokenizer-bench-v1",
+  "generated_at": "2026-11-21T03:43:43+00:00",
+  "machine": {
+    "label": "darwin-arm64",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "processor": "arm",
+    "cpu_count": 10,
+    "python": "3.12.13",
+    "unicode": "15.0.0",
+    "sqlite": "3.53.1",
+    "tokenizer_version": "cjk-uni-bigram-v1"
+  },
+  "config": {
+    "size_mb": 10.0,
+    "notes": 120,
+    "sections": 8,
+    "section_chars": 500,
+    "repeat": 5,
+    "notes_dir": "synthetic"
+  },
+  "micro": {
+    "size_mb": 10.0,
+    "repeat": 5,
+    "chars": 4131903,
+    "token_count": 5244566,
+    "normalize_seconds": [
+      0.2524302499368787,
+      0.2512534996494651,
+      0.2558703748509288,
+      0.264015500433743,
+      0.25508375000208616
+    ],
+    "tokenize_seconds": [
+      0.7833355832844973,
+      0.7922887085005641,
+      0.7822847915813327,
+      0.7799179581925273,
+      0.8089409163221717
+    ],
+    "p50_tokenize_seconds": 0.7833355832844973,
+    "p95_tokenize_seconds": 0.8089409163221717,
+    "throughput_mb_s": [
+      12.765952694336013,
+      12.62169319429709,
+      12.783100358867602,
+      12.821893501689875,
+      12.361873158134772
+    ],
+    "median_throughput_mb_s": 12.765952694336013,
+    "tokens_per_s": [
+      6695171.407903785,
+      6619513.750139816,
+      6704164.591259004,
+      6724509.860183715,
+      6483249.758022229
+    ],
+    "stability_ratio": 0.037212834792143434
+  },
+  "segments": {
+    "repeat": 5,
+    "samples": [
+      {
+        "parse_seconds": 0.016932333819568157,
+        "tokenize_seconds": 0.09455449972301722,
+        "insert_seconds": 0.057583583518862724,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.018076041713356972,
+        "tokenize_seconds": 0.09913595858961344,
+        "insert_seconds": 0.05645162519067526,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.01684595923870802,
+        "tokenize_seconds": 0.09668045770376921,
+        "insert_seconds": 0.056752207688987255,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.016573624685406685,
+        "tokenize_seconds": 0.09559700079262257,
+        "insert_seconds": 0.05646749958395958,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      },
+      {
+        "parse_seconds": 0.01925312541425228,
+        "tokenize_seconds": 0.09556662570685148,
+        "insert_seconds": 0.0576411671936512,
+        "chars": 479943,
+        "chunks": 960,
+        "tokens": 614428
+      }
+    ],
+    "medians": {
+      "parse_seconds": 0.016932333819568157,
+      "tokenize_seconds": 0.09559700079262257,
+      "insert_seconds": 0.056752207688987255
+    },
+    "total_seconds": 0.16928154230117798,
+    "integrated_seconds": 0.17032620962709188,
+    "segment_sum_deviation": 0.006133332786545744,
+    "tokenize_share": 0.5647219389255136,
+    "chars": 479943,
+    "chunks": 960,
+    "tokens": 614428,
+    "stability_ratio": 0.0484531024966226
+  },
+  "g1": {
+    "min_tokenize_share": 0.2,
+    "max_throughput_mb_s": 15.0,
+    "share_ok": true,
+    "throughput_ok": true,
+    "bottleneck": true
+  }
+}

@@ -1,5 +1,8 @@
 """确定性 tokenizer 的表驱动测试与 FTS5 能力检查测试。"""
 
+import itertools
+import re
+
 import pytest
 
 from siku.retrieve.errors import FtsUnavailableError, InvalidQueryError
@@ -7,6 +10,7 @@ from siku.retrieve.tokenizer import (
     TOKENIZER_VERSION,
     build_fts_match,
     ensure_fts5_available,
+    normalize_text,
     tokenize,
     tokenize_query,
 )
@@ -118,3 +122,96 @@ class TestFts5Capability:
         with pytest.raises(FtsUnavailableError) as excinfo:
             ensure_fts5_available()
         assert "FTS5" in str(excinfo.value)
+
+
+# 冻结的 cjk-uni-bigram-v1 参考实现：任何优化都必须与之逐 token 相等。
+_REF_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_REF_TOKEN_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/@-]*")
+_REF_TOKEN_TRAILING = "._/@-"  # token 尾字符集合，与密码无关
+
+
+def _reference_tokenize_v1(text: str) -> list[str]:
+    """逐字符扫描版 v1：语义基准，不参与生产路径。"""
+    normalized = normalize_text(text)
+    tokens: list[str] = []
+    position = 0
+    length = len(normalized)
+    while position < length:
+        char = normalized[position]
+        if _REF_CJK_RE.match(char):
+            run_end = position + 1
+            while run_end < length and _REF_CJK_RE.match(normalized[run_end]):
+                run_end += 1
+            run = normalized[position:run_end]
+            tokens.extend(run)
+            tokens.extend(run[start : start + 2] for start in range(len(run) - 1))
+            position = run_end
+            continue
+        matched = _REF_TOKEN_RE.match(normalized, position)
+        if matched:
+            token = matched.group().rstrip(_REF_TOKEN_TRAILING).lower()
+            if token:
+                tokens.append(token)
+            position = matched.end()
+            continue
+        position += 1
+    return tokens
+
+
+_EDGE_CHARS = (
+    "a",
+    "Z",
+    "0",
+    "-",
+    "_",
+    ".",
+    "/",
+    "@",
+    "知",
+    "㐀",  # CJK 扩展 A
+    "豈",  # CJK 兼容区
+    "，",
+    " ",
+    "\u3000",  # 全角空格
+    "Ａ",
+    "ı",
+    "İ",
+    "Σ",
+    "ς",
+    "🙂",
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "知识图谱",
+        "a._/@-",
+        "x-",
+        "-x",
+        "ＡＢＣ１２３",
+        "İstanbul",
+        "ΣΣ ς",
+        "㐀豈知",
+        "🙂知🙂",
+        "a\tb\nc",
+        "\u00a0\u3000 空白",
+        "...",
+        "a" * 1000 + "知" * 1000,
+    ],
+)
+def test_matches_v1_reference_on_curated_cases(text: str) -> None:
+    assert tokenize(text) == _reference_tokenize_v1(text)
+
+
+def test_matches_v1_reference_on_short_combinations() -> None:
+    for length in (1, 2, 3):
+        for combo in itertools.product(_EDGE_CHARS, repeat=length):
+            text = "".join(combo)
+            assert tokenize(text) == _reference_tokenize_v1(text), text
+
+
+def test_matches_v1_reference_on_long_mixed_text() -> None:
+    fragments = ("知识图谱与检索 ", "RTX-4090 ", "bge-m3 ", "....", "ＡＢＣ ", "🙂", "  ")
+    text = "".join(fragments[index % len(fragments)] for index in range(20000))
+    assert tokenize(text) == _reference_tokenize_v1(text)

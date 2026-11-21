@@ -18,9 +18,9 @@ from siku.retrieve.errors import FtsUnavailableError, InvalidQueryError
 TOKENIZER_VERSION = "cjk-uni-bigram-v1"
 
 # CJK 统一表意文字（含扩展 A 与兼容区）；假名/谚文等暂不在 BM25 分词范围
-_CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
-
-_TOKEN_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z._/@-]*")
+_CJK_RANGES = r"\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+# 单次批量扫描取代逐字符 match：CJK 连续段与 ASCII token 各有独立分支
+_SCAN_RE = re.compile(rf"(?P<cjk>[{_CJK_RANGES}]+)|(?P<token>[0-9A-Za-z][0-9A-Za-z._/@-]*)")
 # token 尾部允许出现的连接符，剥除避免把句尾标点吸进 token
 _TOKEN_TRAILING = "._/@-"  # noqa: S105  # 名为 token 尾字符集合，与密码无关
 
@@ -31,31 +31,35 @@ def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized)
 
 
+def _normalize_for_tokenize(text: str) -> str:
+    """tokenize 专用归一化：ASCII 直接返回，其余仅做 NFKC。
+
+    扫描器本就跳过空白，空白折叠不改变 token 流；ASCII 在 NFKC 下是恒等映射。
+    差分测试保证与 ``normalize_text`` + 逐字符扫描的 v1 输出逐 token 一致。
+    """
+    if text.isascii():
+        return text
+    return unicodedata.normalize("NFKC", text)
+
+
 def tokenize(text: str) -> list[str]:
-    """把任意文本切分为 FTS5 可检索 token 序列（保留重复以维持词频）。"""
-    normalized = normalize_text(text)
+    """把任意文本切分为 FTS5 可检索 token 序列（保留重复以维持词频）。
+
+    CJK 连续段一次匹配后统一产出单字与相邻二元；ASCII 段整段取出后剥除尾连接符
+    并小写。批量扫描与逐字符扫描（v1 参考实现）逐 token 等价，由差分测试守护。
+    """
+    normalized = _normalize_for_tokenize(text)
     tokens: list[str] = []
-    position = 0
-    length = len(normalized)
-    while position < length:
-        char = normalized[position]
-        if _CJK_RE.match(char):
-            run_end = position + 1
-            while run_end < length and _CJK_RE.match(normalized[run_end]):
-                run_end += 1
-            run = normalized[position:run_end]
+    for match in _SCAN_RE.finditer(normalized):
+        # 1=cjk 连续段，2=ASCII token；位置取值比命名组略快
+        run = match[1]
+        if run is not None:
             tokens.extend(run)
-            tokens.extend(run[start : start + 2] for start in range(len(run) - 1))
-            position = run_end
+            tokens.extend([run[start : start + 2] for start in range(len(run) - 1)])
             continue
-        matched = _TOKEN_RE.match(normalized, position)
-        if matched:
-            token = matched.group().rstrip(_TOKEN_TRAILING).lower()
-            if token:
-                tokens.append(token)
-            position = matched.end()
-            continue
-        position += 1
+        token = (match[2] or "").rstrip(_TOKEN_TRAILING).lower()
+        if token:
+            tokens.append(token)
     return tokens
 
 
